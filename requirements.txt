@@ -3,6 +3,11 @@
 
 # ==================== GUI 框架 ====================
 PyQt6>=6.4.0
+qt-material>=2.14
+
+# 应用方式：
+# from qt_material import apply_stylesheet
+# apply_stylesheet(app, theme='light_blue.xml')  # 浅色 Material 主题
 
 # ==================== OCR 引擎 ====================
 # PaddleOCR 及其底层推理引擎（CPU 版本）

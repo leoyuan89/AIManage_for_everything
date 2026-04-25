@@ -114,6 +114,25 @@
 手机浏览器打开 → 输入主密码 → 本地 JS 解密展示
 ```
 
+### 2.5 UI 主题方案
+
+**采用 qt-material 库实现 Material Design 风格**
+
+```python
+from qt_material import apply_stylesheet
+
+# 应用浅色蓝色主题
+apply_stylesheet(app, theme='light_blue.xml')
+```
+
+**主题选择**：`light_blue.xml`
+- 浅色背景，蓝色强调色
+- 现代 Material Design 风格
+- 与"苹果备忘录 + 1Password 简洁感"的设计理念一致
+- 无需手动配置颜色，一套主题统一所有控件样式
+
+**安装**：`pip install qt-material`（已加入 requirements.txt）
+
 ---
 
 ## 3. 数据库设计

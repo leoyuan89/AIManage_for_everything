@@ -1,0 +1,3920 @@
+"""
+主窗口模块
+包含：分类导航、账号列表、搜索框、底部工具栏
+"""
+import sys
+import time
+from pathlib import Path
+from datetime import datetime
+from typing import Optional, List, Dict
+from PyQt6.QtWidgets import (
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QPushButton, QLineEdit, QListWidget, QListWidgetItem,
+    QLabel, QFrame, QSplitter, QMessageBox, QApplication,
+    QMenu, QCheckBox, QDialog, QInputDialog, QTextBrowser, QTextEdit,
+    QTableWidget, QTableWidgetItem, QHeaderView
+)
+from PyQt6.QtCore import Qt, QSize, QTimer, QThread, pyqtSignal, QPoint
+from PyQt6.QtGui import QIcon, QFont, QColor
+
+from core.database import DatabaseManager
+from core.clipboard import ClipboardManager
+from services.account_service import AccountService
+from services.category_service import CategoryService
+from services.ai_classification_service import AIClassificationService
+from services.export_service import ExportService
+from services.search_service import SearchService, SearchResult
+from services.ai_assistant_service import AIAssistantService
+from services.ai_service_manager import AIServiceManager
+from services.ai_worker_thread import AIStatus
+from models.account import Account
+from .account_dialog import AccountDialog
+from .url_dialog import URLEditDialog
+from .export_dialog import ExportDialog
+from .settings_dialog import SettingsDialog
+from .batch_add_preview_widget import BatchAddPreviewWidget
+from .lock_screen import LockScreen, IdleTimer
+
+
+class AIQueryThread(QThread):
+    """AI 查询后台线程：支持流式和非流式两种模式
+    
+    注意：使用 pyqtSignal(str) 传递 JSON 字符串，而非 dict。
+    PyQt 的 pyqtSignal(dict) 在传递包含大字符串的 dict 时，
+    C++ 层序列化可能触发栈缓冲区溢出（0xC0000409）。
+    """
+    result_ready = pyqtSignal(str)
+    thinking_token = pyqtSignal(str)  # 思考过程 token
+    result_token = pyqtSignal(str)    # 最终结果 token
+    
+    def __init__(self, ai_assistant, query: str, accounts: list, mode: str = 'plan', vault_type: str = 'accounts'):
+        super().__init__()
+        self.ai_assistant = ai_assistant
+        self.query = query
+        self.accounts = accounts
+        self.mode = mode
+        self.vault_type = vault_type
+        self._cancelled = False
+    
+    def cancel(self):
+        self._cancelled = True
+    
+    def run(self):
+        """在线程中执行 AI 查询：使用分段输出（打字机效果）"""
+        import json as _json
+        print(f"[AIThread] 开始处理查询: {self.query[:50]}...")
+        try:
+            # 分段输出：先获取完整响应，再逐段发射到 UI（每 250ms 一段）
+            # 比完全流式更稳定（避免高频 Signal），比完全非流式体验更好
+            self._run_segmented()
+        except Exception as e:
+            import traceback
+            print(f"[AIThread] 异常: {e}")
+            traceback.print_exc()
+            error_result = {
+                "success": False,
+                "thinking": "",
+                "action": "explain",
+                "params": {},
+                "response": f"调用失败：{str(e)}",
+                "error": str(e)
+            }
+            self.result_ready.emit(_json.dumps(error_result, ensure_ascii=False))
+    
+    def _run_segmented(self):
+        """分段输出：先获取完整响应，再逐段发射到 UI（每 250ms 一段）"""
+        import json as _json
+        import time
+        
+        print("[AIThread] _run_segmented started")
+        
+        # 1. 获取完整响应（非流式，更稳定）
+        try:
+            result = self.ai_assistant.process_query(
+                self.query, self.accounts, mode=self.mode, record_history=False, vault_type=self.vault_type
+            )
+            print(f"[AIThread] process_query done, action={result.get('action')}")
+        except Exception as e:
+            import traceback
+            print(f"[AIThread] process_query error: {e}")
+            traceback.print_exc()
+            result = {
+                "success": False,
+                "thinking": "",
+                "action": "explain",
+                "params": {},
+                "response": f"调用失败：{str(e)}",
+                "error": str(e)
+            }
+        
+        # 2. 将 response 文本分割成段落
+        response_text = result.get('response', '')
+        if response_text and not self._cancelled:
+            segments = self._split_into_segments(response_text, max_chunk=30)
+            print(f"[AIThread] Split into {len(segments)} segments")
+            
+            # 3. 逐段发射，每段间隔 250ms（每秒 4 次，安全频率）
+            for i, segment in enumerate(segments):
+                if self._cancelled:
+                    print("[AIThread] Cancelled, stopping emission")
+                    break
+                print(f"[AIThread] Emit segment {i+1}/{len(segments)} ({len(segment)} chars)")
+                self.result_token.emit(segment)
+                time.sleep(0.25)  # 250ms 间隔
+        
+        # 4. 发射最终结果
+        json_str = _json.dumps(result, ensure_ascii=False)
+        print(f"[AIThread] Emitting result_ready, json_len={len(json_str)}")
+        self.result_ready.emit(json_str)
+    
+    def _split_into_segments(self, text: str, max_chunk: int = 30) -> list:
+        """将文本分割成适合逐段显示的段落（优先按标点分割）"""
+        if len(text) <= max_chunk:
+            return [text]
+        
+        segments = []
+        current = ""
+        
+        for char in text:
+            current += char
+            # 遇到标点且当前段足够长，就切分
+            if char in '。！？.!?\n' and len(current) >= 10:
+                segments.append(current)
+                current = ""
+            elif len(current) >= max_chunk:
+                segments.append(current)
+                current = ""
+        
+        if current:
+            segments.append(current)
+        
+        return segments if segments else [text]
+    
+    def _run_stream(self):
+        """流式执行 AI 查询（带批量节流，防止高频跨线程 signal 导致 0xC0000409）"""
+        import json as _json
+        import time
+        
+        thinking_buffer = []
+        result_buffer = []
+        last_emit_time = [time.time()]  # list 用于闭包修改
+        
+        def on_token(token, section):
+            if self._cancelled:
+                return
+            if section == 'thinking':
+                thinking_buffer.append(token)
+            elif section == 'result':
+                result_buffer.append(token)
+            
+            # 批量节流：每 50ms 或积累超过 200 字符才发射一次
+            now = time.time()
+            t_len = sum(len(t) for t in thinking_buffer)
+            r_len = sum(len(t) for t in result_buffer)
+            if now - last_emit_time[0] > 0.05 or t_len > 200 or r_len > 200:
+                try:
+                    if thinking_buffer:
+                        batch = ''.join(thinking_buffer)
+                        print(f"[AIThread] Emit thinking batch ({len(batch)} chars)")
+                        self.thinking_token.emit(batch)
+                        thinking_buffer.clear()
+                    if result_buffer:
+                        batch = ''.join(result_buffer)
+                        print(f"[AIThread] Emit result batch ({len(batch)} chars)")
+                        self.result_token.emit(batch)
+                        result_buffer.clear()
+                except Exception as e:
+                    print(f"[AIThread] Emit error: {e}")
+                last_emit_time[0] = now
+        
+        print(f"[AIThread] Entering process_query_stream, mode={self.mode}")
+        result = self.ai_assistant.process_query_stream(
+            self.query, self.accounts, mode=self.mode, on_token=on_token, vault_type=self.vault_type
+        )
+        print(f"[AIThread] process_query_stream finished, action={result.get('action')}, success={result.get('success')}")
+        
+        # 发射剩余 buffer
+        try:
+            if thinking_buffer:
+                batch = ''.join(thinking_buffer)
+                print(f"[AIThread] Final thinking emit ({len(batch)} chars)")
+                self.thinking_token.emit(batch)
+            if result_buffer:
+                batch = ''.join(result_buffer)
+                print(f"[AIThread] Final result emit ({len(batch)} chars)")
+                self.result_token.emit(batch)
+        except Exception as e:
+            print(f"[AIThread] Final emit error: {e}")
+        
+        json_str = _json.dumps(result, ensure_ascii=False)
+        print(f"[AIThread] Emitting result_ready, json_len={len(json_str)}")
+        self.result_ready.emit(json_str)
+    
+    def _run_legacy(self):
+        """非流式执行 AI 查询（降级兼容）"""
+        import json as _json
+        result = self.ai_assistant.process_query(self.query, self.accounts, vault_type=self.vault_type)
+        json_str = _json.dumps(result, ensure_ascii=False)
+        self.result_ready.emit(json_str)
+
+
+class AccountListItem(QWidget):
+    """自定义账号列表项（支持标识徽章、选择模式）"""
+    
+    def __init__(self, account: Account, badges: list = None, selection_mode: bool = False, parent=None):
+        super().__init__(parent)
+        self.setObjectName("accountListItem")
+        self.account = account
+        self.badges = badges or []
+        self.setup_ui(selection_mode)
+    
+    def setup_ui(self, selection_mode: bool):
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 0, 10, 0)
+        layout.setSpacing(10)
+        
+        # 复选框
+        self.checkbox = QCheckBox()
+        self.checkbox.setFixedSize(24, 24)
+        self.checkbox.setVisible(selection_mode)
+        layout.addWidget(self.checkbox)
+        
+        # 圆形图标
+        self.icon_label = QLabel(self._get_initial(self.account.app_name))
+        self.icon_label.setFixedSize(36, 36)
+        self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        color = self._generate_icon_color(self.account.app_name)
+        self.icon_label.setStyleSheet(f"""
+            QLabel {{
+                background-color: {color};
+                color: white;
+                border-radius: 18px;
+                font-size: 14px;
+                font-weight: bold;
+            }}
+        """)
+        layout.addWidget(self.icon_label)
+        
+        # 文字区（垂直）
+        text_layout = QVBoxLayout()
+        text_layout.setSpacing(2)
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # 主标题行（包含徽章）
+        title_layout = QHBoxLayout()
+        title_layout.setSpacing(4)
+        
+        self.lbl_name = QLabel(self.account.app_name)
+        self.lbl_name.setStyleSheet("color: #1a1a1a; font-size: 15px; font-weight: 600;")
+        title_layout.addWidget(self.lbl_name)
+        
+        # 徽章标签（如 炽阳推荐）
+        for badge_text, badge_color in self.badges:
+            lbl_badge = QLabel(badge_text)
+            lbl_badge.setStyleSheet(f"""
+                color: {badge_color};
+                font-size: 9px;
+                font-weight: bold;
+                background-color: {badge_color}20;
+                border-radius: 4px;
+                padding: 1px 6px;
+            """)
+            title_layout.addWidget(lbl_badge)
+        
+        # 密码强度徽章
+        if self.account.security_level:
+            level_colors = {
+                "弱": "#f44336",
+                "中": "#FF9800",
+                "强": "#4CAF50",
+                "极强": "#2196F3"
+            }
+            level_color = level_colors.get(self.account.security_level, "#999")
+            lbl_sec = QLabel(self.account.security_level)
+            lbl_sec.setStyleSheet(f"""
+                color: {level_color};
+                font-size: 9px;
+                font-weight: bold;
+                background-color: {level_color}20;
+                border-radius: 4px;
+                padding: 1px 6px;
+            """)
+            title_layout.addWidget(lbl_sec)
+        
+        title_layout.addStretch()
+        text_layout.addLayout(title_layout)
+        
+        # 副标题：脱敏账号
+        self.lbl_account = QLabel(self.account.mask_username())
+        self.lbl_account.setStyleSheet("color: #888888; font-size: 12px;")
+        text_layout.addWidget(self.lbl_account)
+        
+        layout.addLayout(text_layout, 1)
+        
+        # 分类标签 Pill
+        self.lbl_category = QLabel(self.account.category or '其他')
+        self.lbl_category.setStyleSheet("""
+            color: #666666;
+            font-size: 11px;
+            background-color: #f5f5f5;
+            border-radius: 10px;
+            padding: 2px 8px;
+        """)
+        layout.addWidget(self.lbl_category)
+        
+        # 右箭头
+        self.lbl_arrow = QLabel("›")
+        self.lbl_arrow.setStyleSheet("color: #cccccc; font-size: 18px;")
+        layout.addWidget(self.lbl_arrow)
+        
+        self.setFixedHeight(56)
+        self.setStyleSheet("""
+            #accountListItem {
+                background-color: white;
+                border: none;
+                border-bottom: 1px solid #e0e0e0;
+            }
+        """)
+    
+    def set_selection_mode(self, enabled: bool):
+        self.checkbox.setVisible(enabled)
+    
+    def is_checked(self) -> bool:
+        return self.checkbox.isChecked()
+    
+    def set_checked(self, checked: bool):
+        self.checkbox.setChecked(checked)
+    
+    @staticmethod
+    def _generate_icon_color(text: str) -> str:
+        colors = ['#E57373', '#F06292', '#BA68C8', '#9575CD', '#7986CB', '#64B5F6', '#4FC3F7', '#4DD0E1', '#4DB6AC', '#81C784', '#AED581', '#FFD54F', '#FFB74D', '#FF8A65', '#A1887F']
+        hash_val = sum(ord(c) for c in text) if text else 0
+        return colors[hash_val % len(colors)]
+    
+    @staticmethod
+    def _get_initial(text: str) -> str:
+        if not text:
+            return '?'
+        return text[0].upper()
+
+
+class URLListItem(QWidget):
+    """自定义网址列表项（支持标识徽章、选择模式）"""
+    
+    def __init__(self, url_item, badges: list = None, selection_mode: bool = False, parent=None):
+        super().__init__(parent)
+        self.setObjectName("urlListItem")
+        self.url_item = url_item
+        self.badges = badges or []
+        self.setup_ui(selection_mode)
+    
+    def setup_ui(self, selection_mode: bool):
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 0, 10, 0)
+        layout.setSpacing(10)
+        
+        # 复选框
+        self.checkbox = QCheckBox()
+        self.checkbox.setFixedSize(24, 24)
+        self.checkbox.setVisible(selection_mode)
+        layout.addWidget(self.checkbox)
+        
+        # 圆形图标
+        title = self.url_item.get('title', '') if isinstance(self.url_item, dict) else getattr(self.url_item, 'title', '')
+        self.icon_label = QLabel(self._get_initial(title))
+        self.icon_label.setFixedSize(36, 36)
+        self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        color = self._generate_icon_color(title)
+        self.icon_label.setStyleSheet(f"""
+            QLabel {{
+                background-color: {color};
+                color: white;
+                border-radius: 18px;
+                font-size: 14px;
+                font-weight: bold;
+            }}
+        """)
+        layout.addWidget(self.icon_label)
+        
+        # 文字区（垂直）
+        text_layout = QVBoxLayout()
+        text_layout.setSpacing(2)
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # 主标题行（包含徽章）
+        title_layout = QHBoxLayout()
+        title_layout.setSpacing(4)
+        
+        self.lbl_name = QLabel(title)
+        self.lbl_name.setStyleSheet("color: #1a1a1a; font-size: 15px; font-weight: 600;")
+        title_layout.addWidget(self.lbl_name)
+        
+        # 徽章标签（如 匹配）
+        for badge_text, badge_color in self.badges:
+            lbl_badge = QLabel(badge_text)
+            lbl_badge.setStyleSheet(f"""
+                color: {badge_color};
+                font-size: 9px;
+                font-weight: bold;
+                background-color: {badge_color}20;
+                border-radius: 4px;
+                padding: 1px 6px;
+            """)
+            title_layout.addWidget(lbl_badge)
+        
+        title_layout.addStretch()
+        text_layout.addLayout(title_layout)
+        
+        url = self.url_item.get('url', '') if isinstance(self.url_item, dict) else getattr(self.url_item, 'url', '')
+        display_url = url[:40] if len(url) <= 40 else url[:40] + '...'
+        self.lbl_url = QLabel(display_url)
+        self.lbl_url.setStyleSheet("color: #888888; font-size: 12px;")
+        self.lbl_url.setToolTip(url)
+        text_layout.addWidget(self.lbl_url)
+        
+        layout.addLayout(text_layout, 1)
+        
+        # 分类标签 Pill
+        category = self.url_item.get('category', '') if isinstance(self.url_item, dict) else getattr(self.url_item, 'category', '')
+        self.lbl_category = QLabel(category or '其他')
+        self.lbl_category.setStyleSheet("""
+            color: #666666;
+            font-size: 11px;
+            background-color: #f5f5f5;
+            border-radius: 10px;
+            padding: 2px 8px;
+        """)
+        layout.addWidget(self.lbl_category)
+        
+        # 右箭头
+        self.lbl_arrow = QLabel("›")
+        self.lbl_arrow.setStyleSheet("color: #cccccc; font-size: 18px;")
+        layout.addWidget(self.lbl_arrow)
+        
+        self.setFixedHeight(56)
+        self.setStyleSheet("""
+            #urlListItem {
+                background-color: white;
+                border: none;
+                border-bottom: 1px solid #e0e0e0;
+            }
+        """)
+    
+    def set_selection_mode(self, enabled: bool):
+        self.checkbox.setVisible(enabled)
+    
+    def is_checked(self) -> bool:
+        return self.checkbox.isChecked()
+    
+    def set_checked(self, checked: bool):
+        self.checkbox.setChecked(checked)
+    
+    @staticmethod
+    def _generate_icon_color(text: str) -> str:
+        colors = ['#E57373', '#F06292', '#BA68C8', '#9575CD', '#7986CB', '#64B5F6', '#4FC3F7', '#4DD0E1', '#4DB6AC', '#81C784', '#AED581', '#FFD54F', '#FFB74D', '#FF8A65', '#A1887F']
+        hash_val = sum(ord(c) for c in text) if text else 0
+        return colors[hash_val % len(colors)]
+    
+    @staticmethod
+    def _get_initial(text: str) -> str:
+        if not text:
+            return '?'
+        return text[0].upper()
+
+
+class ActionPreviewWidget(QFrame):
+    """Build 模式操作预览 Widget"""
+    
+    confirmed = pyqtSignal()
+    cancelled = pyqtSignal()
+    
+    def __init__(self, action: str = 'explain', params: dict = None, parent=None):
+        super().__init__(parent)
+        self.action = action
+        self.params = params or {}
+        self.preview_items = []
+        self.total_count = 0
+        self.setup_ui()
+    
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+        
+        self.setStyleSheet("""
+            ActionPreviewWidget {
+                background-color: #FFF8F0;
+                border: 2px solid #FF9800;
+                border-radius: 8px;
+            }
+        """)
+        
+        # 标题
+        title = QLabel("🔧 操作预览")
+        font = QFont()
+        font.setBold(True)
+        font.setPointSize(12)
+        title.setFont(font)
+        title.setStyleSheet("color: #E65100;")
+        layout.addWidget(title)
+        
+        # 表格
+        self.table = QTableWidget()
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(["目标条目", "字段", "原值", "新值"])
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setStyleSheet("""
+            QTableWidget {
+                border: 1px solid #FFE0B2;
+                background-color: white;
+            }
+            QHeaderView::section {
+                background-color: #FFF3E0;
+                padding: 6px;
+                border: 1px solid #FFE0B2;
+                font-weight: bold;
+            }
+        """)
+        
+        # 影响范围（必须先创建，避免 _fill_table 中 setCheckState 触发 itemChanged 时访问不到）
+        self.lbl_scope = QLabel("")
+        self.lbl_scope.setStyleSheet("color: #666; font-size: 11px;")
+        
+        self.table.itemChanged.connect(self._on_item_check_changed)
+        self._fill_table()
+        layout.addWidget(self.table, 1)
+        
+        self.lbl_scope.setText(self._get_scope_text())
+        layout.addWidget(self.lbl_scope)
+        
+        # 警告
+        lbl_warning = QLabel("⚠️ 此操作不可撤销")
+        lbl_warning.setStyleSheet("color: #f44336; font-size: 11px; font-weight: bold;")
+        layout.addWidget(lbl_warning)
+        
+        # 按钮
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        
+        btn_cancel = QPushButton("取消")
+        btn_cancel.setFixedHeight(32)
+        btn_cancel.setFixedWidth(80)
+        btn_cancel.clicked.connect(self.cancelled.emit)
+        btn_layout.addWidget(btn_cancel)
+        
+        btn_confirm = QPushButton("✅ 确认执行")
+        btn_confirm.setFixedHeight(32)
+        btn_confirm.setFixedWidth(110)
+        btn_confirm.setStyleSheet("""
+            QPushButton {
+                background-color: #FF9800;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #F57C00;
+            }
+        """)
+        btn_confirm.clicked.connect(self.confirmed.emit)
+        btn_layout.addWidget(btn_confirm)
+        
+        layout.addLayout(btn_layout)
+    
+    def update_action(self, action: str, params: dict, preview_items: list = None):
+        """更新操作内容"""
+        self.action = action
+        self.params = params
+        self.preview_items = preview_items or []
+        self.total_count = len(preview_items) if preview_items else 0
+        self._fill_table()
+        self.lbl_scope.setText(self._get_scope_text())
+    
+    def _fill_table(self):
+        """根据 action 和 params 填充预览表格（优先使用 preview_items，支持勾选）"""
+        rows = []
+        delete_mode = self.action == 'delete'
+        source = self.preview_items if self.preview_items else None
+        
+        if self.action == 'reorganize':
+            if source:
+                for item in source:
+                    rows.append([
+                        item.get('app_name', f"#{item.get('target_id', '?')}"),
+                        item.get('field', 'category'),
+                        item.get('old_value', '-'),
+                        item.get('new_value', '')
+                    ])
+            else:
+                changes = self.params.get('changes', [])
+                if changes:
+                    for change in changes:
+                        tid = change.get('target_id', '?')
+                        field = change.get('field', 'category')
+                        new_val = change.get('new_value', '')
+                        rows.append([f"#{tid}", field, "-", str(new_val)])
+                else:
+                    suggestions = self.params.get('suggestions', [])
+                    for i, sug in enumerate(suggestions):
+                        rows.append([f"建议 {i+1}", "分类", "-", str(sug)])
+        
+        elif self.action == 'add_remark':
+            if source:
+                for item in source:
+                    rows.append([
+                        item.get('app_name', f"#{item.get('target_id', '?')}"),
+                        item.get('field', 'ai_remark'),
+                        item.get('old_value', '-'),
+                        item.get('new_value', '')
+                    ])
+            else:
+                target_ids = self.params.get('target_ids', [])
+                remark = self.params.get('remark', '')
+                for tid in target_ids:
+                    rows.append([f"账号 #{tid}", "备注", "-", str(remark)])
+        
+        elif self.action == 'delete':
+            if source:
+                for item in source:
+                    rows.append([
+                        item.get('app_name', f"#{item.get('target_id', '?')}"),
+                        item.get('item_type', 'account'),
+                        "-",
+                        "移入回收站(30天)"
+                    ])
+            else:
+                target_ids = self.params.get('target_ids', [])
+                item_type = self.params.get('item_type', 'account')
+                for tid in target_ids:
+                    rows.append([f"#{tid}", item_type, "-", "移入回收站(30天)"])
+        
+        elif self.action == 'add':
+            if source:
+                for item in source:
+                    rows.append([
+                        item.get('app_name', item.get('title', '新条目')),
+                        item.get('item_type', 'account'),
+                        "-",
+                        "新增入库"
+                    ])
+            else:
+                fields = self.params.get('fields', {})
+                item_type = self.params.get('item_type', 'account')
+                rows.append([fields.get('app_name', fields.get('title', '新条目')), item_type, "-", "新增入库"])
+        
+        else:
+            rows.append([str(self.action), "-", "-", str(self.params)[:100]])
+        
+        self.table.setRowCount(len(rows))
+        for i, row in enumerate(rows):
+            for j, val in enumerate(row):
+                cell = QTableWidgetItem(str(val))
+                if delete_mode:
+                    cell.setForeground(QColor("#d32f2f"))
+                # 第一列添加勾选框（默认勾选）
+                if j == 0:
+                    cell.setFlags(cell.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                    cell.setCheckState(Qt.CheckState.Checked)
+                self.table.setItem(i, j, cell)
+    
+    def _on_item_check_changed(self, item):
+        """勾选状态变化时更新影响范围文字"""
+        if item.column() == 0:
+            self.lbl_scope.setText(self._get_scope_text())
+    
+    def get_selected_items(self) -> List[Dict]:
+        """获取用户勾选的条目（未显示条目默认勾选）"""
+        if not self.preview_items:
+            return []
+        selected = []
+        for i, item in enumerate(self.preview_items):
+            if i < self.table.rowCount():
+                table_item = self.table.item(i, 0)
+                if table_item and table_item.checkState() == Qt.CheckState.Checked:
+                    selected.append(item)
+            else:
+                selected.append(item)  # 未显示条目默认勾选
+        return selected
+    
+    def _get_scope_text(self) -> str:
+        selected = self.get_selected_items()
+        selected_count = len(selected)
+        total_count = self.total_count if hasattr(self, 'total_count') and self.total_count else self.table.rowCount()
+        if self.action == 'delete':
+            return f"影响范围：{selected_count}/{total_count} 条记录 | 操作类型：删除（移入回收站）"
+        elif self.action == 'add':
+            return f"影响范围：新增 {selected_count} 条记录 | 操作类型：创建"
+        return f"影响范围：{selected_count}/{total_count} 条记录 | 操作类型：批量更新 ({self.action})"
+
+
+class MainWindow(QMainWindow):
+    """主窗口"""
+    
+    def __init__(self, db_manager: DatabaseManager, config_path: str = None):
+        super().__init__()
+        self.db = db_manager
+        self.config_path = config_path
+        self._ai_manager = AIServiceManager.instance()
+        self.account_service = AccountService(db_manager)
+        self.category_service = CategoryService(db_manager)
+        self.export_service = ExportService(db_manager)
+        self.clipboard = ClipboardManager()
+        
+        # 搜索服务
+        self.search_service = SearchService(db_manager)
+        
+        # AI智能分类服务（延迟初始化，避免启动时网络请求）
+        
+        # 炽阳 服务
+        self.ai_assistant = AIAssistantService(db_manager)
+        self._ai_panel_visible = False
+        self._ai_thinking_expanded = {}  # msg_index -> bool，思考过程展开状态
+        self._ai_welcome_shown = False   # 欢迎语是否已显示
+        self._ai_query_running = False   # 是否正在查询中
+        self._ai_mode = 'plan'           # 'plan' = 只建议不操作, 'build' = 可执行但需确认
+        self._pending_action = None      # 待用户确认的操作 (action, params, description)
+        self._highlight_matched_ids = None  # Plan 模式高亮的账号 ID 集合
+        self._highlight_reasoning = ""      # Plan 模式高亮的推理文本
+        
+        # AI 查询状态
+        self._ai_query_start_time = None  # 查询开始时间
+        self._ai_last_elapsed = 0.0    # 上次回答用时（秒）
+        self._ai_query_cancelled = False  # 用户是否取消了本次查询
+        
+        self.current_category = '全部'
+        self.selected_account: Optional[Account] = None
+        
+        # 账号列表缓存（避免每次搜索都读数据库）
+        self._cached_accounts: List[Account] = []
+        self._cache_dirty = True
+        
+        # 会话安全：锁定界面
+        self._lock_screen = None
+        self._idle_timer = None
+        
+        # 库切换状态
+        self.current_vault = 'accounts'  # 'accounts' | 'urls'
+        self._cached_urls: List = []
+        self._url_cache_dirty = True
+        self._mode_change_guard = False
+        
+        # 网址服务（延迟初始化）
+        self._url_service = None
+        self._url_db = None
+        
+        # 批量选择模式（主条目）
+        self._selection_mode = False
+        self._selected_ids = set()
+        self._normal_title = ""  # 保存正常模式下的列表标题
+        
+        # 类别批量删除模式
+        self._category_selection_mode = False
+        self._selected_categories = set()
+        
+        self.setup_ui()
+        self._reload_categories()
+        self._setup_session_security()
+        self.load_accounts()
+        
+        # 初始化网址库
+        from core.url_database import URLDatabaseManager
+        from services.url_service import URLService
+        
+        data_dir = Path.home() / '.local_password_vault'
+        data_dir.mkdir(exist_ok=True)
+        url_db_path = data_dir / 'vault_urls.db'
+        self._url_db = URLDatabaseManager(str(url_db_path))
+        self._url_service = URLService(self._url_db)
+        
+        # 统一注册 RepositoryFactory（确保 URLRepository 有 main_db 引用用于回收站备份）
+        from core.repositories import RepositoryFactory, AccountRepository, URLRepository
+        RepositoryFactory.register('accounts', AccountRepository(
+            db=self.db,
+            category_service=CategoryService(self.db),
+            classification_service=AIClassificationService()
+        ))
+        RepositoryFactory.register('urls', URLRepository(
+            db=self._url_db,
+            url_service=self._url_service,
+            main_db=self.db
+        ))
+        
+        # AIServiceManager 后台已自动探测，UI 初始化时直接读缓存
+        self._on_ai_state_changed(self._ai_manager.get_state())
+        # 若 1 秒后缓存仍为 UNKNOWN，触发一次刷新
+        QTimer.singleShot(1000, lambda: self._ai_manager.request_refresh() if self._ai_manager.get_state().status == AIStatus.UNKNOWN else None)
+        
+        # 对话上下文过期检测（每30秒）
+        self._context_expiry_timer = QTimer(self)
+        self._context_expiry_timer.timeout.connect(self._check_conversation_context_expiry)
+        self._context_expiry_timer.start(30000)
+    
+    def setup_ui(self):
+        """设置界面"""
+        self.setWindowTitle("本地密码保险箱")
+        self.setMinimumSize(900, 600)
+        self.showMaximized()
+        
+        # 中央部件
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        
+        main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        
+        # ==================== 顶部工具栏 ====================
+        top_bar = QWidget()
+        top_bar.setStyleSheet("background-color: #f5f5f5; border-bottom: 1px solid #ddd;")
+        top_bar.setFixedHeight(60)
+        top_layout = QHBoxLayout(top_bar)
+        top_layout.setContentsMargins(15, 10, 15, 10)
+        
+        # 搜索框（按回车搜索）
+        self.search_box = QLineEdit()
+        self.search_box.setPlaceholderText("搜索账号（支持拼音，如：wx=微信），按回车搜索...")
+        self.search_box.setFixedHeight(36)
+        self.search_box.returnPressed.connect(self.on_search)
+        top_layout.addWidget(self.search_box, 1)
+        
+        top_layout.addSpacing(10)
+        
+        # 库切换按钮组
+        from PyQt6.QtWidgets import QButtonGroup
+        self.tab_group = QButtonGroup(self)
+        btn_vault_accounts = QPushButton("密码库")
+        btn_vault_urls = QPushButton("网址库")
+        btn_vault_accounts.setCheckable(True)
+        btn_vault_urls.setCheckable(True)
+        btn_vault_accounts.setChecked(True)
+        btn_vault_accounts.setFixedHeight(36)
+        btn_vault_urls.setFixedHeight(36)
+        # 统一样式：checked 时白字深色背景，unchecked 时深色字浅色背景
+        tab_style = """
+            QPushButton {
+                background-color: #f0f0f0;
+                color: #333;
+                border: 1px solid #ccc;
+                border-radius: 4px;
+                font-weight: bold;
+                padding: 0 14px;
+            }
+            QPushButton:checked {
+                background-color: #1976D2;
+                color: white;
+                border: 1px solid #1976D2;
+            }
+            QPushButton:hover {
+                background-color: #e3f2fd;
+            }
+            QPushButton:checked:hover {
+                background-color: #1565C0;
+            }
+        """
+        btn_vault_accounts.setStyleSheet(tab_style)
+        btn_vault_urls.setStyleSheet(tab_style)
+        self.tab_group.addButton(btn_vault_accounts, 0)
+        self.tab_group.addButton(btn_vault_urls, 1)
+        self.tab_group.idClicked.connect(self._on_vault_tab_changed)
+        
+        top_layout.addWidget(btn_vault_accounts)
+        top_layout.addWidget(btn_vault_urls)
+        top_layout.addSpacing(10)
+        
+        # 添加按钮（文字随当前库动态变化）
+        self.btn_add = QPushButton("+ 添加账号")
+        self.btn_add.setFixedHeight(36)
+        self.btn_add.setFixedWidth(120)
+        self.btn_add.clicked.connect(self.on_add_item)
+        top_layout.addWidget(self.btn_add)
+        
+        top_layout.addSpacing(10)
+        
+        # 炽阳按钮
+        self.btn_ai_toggle = QPushButton("炽阳")
+        self.btn_ai_toggle.setFixedHeight(36)
+        self.btn_ai_toggle.setFixedWidth(80)
+        self.btn_ai_toggle.setStyleSheet("""
+            QPushButton {
+                background-color: #FF6B35;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #E55A2B;
+            }
+        """)
+        self.btn_ai_toggle.setToolTip("打开/关闭 炽阳 面板")
+        self.btn_ai_toggle.clicked.connect(self.on_ai_toggle_panel)
+        top_layout.addWidget(self.btn_ai_toggle)
+        
+        top_layout.addSpacing(10)
+        
+        # 设置按钮
+        btn_settings = QPushButton("设置")
+        btn_settings.setFixedSize(60, 36)
+        btn_settings.setToolTip("设置")
+        btn_settings.clicked.connect(self.on_settings)
+        top_layout.addWidget(btn_settings)
+        
+        main_layout.addWidget(top_bar)
+        
+        # ==================== 中间内容区 ====================
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        
+        # ---- 左侧分类导航 ----
+        left_panel = QWidget()
+        left_panel.setStyleSheet("background-color: #fafafa; border-right: 1px solid #ddd;")
+        left_panel.setFixedWidth(230)
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 10, 0, 10)
+        left_layout.setSpacing(0)
+        
+        # 类别标题栏（标题 + 排序按钮）
+        category_header = QHBoxLayout()
+        category_header.setContentsMargins(12, 12, 12, 8)
+        category_header.setSpacing(5)
+        
+        lbl_category = QLabel("类别")
+        lbl_category.setStyleSheet("""
+            QLabel {
+                font-weight: bold;
+                color: #1976D2;
+                font-size: 13px;
+                padding-left: 4px;
+                border-left: 3px solid #2196F3;
+            }
+        """)
+        category_header.addWidget(lbl_category)
+        category_header.addStretch()
+        
+        self.btn_category_sort = QPushButton("排序")
+        self.btn_category_sort.setFixedSize(56, 26)
+        self.btn_category_sort.setStyleSheet("""
+            QPushButton {
+                background-color: #E3F2FD;
+                color: #1976D2;
+                border: 1px solid #90CAF9;
+                border-radius: 4px;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #BBDEFB;
+            }
+        """)
+        self.btn_category_sort.setToolTip("编辑类别顺序")
+        self.btn_category_sort.clicked.connect(self._on_category_edit_toggle)
+        category_header.addWidget(self.btn_category_sort)
+        
+        # 类别批量删除按钮
+        self.btn_category_batch_delete = QPushButton("删除")
+        self.btn_category_batch_delete.setFixedSize(56, 26)
+        self.btn_category_batch_delete.setStyleSheet("""
+            QPushButton {
+                background-color: #FFEBEE;
+                color: #d32f2f;
+                border: 1px solid #EF9A9A;
+                border-radius: 4px;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #FFCDD2;
+            }
+        """)
+        self.btn_category_batch_delete.setToolTip("批量删除类别")
+        self.btn_category_batch_delete.clicked.connect(self._on_category_batch_delete_toggle)
+        category_header.addWidget(self.btn_category_batch_delete)
+        left_layout.addLayout(category_header)
+        
+        # 分类列表
+        self.category_list = QListWidget()
+        self.category_list.setFrameShape(QFrame.Shape.NoFrame)
+        # 新增：占满父容器高度
+        from PyQt6.QtWidgets import QSizePolicy
+        self.category_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._category_list_normal_style = """
+            QListWidget {
+                background-color: #fafafa;
+                border: none;
+            }
+            QListWidget::item {
+                padding: 12px 15px;
+                border-radius: 0;
+            }
+            QListWidget::item:selected {
+                background-color: #e3f2fd;
+                color: #1976D2;
+                border-left: 3px solid #2196F3;
+            }
+            QListWidget::item:hover {
+                background-color: #d0d0d0;
+                border-left: 3px solid #64B5F6;
+            }
+        """
+        self._category_list_checkbox_style = """
+            QListWidget {
+                background-color: #fafafa;
+                border: none;
+            }
+            QListWidget::item {
+                padding: 12px 15px;
+                border-radius: 0;
+            }
+            QListWidget::item:selected {
+                background-color: #e3f2fd;
+                color: #1976D2;
+                border-left: 3px solid #2196F3;
+            }
+            QListWidget::indicator {
+                width: 16px;
+                height: 16px;
+            }
+            QListWidget::indicator:unchecked {
+                border: 2px solid #90CAF9;
+                background-color: white;
+                border-radius: 3px;
+            }
+            QListWidget::indicator:checked {
+                background-color: #2196F3;
+                border: 2px solid #2196F3;
+            }
+        """
+        self.category_list.setStyleSheet(self._category_list_normal_style)
+        self.category_list.itemClicked.connect(self.on_category_selected)
+        self.category_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.category_list.customContextMenuRequested.connect(self._on_category_context_menu)
+        self.category_list.setDragDropMode(QListWidget.DragDropMode.NoDragDrop)
+        self.category_list.itemChanged.connect(self._on_category_check_changed)
+        
+        left_layout.addWidget(self.category_list, 1)  # stretch factor=1，占满剩余高度
+        
+        # 类别批量删除底部操作栏
+        self.category_sel_bar = QWidget()
+        self.category_sel_bar.setStyleSheet("background-color: #f5f5f5; border-top: 1px solid #ddd;")
+        self.category_sel_bar.setFixedHeight(44)
+        cat_sel_layout = QHBoxLayout(self.category_sel_bar)
+        cat_sel_layout.setContentsMargins(10, 5, 10, 5)
+        cat_sel_layout.setSpacing(8)
+        
+        self.btn_cat_sel_all = QPushButton("全选")
+        self.btn_cat_sel_all.setFixedHeight(32)
+        self.btn_cat_sel_all.setStyleSheet("""
+            QPushButton {
+                background-color: #E3F2FD;
+                color: #1976D2;
+                border: 1px solid #90CAF9;
+                border-radius: 4px;
+                font-size: 12px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #BBDEFB;
+            }
+        """)
+        self.btn_cat_sel_all.clicked.connect(self._toggle_category_select_all)
+        cat_sel_layout.addWidget(self.btn_cat_sel_all)
+        
+        self.btn_cat_sel_delete = QPushButton("删除(0)")
+        self.btn_cat_sel_delete.setFixedHeight(32)
+        self.btn_cat_sel_delete.setStyleSheet("""
+            QPushButton {
+                background-color: #f44336;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                font-size: 12px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #d32f2f;
+            }
+        """)
+        self.btn_cat_sel_delete.clicked.connect(self._execute_category_batch_delete)
+        cat_sel_layout.addWidget(self.btn_cat_sel_delete)
+        
+        self.category_sel_bar.hide()
+        left_layout.addWidget(self.category_sel_bar)
+        
+        splitter.addWidget(left_panel)
+        
+        # ---- 中间账号列表 ----
+        center_panel = QWidget()
+        center_layout = QVBoxLayout(center_panel)
+        center_layout.setContentsMargins(15, 15, 15, 15)
+        center_layout.setSpacing(10)
+        
+        # 账号列表标题
+        self.lbl_list_title = QLabel("全部账号")
+        font = QFont()
+        font.setPointSize(14)
+        font.setBold(True)
+        self.lbl_list_title.setFont(font)
+        self.lbl_list_title.setStyleSheet("color: #333; padding-bottom: 10px;")
+        center_layout.addWidget(self.lbl_list_title)
+        
+        # AI 筛选横幅
+        self.ai_filter_banner = QWidget()
+        self.ai_filter_banner.setStyleSheet("""
+            QWidget {
+                background-color: #E3F2FD;
+                border: none;
+                border-radius: 4px;
+            }
+        """)
+        filter_banner_layout = QHBoxLayout(self.ai_filter_banner)
+        filter_banner_layout.setContentsMargins(10, 6, 10, 6)
+        
+        self.lbl_ai_filter = QLabel("")
+        self.lbl_ai_filter.setStyleSheet("color: #1565C0; font-size: 12px;")
+        filter_banner_layout.addWidget(self.lbl_ai_filter, 1)
+        
+        btn_clear_filter = QPushButton("清除筛选")
+        btn_clear_filter.setFixedHeight(24)
+        btn_clear_filter.setFixedWidth(90)
+        btn_clear_filter.setStyleSheet("""
+            QPushButton {
+                background-color: #2196F3;
+                color: white;
+                border: none;
+                border-radius: 3px;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background-color: #1976D2;
+            }
+        """)
+        btn_clear_filter.clicked.connect(self.clear_account_highlight)
+        filter_banner_layout.addWidget(btn_clear_filter)
+        
+        self.ai_filter_banner.hide()
+        center_layout.addWidget(self.ai_filter_banner)
+        
+        # 账号列表 + 字母导航条
+        list_container = QWidget()
+        list_row = QHBoxLayout(list_container)
+        list_row.setContentsMargins(0, 0, 0, 0)
+        list_row.setSpacing(0)
+        
+        self.account_list = QListWidget()
+        self.account_list.setFrameShape(QFrame.Shape.NoFrame)
+        self.account_list.setStyleSheet("""
+            QListWidget {
+                background-color: #f5f5f5;
+                border: none;
+            }
+            QListWidget::item {
+                background-color: transparent;
+                border: none;
+                padding: 0px;
+            }
+        """)
+        self.account_list.setSpacing(0)
+        self.account_list.itemClicked.connect(self.on_account_clicked)
+        self.account_list.itemDoubleClicked.connect(self.on_account_double_clicked)
+        list_row.addWidget(self.account_list, 1)
+        
+        # 字母索引导航条
+        self.alpha_nav = self._build_alpha_nav()
+        list_row.addWidget(self.alpha_nav)
+        
+        center_layout.addWidget(list_container)
+        
+        splitter.addWidget(center_panel)
+        
+        # ---- 右侧 炽阳 面板 ----
+        self.ai_panel = QWidget()
+        self.ai_panel.setStyleSheet("background-color: #fafafa; border-left: 1px solid #ddd;")
+        self.ai_panel.setMinimumWidth(0)
+        self.ai_panel.setMaximumWidth(0)  # 默认隐藏
+        ai_layout = QVBoxLayout(self.ai_panel)
+        ai_layout.setContentsMargins(10, 10, 10, 10)
+        ai_layout.setSpacing(8)
+        
+        # 炽阳标题栏
+        ai_header = QHBoxLayout()
+        lbl_ai_title = QLabel("炽阳")
+        font = QFont()
+        font.setPointSize(13)
+        font.setBold(True)
+        lbl_ai_title.setFont(font)
+        lbl_ai_title.setStyleSheet("color: #E55A2B;")
+        ai_header.addWidget(lbl_ai_title)
+        ai_header.addStretch()
+        
+        btn_ai_clear = QPushButton("清空")
+        btn_ai_clear.setFixedHeight(28)
+        btn_ai_clear.setFixedWidth(80)
+        btn_ai_clear.setStyleSheet("font-size: 11px;")
+        btn_ai_clear.clicked.connect(self.on_ai_clear_history)
+        ai_header.addWidget(btn_ai_clear)
+        ai_layout.addLayout(ai_header)
+        
+        # 模式切换栏（Plan / Build）
+        mode_layout = QHBoxLayout()
+        mode_layout.setSpacing(6)
+        
+        self.btn_mode_plan = QPushButton("🛡️ Plan")
+        self.btn_mode_plan.setFixedHeight(28)
+        self.btn_mode_plan.setCheckable(True)
+        self.btn_mode_plan.setChecked(True)
+        self.btn_mode_plan.setStyleSheet("""
+            QPushButton {
+                background-color: #e3f2fd;
+                color: #1976D2;
+                border: 1px solid #1976D2;
+                border-radius: 4px;
+                font-size: 11px;
+                font-weight: bold;
+                padding: 0 10px;
+            }
+            QPushButton:checked {
+                background-color: #1976D2;
+                color: white;
+            }
+        """)
+        self.btn_mode_plan.clicked.connect(lambda: self._on_ai_mode_changed('plan'))
+        mode_layout.addWidget(self.btn_mode_plan)
+        
+        self.btn_mode_build = QPushButton("🔨 Build")
+        self.btn_mode_build.setFixedHeight(28)
+        self.btn_mode_build.setCheckable(True)
+        self.btn_mode_build.setChecked(False)
+        self.btn_mode_build.setStyleSheet("""
+            QPushButton {
+                background-color: #fff3e0;
+                color: #e65100;
+                border: 1px solid #e65100;
+                border-radius: 4px;
+                font-size: 11px;
+                font-weight: bold;
+                padding: 0 10px;
+            }
+            QPushButton:checked {
+                background-color: #e65100;
+                color: white;
+            }
+        """)
+        self.btn_mode_build.clicked.connect(lambda: self._on_ai_mode_changed('build'))
+        mode_layout.addWidget(self.btn_mode_build)
+        
+        self.lbl_mode_hint = QLabel("只提供建议，不操作数据")
+        self.lbl_mode_hint.setStyleSheet("color: #999; font-size: 10px;")
+        mode_layout.addWidget(self.lbl_mode_hint)
+        mode_layout.addStretch()
+        ai_layout.addLayout(mode_layout)
+        
+        # 模式横幅
+        self.ai_mode_banner = QLabel("🔍 规划模式 — 只读查询")
+        self.ai_mode_banner.setFixedHeight(32)
+        self.ai_mode_banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.ai_mode_banner.setStyleSheet("""
+            QLabel {
+                background-color: #2196F3;
+                color: white;
+                border-radius: 4px;
+                font-weight: bold;
+                font-size: 12px;
+            }
+        """)
+        ai_layout.addWidget(self.ai_mode_banner)
+        
+        # 对话显示区（thinking + result + preview）
+        chat_container = QWidget()
+        chat_layout = QVBoxLayout(chat_container)
+        chat_layout.setContentsMargins(0, 0, 0, 0)
+        chat_layout.setSpacing(6)
+        
+        # 思考区
+        self.thinking_area = QTextEdit()
+        self.thinking_area.setPlaceholderText("思考过程...")
+        self.thinking_area.setReadOnly(True)
+        self.thinking_area.setStyleSheet("""
+            QTextEdit {
+                background-color: #f5f5f5;
+                border: 1px solid #e0e0e0;
+                border-radius: 6px;
+                padding: 8px;
+                font-family: 'Consolas', 'Courier New', monospace;
+                font-size: 12px;
+                color: #666;
+            }
+        """)
+        self.thinking_area.setMaximumHeight(180)
+        self.thinking_area.hide()
+        chat_layout.addWidget(self.thinking_area, 1)
+        
+        # 结果区（历史对话 + 当前结果）
+        self.result_area = QTextBrowser()
+        self.result_area.setOpenLinks(False)
+        self.result_area.anchorClicked.connect(self._on_ai_anchor_clicked)
+        self.result_area.setStyleSheet("""
+            QTextBrowser {
+                background-color: white;
+                border: 1px solid #e0e0e0;
+                border-radius: 6px;
+                padding: 8px;
+                font-size: 13px;
+                line-height: 1.6;
+            }
+        """)
+        self.result_area.setPlaceholderText("炽阳 对话将显示在这里...")
+        chat_layout.addWidget(self.result_area, 3)
+        
+        # 操作按钮（复制、重新生成）
+        self.ai_action_buttons = QWidget()
+        btn_layout = QHBoxLayout(self.ai_action_buttons)
+        btn_layout.setContentsMargins(0, 0, 0, 0)
+        btn_layout.addStretch()
+        
+        btn_copy = QPushButton("📋 复制")
+        btn_copy.setFixedHeight(28)
+        btn_copy.setFixedWidth(90)
+        btn_copy.setStyleSheet("font-size: 11px;")
+        btn_copy.clicked.connect(self._on_ai_copy_result)
+        btn_layout.addWidget(btn_copy)
+        
+        btn_regenerate = QPushButton("🔄 重新生成")
+        btn_regenerate.setFixedHeight(28)
+        btn_regenerate.setFixedWidth(110)
+        btn_regenerate.setStyleSheet("font-size: 11px;")
+        btn_regenerate.clicked.connect(self._on_ai_regenerate)
+        btn_layout.addWidget(btn_regenerate)
+        
+        chat_layout.addWidget(self.ai_action_buttons)
+        self.ai_action_buttons.hide()
+        
+        # Build 模式操作预览 Widget
+        self.action_preview_widget = ActionPreviewWidget('explain', {}, parent=self)
+        self.action_preview_widget.hide()
+        self.action_preview_widget.confirmed.connect(self._on_action_preview_confirmed)
+        self.action_preview_widget.cancelled.connect(self._on_action_preview_cancelled)
+        chat_layout.addWidget(self.action_preview_widget)
+        
+        ai_layout.addWidget(chat_container, 1)
+        
+        # 输入区（多行文本框，支持自动换行）
+        ai_input_layout = QHBoxLayout()
+        
+        class AIInputEdit(QTextEdit):
+            """AI 输入框：Enter 发送，Shift+Enter 换行，最多显示5行"""
+            def __init__(self, parent=None, send_callback=None):
+                super().__init__(parent)
+                self.send_callback = send_callback
+                self.setPlaceholderText("输入指令，如：查找支付类账号")
+                # 最小高度约1行，最大高度约5行
+                self.setMinimumHeight(40)
+                self.setMaximumHeight(110)
+                self.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+                self.setStyleSheet("""
+                    QTextEdit {
+                        border: 1px solid #ddd;
+                        border-radius: 6px;
+                        padding: 6px 10px;
+                        font-size: 13px;
+                        line-height: 1.4;
+                    }
+                """)
+                self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            
+            def keyPressEvent(self, event):
+                if event.key() == Qt.Key.Key_Return and not event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                    # Enter（不带Shift）→ 发送
+                    if self.send_callback:
+                        self.send_callback()
+                    return
+                super().keyPressEvent(event)
+        
+        self.ai_input = AIInputEdit(send_callback=self.on_ai_send_message)
+        ai_input_layout.addWidget(self.ai_input, 1)
+        
+        self.btn_ai_send = QPushButton("发送")
+        self.btn_ai_send.setMinimumHeight(40)
+        self.btn_ai_send.setMaximumHeight(110)
+        self.btn_ai_send.setFixedWidth(60)
+        self._update_send_button_style(False)
+        self.btn_ai_send.clicked.connect(self._on_ai_send_or_stop)
+        ai_input_layout.addWidget(self.btn_ai_send)
+        
+        ai_layout.addLayout(ai_input_layout)
+        
+        # 确认执行区域（Build 模式下，危险操作需要用户确认）
+        self.ai_confirm_widget = QWidget()
+        self.ai_confirm_widget.setStyleSheet("""
+            QWidget {
+                background-color: #FFF8F0;
+                border: 1px solid #FFE0B2;
+                border-radius: 6px;
+            }
+        """)
+        self.ai_confirm_widget.hide()
+        confirm_layout = QHBoxLayout(self.ai_confirm_widget)
+        confirm_layout.setContentsMargins(8, 6, 8, 6)
+        confirm_layout.setSpacing(8)
+        
+        self.lbl_confirm_desc = QLabel("")
+        self.lbl_confirm_desc.setStyleSheet("color: #E65100; font-size: 11px;")
+        confirm_layout.addWidget(self.lbl_confirm_desc, 1)
+        
+        btn_confirm_cancel = QPushButton("取消")
+        btn_confirm_cancel.setFixedHeight(28)
+        btn_confirm_cancel.setFixedWidth(50)
+        btn_confirm_cancel.setStyleSheet("font-size: 11px;")
+        btn_confirm_cancel.clicked.connect(self._on_ai_confirm_cancel)
+        confirm_layout.addWidget(btn_confirm_cancel)
+        
+        btn_confirm_ok = QPushButton("✅ 确认执行")
+        btn_confirm_ok.setFixedHeight(28)
+        btn_confirm_ok.setFixedWidth(80)
+        btn_confirm_ok.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #388E3C;
+            }
+        """)
+        btn_confirm_ok.clicked.connect(self._on_ai_confirm_execute)
+        confirm_layout.addWidget(btn_confirm_ok)
+        
+        ai_layout.addWidget(self.ai_confirm_widget)
+        
+        # 初始化 AI 模式横幅和样式
+        self._on_ai_mode_changed('plan')
+        
+        splitter.addWidget(self.ai_panel)
+        splitter.setSizes([230, 570, 0])
+        
+        main_layout.addWidget(splitter)
+        
+        # ==================== 底部工具栏 ====================
+        self.bottom_bar = QWidget()
+        self.bottom_bar.setStyleSheet("background-color: #f5f5f5; border-top: 1px solid #ddd;")
+        self.bottom_bar.setFixedHeight(50)
+        bottom_layout = QHBoxLayout(self.bottom_bar)
+        bottom_layout.setContentsMargins(15, 5, 15, 5)
+        
+        # 锁定按钮
+        btn_lock = QPushButton("锁定")
+        btn_lock.setFixedHeight(36)
+        btn_lock.clicked.connect(self.on_lock)
+        bottom_layout.addWidget(btn_lock)
+        
+        bottom_layout.addStretch()
+        
+        # Ollama状态显示（可点击刷新）
+        self.lbl_ollama_status = QLabel("AI模型: 检测中...")
+        self.lbl_ollama_status.setStyleSheet("color: #666; font-size: 11px;")
+        self.lbl_ollama_status.setToolTip("点击刷新AI模型状态")
+        self.lbl_ollama_status.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.lbl_ollama_status.mousePressEvent = lambda event: self._ai_manager.request_refresh()
+        # 绑定状态变化信号
+        self._ai_manager.state_changed.connect(self._on_ai_state_changed)
+        # 初始化显示
+        self._on_ai_state_changed(self._ai_manager.get_state())
+        bottom_layout.addWidget(self.lbl_ollama_status)
+        
+        bottom_layout.addSpacing(20)
+        
+        # 批量导入按钮
+        btn_import = QPushButton("批量导入")
+        btn_import.setFixedHeight(36)
+        btn_import.clicked.connect(self.on_batch_import)
+        bottom_layout.addWidget(btn_import)
+        
+        bottom_layout.addSpacing(10)
+        
+        # 导出按钮
+        btn_export = QPushButton("导出")
+        btn_export.setFixedHeight(36)
+        btn_export.clicked.connect(self.on_export)
+        bottom_layout.addWidget(btn_export)
+        
+        bottom_layout.addSpacing(10)
+        
+        # 回收站按钮
+        btn_recycle = QPushButton("回收站")
+        btn_recycle.setFixedHeight(36)
+        btn_recycle.clicked.connect(self.on_recycle_bin)
+        bottom_layout.addWidget(btn_recycle)
+        
+        bottom_layout.addSpacing(10)
+        
+        # 批量删除按钮
+        self.btn_batch_delete = QPushButton("批量删除")
+        self.btn_batch_delete.setFixedHeight(36)
+        self.btn_batch_delete.clicked.connect(self._enter_selection_mode)
+        bottom_layout.addWidget(self.btn_batch_delete)
+        
+        bottom_layout.addSpacing(10)
+        
+        # 同步按钮
+        btn_sync = QPushButton("同步到手机")
+        btn_sync.setFixedHeight(36)
+        btn_sync.clicked.connect(self.on_sync_to_mobile)
+        bottom_layout.addWidget(btn_sync)
+        
+        main_layout.addWidget(self.bottom_bar)
+        
+        # ==================== 选择模式底部工具栏 ====================
+        self.selection_bottom_bar = QWidget()
+        self.selection_bottom_bar.setStyleSheet("background-color: #f5f5f5; border-top: 1px solid #ddd;")
+        self.selection_bottom_bar.setFixedHeight(50)
+        selection_layout = QHBoxLayout(self.selection_bottom_bar)
+        selection_layout.setContentsMargins(15, 5, 15, 5)
+        
+        self.btn_sel_cancel = QPushButton("取消")
+        self.btn_sel_cancel.setFixedHeight(36)
+        self.btn_sel_cancel.clicked.connect(self._exit_selection_mode)
+        selection_layout.addWidget(self.btn_sel_cancel)
+        
+        selection_layout.addStretch()
+        
+        self.btn_sel_all = QPushButton("全选")
+        self.btn_sel_all.setFixedHeight(36)
+        self.btn_sel_all.clicked.connect(self._toggle_select_all)
+        selection_layout.addWidget(self.btn_sel_all)
+        
+        selection_layout.addSpacing(10)
+        
+        self.btn_sel_delete = QPushButton("删除(0)")
+        self.btn_sel_delete.setFixedHeight(36)
+        self.btn_sel_delete.setStyleSheet("""
+            QPushButton {
+                background-color: #f44336;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #d32f2f;
+            }
+        """)
+        self.btn_sel_delete.clicked.connect(self._execute_batch_delete)
+        selection_layout.addWidget(self.btn_sel_delete)
+        
+        self.selection_bottom_bar.hide()
+        main_layout.addWidget(self.selection_bottom_bar)
+    
+    def _build_alpha_nav(self):
+        """构建右侧字母索引导航条"""
+        nav = QWidget()
+        nav.setFixedWidth(40)
+        nav_layout = QVBoxLayout(nav)
+        nav_layout.setContentsMargins(0, 5, 0, 5)
+        nav_layout.setSpacing(3)
+        nav_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        letters = list('ABCDEFGHIJKLMNOPQRSTUVWXYZ#')
+        for letter in letters:
+            lbl = QLabel(letter)
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl.setStyleSheet("""
+                QLabel {
+                    color: #2196F3;
+                    font-size: 12px;
+                    font-weight: bold;
+                    padding: 2px 4px;
+                }
+                QLabel:hover {
+                    color: #1976D2;
+                    background-color: #e3f2fd;
+                    border-radius: 10px;
+                }
+            """)
+            lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+            lbl.setFixedSize(28, 20)
+            lbl.mousePressEvent = lambda e, l=letter: self._on_alpha_clicked(l)
+            nav_layout.addWidget(lbl)
+        
+        nav_layout.addStretch()
+        return nav
+    
+    def _get_alpha_key(self, text: str) -> str:
+        """获取文本的首字母（英文直接取，中文转拼音首字母，其他归为#）"""
+        if not text:
+            return '#'
+        first_char = text[0]
+        # 英文字母
+        if 'a' <= first_char.lower() <= 'z':
+            return first_char.upper()
+        # 中文 CJK 范围
+        if '\u4e00' <= first_char <= '\u9fff':
+            from core.pinyin import PinyinConverter
+            initials = PinyinConverter.get_pinyin_initials(first_char)
+            if initials:
+                return initials[0].upper()
+        # 数字、符号等其他字符归为 #
+        return '#'
+    
+    def _on_alpha_clicked(self, letter: str):
+        """点击字母导航，滚动到对应首字母的条目"""
+        for i in range(self.account_list.count()):
+            item = self.account_list.item(i)
+            data = item.data(Qt.ItemDataRole.UserRole)
+            if data is None:
+                continue
+            
+            key = ''
+            if self.current_vault == 'accounts':
+                app_name = getattr(data, 'app_name', '') or ''
+                key = self._get_alpha_key(app_name)
+            else:
+                title = getattr(data, 'title', '') or ''
+                if isinstance(data, dict):
+                    title = data.get('title', '') or ''
+                key = self._get_alpha_key(title)
+            
+            if key == letter:
+                self.account_list.scrollToItem(item, self.account_list.ScrollHint.PositionAtTop)
+                return
+    
+    def load_accounts(self):
+        """加载账号列表（搜索框为空时调用）"""
+        self.lbl_list_title.show()
+        self.account_list.clear()
+        
+        # 获取账号（使用缓存）
+        if self._cache_dirty or not self._cached_accounts:
+            if self.current_category == '全部':
+                self._cached_accounts = self.account_service.get_all_accounts()
+            else:
+                self._cached_accounts = self.account_service.get_accounts_by_category(self.current_category)
+            self._cache_dirty = False
+        
+        accounts = self._cached_accounts.copy()
+        
+        # 扁平列表显示（按拼音首字母排序：英文/中文排前面，数字符号归为#排最后）
+        if not accounts:
+            item = QListWidgetItem("暂无账号")
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
+            self.account_list.addItem(item)
+            return
+        
+        from core.pinyin import PinyinConverter
+        def _account_sort_key(acc):
+            text = acc.app_name or ''
+            if not text:
+                return (1, '')
+            fc = text[0]
+            # 字母或中文排前面（group=0），其他（数字/符号）归为#排最后（group=1）
+            if ('a' <= fc.lower() <= 'z') or ('\u4e00' <= fc <= '\u9fff'):
+                return (0, PinyinConverter.get_pinyin_initials(text).lower())
+            return (1, text.lower())
+        
+        accounts.sort(key=_account_sort_key)
+        
+        for idx, account in enumerate(accounts):
+            if idx % 20 == 0:
+                            item = QListWidgetItem()
+            item.setSizeHint(QSize(self.account_list.width() - 20, 56))
+            item.setData(Qt.ItemDataRole.UserRole, account)
+            self.account_list.addItem(item)
+            
+            widget = AccountListItem(account, selection_mode=self._selection_mode)
+            if self._selection_mode and account.id in self._selected_ids:
+                widget.set_checked(True)
+            self.account_list.setItemWidget(item, widget)
+        
+        # 更新标题
+        count = len(accounts)
+        self.lbl_list_title.setText(f"{self.current_category} ({count})")
+    
+    def _on_vault_tab_changed(self, tab_id: int):
+        """库切换事件"""
+        # 如果处于分类编辑模式或批量删除模式，先退出
+        if getattr(self, '_category_edit_mode', False):
+            self._on_category_edit_toggle()
+        if getattr(self, '_category_selection_mode', False):
+            self._on_category_batch_delete_toggle()
+        
+        if tab_id == 0:
+            self.current_vault = 'accounts'
+            self.lbl_list_title.setText("全部账号")
+            self.search_box.setPlaceholderText("搜索账号（支持拼音，如：wx=微信），按回车搜索...")
+            self.btn_add.setText("+ 添加账号")
+        else:
+            self.current_vault = 'urls'
+            self.lbl_list_title.setText("全部网址")
+            self.search_box.setPlaceholderText("搜索网址...")
+            self.btn_add.setText("+ 添加网址")
+        
+        # 重置对话上下文和欢迎语状态
+        self.ai_assistant.conversation_context.reset()
+        self._ai_welcome_shown = False
+        self.ai_assistant.clear_history('plan')
+        self.ai_assistant.clear_history('build')
+        self.result_area.clear()
+        self.thinking_area.clear()
+        self._ai_update_chat_display()
+        self._ai_show_welcome()
+        
+        # 更新分类导航
+        self._reload_categories()
+        # 加载列表
+        if self.current_vault == 'accounts':
+            self.load_accounts()
+        else:
+            self.load_urls()
+    
+    def _reload_categories(self):
+        """重新加载分类导航"""
+        self.category_list.clear()
+        if self.current_vault == 'accounts':
+            categories = self.account_service.get_categories()
+            # 获取各类别数量
+            counts = {}
+            for acc in self.account_service.get_all_accounts():
+                cat = acc.category or '其他'
+                counts[cat] = counts.get(cat, 0) + 1
+        else:
+            categories = self._url_service.get_categories()
+            counts = {}
+            for url in self._url_service.get_all_urls():
+                cat = getattr(url, 'category', '其他') or '其他'
+                counts[cat] = counts.get(cat, 0) + 1
+        
+        edit_mode = getattr(self, '_category_edit_mode', False)
+        cat_sel_mode = getattr(self, '_category_selection_mode', False)
+        for category in categories:
+            count = counts.get(category, 0)
+            # 过滤空分类（保留"全部"和"其他"，以及编辑/选择模式下的所有分类）
+            if not edit_mode and not cat_sel_mode and category not in ('全部', '其他') and count == 0:
+                continue
+            display_text = f"{category} ({count})" if category != '全部' else f"{category} ({sum(counts.values())})"
+            
+            if edit_mode:
+                # 编辑模式：用自定义 widget，≡ 精确右对齐
+                item = QListWidgetItem()
+                item.setSizeHint(QSize(self.category_list.width(), 40))
+                item.setData(Qt.ItemDataRole.UserRole, category)
+                if category == '全部':
+                    item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                self.category_list.addItem(item)
+                
+                widget = QWidget()
+                # 透明背景，让 QListWidgetItem 的选中/悬浮效果透出来
+                widget.setStyleSheet("""
+                    QWidget { background-color: transparent; }
+                    QLabel { background-color: transparent; }
+                """)
+                w_layout = QHBoxLayout(widget)
+                w_layout.setContentsMargins(15, 0, 10, 0)
+                w_layout.setSpacing(0)
+                lbl = QLabel(display_text)
+                lbl.setStyleSheet("color: #333; font-size: 13px;")
+                w_layout.addWidget(lbl, 1)
+                if category != '全部':
+                    handle = QLabel("≡")
+                    handle.setStyleSheet("color: #999; font-size: 14px;")
+                    w_layout.addWidget(handle)
+                # 鼠标事件穿透到 QListWidget，保证点击和拖拽正常工作
+                widget.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+                self.category_list.setItemWidget(item, widget)
+            elif cat_sel_mode:
+                # 批量删除模式：带复选框
+                item = QListWidgetItem(f"  {display_text}")
+                item.setData(Qt.ItemDataRole.UserRole, category)
+                if category == '全部':
+                    item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                else:
+                    item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                    if category in self._selected_categories:
+                        item.setCheckState(Qt.CheckState.Checked)
+                    else:
+                        item.setCheckState(Qt.CheckState.Unchecked)
+                self.category_list.addItem(item)
+            else:
+                # 正常模式：简单文本，保持原有选中高亮样式
+                item = QListWidgetItem(f"  {display_text}")
+                item.setData(Qt.ItemDataRole.UserRole, category)
+                self.category_list.addItem(item)
+        
+        self.category_list.setCurrentRow(0)
+        self.current_category = '全部'
+    
+    def _on_category_edit_toggle(self):
+        """切换分类编辑排序模式"""
+        self._category_edit_mode = not getattr(self, '_category_edit_mode', False)
+        
+        if self._category_edit_mode:
+            # 进入编辑模式
+            self.btn_category_sort.setText("✓")
+            self.btn_category_sort.setToolTip("完成")
+            self.category_list.setDragDropMode(QListWidget.DragDropMode.InternalMove)
+            # "全部" 不能拖拽
+            first_item = self.category_list.item(0)
+            if first_item:
+                first_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            # 刷新显示，添加拖拽手柄
+            self._reload_categories()
+        else:
+            # 退出编辑模式，保存顺序
+            self._save_category_order()
+            self.btn_category_sort.setText("☰")
+            self.btn_category_sort.setToolTip("编辑分类顺序")
+            self.category_list.setDragDropMode(QListWidget.DragDropMode.NoDragDrop)
+            # 刷新显示，移除拖拽手柄
+            self._reload_categories()
+    
+    def _save_category_order(self):
+        """保存分类自定义排序到数据库"""
+        orders = {}
+        idx = 0
+        for i in range(self.category_list.count()):
+            item = self.category_list.item(i)
+            category = item.data(Qt.ItemDataRole.UserRole)
+            if category == '全部':
+                continue
+            orders[category] = idx
+            idx += 1
+        
+        if self.current_vault == 'accounts':
+            self.account_service.save_category_orders(orders)
+        else:
+            self._url_service.save_category_orders(orders)
+    
+    def _on_category_batch_delete_toggle(self):
+        """切换类别批量删除模式"""
+        self._category_selection_mode = not getattr(self, '_category_selection_mode', False)
+        
+        if self._category_selection_mode:
+            # 进入批量删除模式，退出编辑模式
+            if getattr(self, '_category_edit_mode', False):
+                self._on_category_edit_toggle()
+            self.btn_category_batch_delete.setText("取消")
+            self.btn_category_sort.hide()
+            self.category_sel_bar.show()
+            self.category_list.setStyleSheet(self._category_list_checkbox_style)
+            self._selected_categories.clear()
+        else:
+            self.btn_category_batch_delete.setText("删除")
+            self.btn_category_sort.show()
+            self.category_sel_bar.hide()
+            self.category_list.setStyleSheet(self._category_list_normal_style)
+            self._selected_categories.clear()
+        self._reload_categories()
+        self._update_category_sel_bar()
+    
+    def _on_category_check_changed(self, item):
+        """类别复选框状态变化"""
+        category = item.data(Qt.ItemDataRole.UserRole)
+        if category == '全部':
+            return
+        if item.checkState() == Qt.CheckState.Checked:
+            self._selected_categories.add(category)
+        else:
+            self._selected_categories.discard(category)
+        self._update_category_sel_bar()
+    
+    def _update_category_sel_bar(self):
+        """更新类别批量删除操作栏"""
+        count = len(self._selected_categories)
+        self.btn_cat_sel_delete.setText(f"删除({count})")
+        # 更新全选按钮文字
+        total_selectable = self.category_list.count() - 1  # 排除"全部"
+        if count == total_selectable and total_selectable > 0:
+            self.btn_cat_sel_all.setText("取消全选")
+        else:
+            self.btn_cat_sel_all.setText("全选")
+    
+    def _toggle_category_select_all(self):
+        """全选/取消全选类别"""
+        total_selectable = self.category_list.count() - 1  # 排除"全部"
+        if len(self._selected_categories) == total_selectable and total_selectable > 0:
+            # 取消全选
+            self._selected_categories.clear()
+        else:
+            # 全选
+            self._selected_categories.clear()
+            for i in range(self.category_list.count()):
+                item = self.category_list.item(i)
+                category = item.data(Qt.ItemDataRole.UserRole)
+                if category != '全部':
+                    self._selected_categories.add(category)
+        self._reload_categories()
+        self._update_category_sel_bar()
+    
+    def _execute_category_batch_delete(self):
+        """执行类别批量删除：将选中类别下的所有条目移到'其他'（不进回收站）"""
+        if not self._selected_categories:
+            QMessageBox.information(self, "提示", "请先选择要删除的类别")
+            return
+        
+        reply = QMessageBox.question(
+            self, "确认删除",
+            f'确定删除选中的 {len(self._selected_categories)} 个类别？\n这些类别下的所有条目将移至"其他"。',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        
+        self._save_scroll_state()
+        
+        for category in self._selected_categories:
+            if self.current_vault == 'accounts':
+                self.account_service.delete_category(category)
+            else:
+                self._url_service.delete_category(category)
+        
+        self._selected_categories.clear()
+        self._on_category_batch_delete_toggle()  # 退出选择模式
+        self._cache_dirty = True
+        self._url_cache_dirty = True
+        self.current_category = '全部'
+        self._reload_categories()
+        if self.current_vault == 'accounts':
+            self.load_accounts()
+        else:
+            self.load_urls()
+        self._restore_scroll_state()
+        QMessageBox.information(self, "完成", f"已成功删除类别，相关条目已移至'其他'。")
+    
+    def load_urls(self):
+        """加载网址列表"""
+        self.lbl_list_title.show()
+        self.account_list.clear()
+        
+        if self._url_cache_dirty or not self._cached_urls:
+            if self.current_category == '全部':
+                self._cached_urls = self._url_service.get_all_urls()
+            else:
+                self._cached_urls = self._url_service.get_urls_by_category(self.current_category)
+            self._url_cache_dirty = False
+        
+        urls = self._cached_urls.copy()
+        
+        if not urls:
+            item = QListWidgetItem("暂无网址")
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
+            self.account_list.addItem(item)
+            return
+        
+        # 按拼音首字母排序（英文/中文排前面，数字符号归为#排最后）
+        from core.pinyin import PinyinConverter
+        def _url_sort_key(url_item):
+            text = (url_item.get('title', '') if isinstance(url_item, dict) else getattr(url_item, 'title', '')) or ''
+            if not text:
+                return (1, '')
+            fc = text[0]
+            if ('a' <= fc.lower() <= 'z') or ('\u4e00' <= fc <= '\u9fff'):
+                return (0, PinyinConverter.get_pinyin_initials(text).lower())
+            return (1, text.lower())
+        
+        urls.sort(key=_url_sort_key)
+        
+        # 扁平列表显示
+        for url_item in urls:
+            list_item = QListWidgetItem()
+            list_item.setSizeHint(QSize(self.account_list.width() - 20, 56))
+            list_item.setData(Qt.ItemDataRole.UserRole, url_item)
+            self.account_list.addItem(list_item)
+            
+            widget = URLListItem(url_item, selection_mode=self._selection_mode)
+            if self._selection_mode:
+                uid = getattr(url_item, 'id', None) or (url_item.get('id') if isinstance(url_item, dict) else None)
+                if uid and uid in self._selected_ids:
+                    widget.set_checked(True)
+            self.account_list.setItemWidget(list_item, widget)
+        
+        count = len(urls)
+        self.lbl_list_title.setText(f"{self.current_category} ({count})")
+    
+    def _save_scroll_state(self):
+        """保存当前列表的滚动位置和选中项ID"""
+        if self.current_vault == 'accounts':
+            list_widget = self.account_list
+            cached = self._cached_accounts
+        else:
+            list_widget = self.account_list
+            cached = self._cached_urls
+        
+        self._scroll_state = {
+            'vault_type': self.current_vault,
+            'selected_id': None,
+            'scroll_value': list_widget.verticalScrollBar().value()
+        }
+        
+        current_row = list_widget.currentRow()
+        if 0 <= current_row < len(cached):
+            item = cached[current_row]
+            self._scroll_state['selected_id'] = getattr(item, 'id', None) or (item.get('id') if isinstance(item, dict) else None)
+    
+    def _restore_scroll_state(self):
+        """恢复滚动位置和选中项"""
+        if not hasattr(self, '_scroll_state'):
+            return
+        if self._scroll_state.get('vault_type') != self.current_vault:
+            return
+        
+        if self.current_vault == 'accounts':
+            list_widget = self.account_list
+            cached = self._cached_accounts
+        else:
+            list_widget = self.account_list
+            cached = self._cached_urls
+        
+        selected_id = self._scroll_state.get('selected_id')
+        if selected_id is not None:
+            for idx, item in enumerate(cached):
+                item_id = getattr(item, 'id', None) or (item.get('id') if isinstance(item, dict) else None)
+                if item_id == selected_id:
+                    list_widget.setCurrentRow(idx)
+                    list_widget.scrollToItem(list_widget.item(idx), QListWidget.ScrollHint.PositionAtCenter)
+                    return
+        
+        scroll_value = self._scroll_state.get('scroll_value', 0)
+        list_widget.verticalScrollBar().setValue(scroll_value)
+    
+    def on_account_double_clicked(self, item):
+        """双击账号/网址条目打开编辑弹窗"""
+        self.on_account_clicked(item)
+    
+    def _display_url_search_results(self, results):
+        """展示网址搜索结果"""
+        self.account_list.clear()
+        if not results:
+            item = QListWidgetItem("未找到匹配的网址")
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
+            self.account_list.addItem(item)
+            self.lbl_list_title.setText("搜索结果 (0)")
+            return
+        
+        for url_item in results:
+            list_item = QListWidgetItem()
+            list_item.setSizeHint(QSize(self.account_list.width() - 20, 56))
+            list_item.setData(Qt.ItemDataRole.UserRole, url_item)
+            self.account_list.addItem(list_item)
+            widget = URLListItem(url_item, selection_mode=self._selection_mode)
+            if self._selection_mode:
+                uid = getattr(url_item, 'id', None) or (url_item.get('id') if isinstance(url_item, dict) else None)
+                if uid and uid in self._selected_ids:
+                    widget.set_checked(True)
+            self.account_list.setItemWidget(list_item, widget)
+        
+        self.lbl_list_title.setText(f"搜索结果 ({len(results)})")
+    
+    def on_category_selected(self, item):
+        """分类选择事件"""
+        self.current_category = item.data(Qt.ItemDataRole.UserRole)
+        # 切换分类时强制刷新缓存
+        self._cache_dirty = True
+        self._url_cache_dirty = True
+        if self.current_vault == 'accounts':
+            self.load_accounts()
+        else:
+            self.load_urls()
+    
+    def _on_category_context_menu(self, pos: QPoint):
+        """分类右键菜单：点击条目显示重命名/删除；点击空白处显示新建类别"""
+        item = self.category_list.itemAt(pos)
+        
+        if not item:
+            # 空白处：新建类别
+            menu = QMenu(self)
+            action_new = menu.addAction("➕ 新建类别")
+            action = menu.exec(self.category_list.mapToGlobal(pos))
+            
+            if action == action_new:
+                new_name, ok = QInputDialog.getText(self, "新建类别", "类别名称：")
+                if ok and new_name and new_name.strip():
+                    new_name = new_name.strip()
+                    if new_name in ('全部', '其他'):
+                        QMessageBox.warning(self, "提示", "不能使用保留名称")
+                        return
+                    if self.current_vault == 'accounts':
+                        success = self.account_service.add_category(new_name)
+                    else:
+                        success = self._url_service.add_category(new_name)
+                    if success:
+                        self._reload_categories()
+                        QMessageBox.information(self, "成功", f'类别 "{new_name}" 已创建')
+                    else:
+                        QMessageBox.warning(self, "提示", "该类别已存在")
+            return
+        
+        category = item.data(Qt.ItemDataRole.UserRole)
+        if category == '全部':
+            return  # 全部分类不提供操作
+        
+        menu = QMenu(self)
+        action_rename = menu.addAction("📝 重命名")
+        action_delete = menu.addAction("🗑️ 删除")
+        
+        action = menu.exec(self.category_list.mapToGlobal(pos))
+        
+        if action == action_rename:
+            new_name, ok = QInputDialog.getText(self, "重命名分类", "新名称：", text=category)
+            if ok and new_name and new_name != category:
+                if self.current_vault == 'accounts':
+                    self.account_service.rename_category(category, new_name)
+                else:
+                    self._url_service.rename_category(category, new_name)
+                self._reload_categories()
+                self._cache_dirty = True
+                self._url_cache_dirty = True
+                if self.current_category == category:
+                    self.current_category = new_name
+                self.load_accounts() if self.current_vault == 'accounts' else self.load_urls()
+        
+        elif action == action_delete:
+            # 获取该分类下条目数量
+            if self.current_vault == 'accounts':
+                count = len(self.account_service.get_accounts_by_category(category))
+            else:
+                count = len(self._url_service.get_urls_by_category(category))
+            
+            reply = QMessageBox.question(
+                self, "删除分类",
+                f'删除分类 "{category}"？\n该分类下的 {count} 个条目将移至"其他"。',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                if self.current_vault == 'accounts':
+                    self.account_service.delete_category(category)
+                else:
+                    self._url_service.delete_category(category)
+                self._reload_categories()
+                self._cache_dirty = True
+                self._url_cache_dirty = True
+                self.current_category = '全部'
+                self.load_accounts() if self.current_vault == 'accounts' else self.load_urls()
+    
+    def _enter_selection_mode(self):
+        """进入批量选择模式"""
+        self._selection_mode = True
+        self._selected_ids.clear()
+        self._normal_title = self.lbl_list_title.text()
+        
+        # 遍历现有 item，只切换 checkbox 显示状态，不再重建列表
+        for i in range(self.account_list.count()):
+            item = self.account_list.item(i)
+            widget = self.account_list.itemWidget(item)
+            if widget and hasattr(widget, 'set_selection_mode'):
+                widget.set_selection_mode(True)
+        
+        self._update_bottom_bar_for_selection()
+    
+    def _exit_selection_mode(self):
+        """退出批量选择模式"""
+        self._selection_mode = False
+        self._selected_ids.clear()
+        
+        # 遍历现有 item，只隐藏 checkbox，不再重建列表
+        for i in range(self.account_list.count()):
+            item = self.account_list.item(i)
+            widget = self.account_list.itemWidget(item)
+            if widget and hasattr(widget, 'set_selection_mode'):
+                widget.set_selection_mode(False)
+                if hasattr(widget, 'set_checked'):
+                    widget.set_checked(False)
+        
+        self.lbl_list_title.setText(self._normal_title)
+        self._update_bottom_bar_for_normal()
+    
+    def _update_bottom_bar_for_selection(self):
+        """更新底部工具栏为选择模式"""
+        count = len(self._selected_ids)
+        self.btn_sel_delete.setText(f"删除({count})")
+        self.lbl_list_title.setText(f"已选择 {count} 项")
+        # 全选按钮文字切换
+        total = len(self._cached_accounts) if self.current_vault == 'accounts' else len(self._cached_urls)
+        self.btn_sel_all.setText("取消全选" if count == total and total > 0 else "全选")
+        self.bottom_bar.hide()
+        self.selection_bottom_bar.show()
+    
+    def _update_bottom_bar_for_normal(self):
+        """恢复底部工具栏为正常模式"""
+        self.bottom_bar.show()
+        self.selection_bottom_bar.hide()
+    
+    def _toggle_select_all(self):
+        """全选/取消全选"""
+        if self.current_vault == 'accounts':
+            accounts = self._cached_accounts
+            if len(self._selected_ids) == len(accounts):
+                self._selected_ids.clear()
+            else:
+                self._selected_ids = {acc.id for acc in accounts if acc.id}
+        else:
+            urls = self._cached_urls
+            if len(self._selected_ids) == len(urls):
+                self._selected_ids.clear()
+            else:
+                self._selected_ids = set()
+                for u in urls:
+                    uid = getattr(u, 'id', None) or (u.get('id') if isinstance(u, dict) else None)
+                    if uid:
+                        self._selected_ids.add(uid)
+        # 刷新复选框状态
+        self._update_selection_checkboxes()
+        self._update_bottom_bar_for_selection()
+    
+    def _update_selection_checkboxes(self):
+        """更新列表中所有复选框的显示状态"""
+        for i in range(self.account_list.count()):
+            item = self.account_list.item(i)
+            data = item.data(Qt.ItemDataRole.UserRole)
+            if not data:
+                continue
+            data_id = getattr(data, 'id', None) or (data.get('id') if isinstance(data, dict) else None)
+            if data_id is not None:
+                widget = self.account_list.itemWidget(item)
+                if widget and hasattr(widget, 'set_checked'):
+                    widget.set_checked(data_id in self._selected_ids)
+    
+    def _execute_batch_delete(self):
+        """执行批量删除"""
+        if not self._selected_ids:
+            QMessageBox.information(self, "提示", "请先选择要删除的条目")
+            return
+        
+        reply = QMessageBox.question(
+            self, "确认删除",
+            f"确定删除已选中的 {len(self._selected_ids)} 个条目？\n删除后将移至回收站。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        
+        self._save_scroll_state()
+        
+        deleted = 0
+        for item_id in self._selected_ids:
+            try:
+                if self.current_vault == 'accounts':
+                    account = self.account_service.get_account(item_id)
+                    if account:
+                        self.db.soft_delete_account(item_id, account.to_dict())
+                        deleted += 1
+                else:
+                    url_item = self._url_service.get_url(item_id)
+                    if url_item:
+                        # 网址回收站存在主数据库中：先备份到主库回收站，再删除网址表记录
+                        self.db.soft_delete_url(item_id, url_item.to_dict())
+                        self._url_db.delete_url(item_id)
+                        deleted += 1
+            except Exception as e:
+                print(f"[BatchDelete] Failed to delete {item_id}: {e}")
+        
+        self._selection_mode = False
+        self._selected_ids.clear()
+        self._update_bottom_bar_for_normal()
+        self._cache_dirty = True
+        self._url_cache_dirty = True
+        if self.current_vault == 'accounts':
+            self.load_accounts()
+        else:
+            self.load_urls()
+        self._restore_scroll_state()
+        self._reload_categories()
+        
+        QMessageBox.information(self, "完成", f"已成功删除 {deleted} 个条目至回收站。")
+    
+    def on_account_clicked(self, item):
+        """账号/网址点击事件"""
+        if self._selection_mode:
+            # 选择模式下：切换复选框
+            data = item.data(Qt.ItemDataRole.UserRole)
+            if data and hasattr(data, 'id'):
+                widget = self.account_list.itemWidget(item)
+                if widget and hasattr(widget, 'set_checked') and hasattr(widget, 'is_checked'):
+                    new_state = not widget.is_checked()
+                    widget.set_checked(new_state)
+                    if new_state:
+                        self._selected_ids.add(data.id)
+                    else:
+                        self._selected_ids.discard(data.id)
+                    self._update_bottom_bar_for_selection()
+            elif data and isinstance(data, dict) and 'id' in data:
+                widget = self.account_list.itemWidget(item)
+                if widget and hasattr(widget, 'set_checked') and hasattr(widget, 'is_checked'):
+                    new_state = not widget.is_checked()
+                    widget.set_checked(new_state)
+                    if new_state:
+                        self._selected_ids.add(data['id'])
+                    else:
+                        self._selected_ids.discard(data['id'])
+                    self._update_bottom_bar_for_selection()
+            return
+        
+        data = item.data(Qt.ItemDataRole.UserRole)
+        if not data:
+            return
+        if self.current_vault == 'accounts':
+            self.show_account_detail(data)
+        else:
+            self.show_url_detail(data)
+    
+    def show_account_detail(self, account: Account):
+        """显示账号详情"""
+        self.selected_account = account
+        
+        self._save_scroll_state()
+        
+        # 创建详情弹窗
+        t0 = time.perf_counter()
+        dialog = AccountDialog(self.db, account, parent=self)
+        t1 = time.perf_counter()
+        print(f"[Perf] AccountDialog construct: {(t1-t0)*1000:.1f} ms")
+        result = dialog.exec()
+        t2 = time.perf_counter()
+        print(f"[Perf] AccountDialog exec: {(t2-t1)*1000:.1f} ms")
+        if result == AccountDialog.DialogCode.Accepted:
+            self._cache_dirty = True
+            self.load_accounts()
+            self._restore_scroll_state()
+            self._reload_categories()
+    
+    def show_url_detail(self, url_item):
+        """显示网址详情/编辑"""
+        from models.url_item import URLItem
+        
+        if isinstance(url_item, dict):
+            url_item = URLItem.from_dict(url_item)
+        
+        self._save_scroll_state()
+        
+        dialog = URLEditDialog(self._url_service, url_item, parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._url_cache_dirty = True
+            self.load_urls()
+            self._restore_scroll_state()
+            self._reload_categories()
+    
+    def on_add_item(self):
+        """添加账号/网址"""
+        self._save_scroll_state()
+        if self.current_vault == 'accounts':
+            t0 = time.perf_counter()
+            dialog = AccountDialog(self.db, parent=self)
+            t1 = time.perf_counter()
+            print(f"[Perf] AccountDialog construct: {(t1-t0)*1000:.1f} ms")
+            result = dialog.exec()
+            t2 = time.perf_counter()
+            print(f"[Perf] AccountDialog exec: {(t2-t1)*1000:.1f} ms")
+            if result == AccountDialog.DialogCode.Accepted:
+                self._cache_dirty = True
+                self.load_accounts()
+                self._restore_scroll_state()
+                self._reload_categories()
+        else:
+            from models.url_item import URLItem
+            dialog = URLEditDialog(self._url_service, URLItem(), parent=self)
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                self._url_cache_dirty = True
+                self.load_urls()
+                self._restore_scroll_state()
+                self._reload_categories()
+    
+    def on_search(self):
+        """搜索 - 按回车触发
+        
+        分层搜索策略：
+        1. 精确区：精确匹配 + 拼音匹配（同步，立即渲染）
+        2. AI增强区：大模型语义推理（异步，结果返回后追加）
+        """
+        text = self.search_box.text().strip()
+        
+        if not text:
+            if self.current_vault == 'accounts':
+                self.load_accounts()
+            else:
+                self.load_urls()
+            return
+        
+        # 搜索框仅使用精确匹配
+        
+        if self.current_vault == 'accounts':
+            # 确保缓存最新
+            if not self._cached_accounts or self._cache_dirty:
+                self._cached_accounts = self.account_service.get_all_accounts()
+                self._cache_dirty = False
+            
+            all_accounts = self._cached_accounts
+            query = text
+            
+            # 同步搜索：精确 + 拼音
+            sync_results = self.search_service.search(query, all_accounts)
+            exact_results = [r for r in sync_results if r.match_type in ('exact', 'pinyin')]
+            
+            # 渲染搜索结果
+            self._display_search_results(exact_results, all_accounts=all_accounts)
+        else:
+            # 网址搜索保持不变
+            results = self._url_service.search_urls(text)
+            self._display_url_search_results(results)
+    
+    def _display_search_results(self, exact_results, all_accounts):
+        """展示搜索结果：精确匹配 + 拼音匹配"""
+        self.account_list.clear()
+        
+        total_displayed = 0
+        
+        # ---------- 精确匹配区 ----------
+        if exact_results:
+            header = QListWidgetItem("  搜索结果")
+            header.setFlags(Qt.ItemFlag.NoItemFlags)
+            font = QFont()
+            font.setBold(True)
+            font.setPointSize(11)
+            header.setFont(font)
+            header.setBackground(QColor("#e3f2fd"))
+            header.setForeground(QColor("#1976D2"))
+            self.account_list.addItem(header)
+            
+            for result in exact_results[:30]:
+                item = QListWidgetItem()
+                item.setSizeHint(QSize(self.account_list.width() - 20, 56))
+                item.setData(Qt.ItemDataRole.UserRole, result.account)
+                self.account_list.addItem(item)
+                
+                # 拼音匹配添加标识
+                badges = []
+                if result.match_type == 'pinyin':
+                    badges.append(("拼音", "#FF9800"))
+                
+                widget = AccountListItem(result.account, badges=badges, selection_mode=self._selection_mode)
+                if self._selection_mode and result.account.id in self._selected_ids:
+                    widget.set_checked(True)
+                self.account_list.setItemWidget(item, widget)
+                total_displayed += 1
+        
+        # ---------- 无结果提示 ----------
+        if total_displayed == 0:
+            item = QListWidgetItem("未找到匹配的账号")
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
+            self.account_list.addItem(item)
+        
+        # 更新标题
+        exact_count = len(exact_results)
+        title_parts = [f"搜索结果"]
+        if exact_count > 0:
+            title_parts.append(f"共 {exact_count} 个")
+        
+        self.lbl_list_title.setText("  |  ".join(title_parts))
+    
+    def _ensure_ollama_available(self) -> bool:
+        """
+        确保 Ollama 服务可用。
+        如果不可用，弹窗提醒用户手动启动，提供重试机制。
+        
+        Returns:
+            True 表示 Ollama 可用，False 表示用户取消或未启动
+        """
+        if self._ai_manager.is_available():
+            return True
+        
+        reply = QMessageBox.question(
+            self,
+            "AI 服务未启动",
+            "AI增强搜索需要本地 Ollama 服务。\n\n"
+            "请按以下步骤操作：\n"
+            "1. 打开终端或命令提示符\n"
+            "2. 运行命令：ollama run gemma4:4b\n"
+            "3. 保持窗口运行\n\n"
+            "完成后点击\"重试\"，或点击\"取消\"仅使用精确搜索。",
+            QMessageBox.StandardButton.Retry | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Retry
+        )
+        
+        if reply == QMessageBox.StandardButton.Retry:
+            # 重新检测
+            if self._ai_manager.is_available():
+                return True
+            else:
+                QMessageBox.warning(
+                    self,
+                    "仍未检测到",
+                    "Ollama 服务仍未启动，请确认已正确运行命令后重试。\n"
+                    "提示：首次启动模型可能需要下载，请耐心等待。"
+                )
+        
+        return False
+    
+    def on_url_manager(self):
+        """切换到网址库"""
+        self.tab_group.button(1).setChecked(True)
+        self._on_vault_tab_changed(1)
+    
+    def on_batch_import(self):
+        """批量导入账号"""
+        from ui.import_dialog import ImportDialog
+        
+        self._save_scroll_state()
+        
+        dialog = ImportDialog(self.account_service, parent=self)
+        result = dialog.exec()
+        
+        if result == ImportDialog.DialogCode.Accepted:
+            # 刷新账号列表
+            self._cache_dirty = True
+            self.load_accounts()
+            self._restore_scroll_state()
+            self._reload_categories()
+    
+    def on_export(self):
+        """导出账号/网址"""
+        dialog = ExportDialog(self.db, self.account_service, self.export_service,
+                              vault_type=self.current_vault, url_service=self._url_service, parent=self)
+        dialog.exec()
+    
+    def _apply_theme(self, theme_name: str):
+        """应用主题（由设置对话框触发）"""
+        from core.theme_manager import apply_theme_to_app
+        app = QApplication.instance()
+        if app:
+            apply_theme_to_app(app, theme_name)
+    
+    def on_settings(self):
+        """打开设置对话框"""
+        if not self.config_path:
+            QMessageBox.warning(self, "提示", "配置文件路径未设置")
+            return
+        
+        t0 = time.perf_counter()
+        dialog = SettingsDialog(
+            self.db, self.config_path,
+            parent=self
+        )
+        t1 = time.perf_counter()
+        print(f"[Perf] SettingsDialog construct: {(t1-t0)*1000:.1f} ms")
+        
+        # 连接主题切换信号
+        dialog.theme_changed.connect(self._apply_theme)
+        
+        result = dialog.exec()
+        t2 = time.perf_counter()
+        print(f"[Perf] SettingsDialog exec: {(t2-t1)*1000:.1f} ms")
+    
+    def _on_ai_state_changed(self, state):
+        """AI 状态变化回调：更新底部状态栏"""
+        if state.status == AIStatus.ONLINE:
+            self.lbl_ollama_status.setText(f"AI模型: {state.model_name} 运行中")
+            self.lbl_ollama_status.setStyleSheet("color: #4CAF50; font-size: 11px;")
+        elif state.status == AIStatus.OFFLINE:
+            self.lbl_ollama_status.setText("AI模型: 未连接")
+            self.lbl_ollama_status.setStyleSheet("color: #f44336; font-size: 11px;")
+        elif state.status == AIStatus.ERROR:
+            self.lbl_ollama_status.setText("AI模型: 错误")
+            self.lbl_ollama_status.setStyleSheet("color: #f44336; font-size: 11px;")
+        else:
+            self.lbl_ollama_status.setText("AI模型: 检测中...")
+            self.lbl_ollama_status.setStyleSheet("color: #666; font-size: 11px;")
+
+    def _show_ollama_warning(self, feature_name: str = "此功能"):
+        """显示Ollama未启动的警告"""
+        QMessageBox.warning(
+            self,
+            "AI服务不可用",
+            f"{feature_name}需要本地Ollama服务支持。\n\n"
+            f"请按以下步骤操作：\n"
+            f"1. 安装Ollama：https://ollama.com/download\n"
+            f"2. 启动Ollama并加载模型：ollama run gemma4:4b\n"
+            f"3. 保持终端窗口运行\n\n"
+            f"提示：未开启Ollama时，软件仍可使用基础功能。"
+        )
+    
+    # ==================== 炽阳 面板 ====================
+    
+    def _check_conversation_context_expiry(self):
+        """检查对话上下文是否过期，过期则重置"""
+        if hasattr(self, 'ai_assistant') and self.ai_assistant.conversation_context.is_expired():
+            self.ai_assistant.conversation_context.reset()
+    
+    def _on_ai_mode_changed(self, mode: str):
+        """切换 AI 模式：plan / build"""
+        if getattr(self, '_mode_change_guard', False):
+            return
+        self._mode_change_guard = True
+        try:
+            if mode == 'build':
+                reply = QMessageBox.question(
+                    self, "切换到 Build 模式",
+                    "切换到 Build 模式后，AI 可以执行删除、新增等写操作。\n\n"
+                    "所有操作在执行前都会要求你确认，是否继续？",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    self.btn_mode_plan.setChecked(True)
+                    self.btn_mode_build.setChecked(False)
+                    self._ai_mode = 'plan'
+                    return
+            
+            self._ai_mode = mode
+            # 重置对话上下文
+            self.ai_assistant.conversation_context.reset()
+            if mode == 'plan':
+                self.btn_mode_plan.setChecked(True)
+                self.btn_mode_build.setChecked(False)
+                self.lbl_mode_hint.setText("只提供建议，不操作数据")
+                self.lbl_mode_hint.setStyleSheet("color: #1976D2; font-size: 10px;")
+                # 更新横幅
+                self.ai_mode_banner.setText("🔍 规划模式 — 只读查询")
+                self.ai_mode_banner.setStyleSheet("""
+                    QLabel {
+                        background-color: #2196F3;
+                        color: white;
+                        border-radius: 4px;
+                        font-weight: bold;
+                        font-size: 12px;
+                    }
+                """)
+                self.ai_input.setPlaceholderText("输入指令，如：查找支付类账号")
+            else:
+                self.btn_mode_plan.setChecked(False)
+                self.btn_mode_build.setChecked(True)
+                self.lbl_mode_hint.setText("可执行操作，危险操作需确认")
+                self.lbl_mode_hint.setStyleSheet("color: #e65100; font-size: 10px;")
+                # 更新横幅
+                self.ai_mode_banner.setText("🔧 构建模式 — 可执行写操作（整理 / 备注 / 删除 / 新增）")
+                self.ai_mode_banner.setStyleSheet("""
+                    QLabel {
+                        background-color: #FF9800;
+                        color: white;
+                        border-radius: 4px;
+                        font-weight: bold;
+                        font-size: 12px;
+                    }
+                """)
+                self.ai_input.setPlaceholderText("Build 模式：可以执行增删改操作，所有变更需确认后生效")
+        finally:
+            self._mode_change_guard = False
+    
+    def _is_ai_action_safe(self, action: str) -> bool:
+        """判断 AI 操作是否安全（无需确认）"""
+        return action in ('search', 'filter', 'list', 'explain')
+    
+    def _on_ai_confirm_execute(self):
+        """用户确认执行待处理的操作"""
+        if not self._pending_action:
+            return
+        action, params, query = self._pending_action
+        self._pending_action = None
+        self.ai_confirm_widget.hide()
+        
+        # 执行操作
+        if action in ('search', 'filter', 'list'):
+            action_result = self.ai_assistant.execute_action(action, params, self._cached_accounts)
+            matched = action_result.get('matched_accounts', [])
+            if matched:
+                self._ai_display_results_in_list(matched, query)
+        
+        # 在对话中追加执行结果
+        from services.ai_assistant_service import ConversationMessage
+        from datetime import datetime
+        self.ai_assistant._history.append(ConversationMessage(
+            role='assistant',
+            content="✅ 已按您的确认执行操作。",
+            timestamp=datetime.now().strftime("%H:%M:%S")
+        ))
+        self._ai_update_chat_display()
+    
+    def _on_ai_confirm_cancel(self):
+        """用户取消待处理的操作"""
+        self._pending_action = None
+        self.ai_confirm_widget.hide()
+        
+        from services.ai_assistant_service import ConversationMessage
+        from datetime import datetime
+        self.ai_assistant._history.append(ConversationMessage(
+            role='assistant',
+            content="❌ 操作已取消。",
+            timestamp=datetime.now().strftime("%H:%M:%S")
+        ))
+        self._ai_update_chat_display()
+    
+    def on_ai_toggle_panel(self):
+        """展开/收起 炽阳 面板"""
+        self._ai_panel_visible = not self._ai_panel_visible
+        
+        if self._ai_panel_visible:
+            self.ai_panel.setMaximumWidth(600)
+            self.ai_panel.setMinimumWidth(400)
+            self.btn_ai_toggle.setStyleSheet("""
+                QPushButton {
+                    background-color: #E55A2B;
+                    color: white;
+                    border: none;
+                    border-radius: 4px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #D84315;
+                }
+            """)
+            # 如果对话区为空，显示欢迎语
+            if not self.result_area.toPlainText().strip():
+                self._ai_show_welcome()
+        else:
+            self.ai_panel.setMaximumWidth(0)
+            self.ai_panel.setMinimumWidth(0)
+            self.btn_ai_toggle.setStyleSheet("""
+                QPushButton {
+                    background-color: #FF6B35;
+                    color: white;
+                    border: none;
+                    border-radius: 4px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #E55A2B;
+                }
+            """)
+    
+    def _ai_show_welcome(self):
+        """显示 炽阳 个性化欢迎语（纯文本，根据当前库切换内容）"""
+        if self._ai_welcome_shown:
+            return
+        self._ai_welcome_shown = True
+        if self.current_vault == 'accounts':
+            welcome_text = (
+                "🦁🔥 密码库模式\n\n"
+                "炽阳 已觉醒\n\n"
+                "你好，狮子座的主人。\n"
+                "我是你的守护 AI，诞生于火焰与光芒之中。\n"
+                "为你的密码王国扫清迷雾。\n\n"
+                "🎯 试试这样问：\n"
+                "- 找出所有支付类账号\n"
+                "- 哪些账号还没分类？\n"
+                "- 帮我重新整理分类\n"
+                "- 给银行卡加上备注\n\n"
+                "♌ 炽阳只读取元数据，绝不触碰密码"
+            )
+        else:
+            welcome_text = (
+                "🦁🔥 网址库模式\n\n"
+                "炽阳 已觉醒\n\n"
+                "你好，狮子座的主人。\n"
+                "我是你的守护 AI，诞生于火焰与光芒之中。\n"
+                "为你的网址王国扫清迷雾。\n\n"
+                "🎯 试试这样问：\n"
+                "- 找出和青岛大学有关的网址\n"
+                "- 把开发工具类的网址列出来\n"
+                "- 帮我整理网址分类\n"
+                "- 给这个网址加上备注\n\n"
+                "♌ 炽阳只读取元数据，绝不触碰密码"
+            )
+        self.result_area.setPlainText(welcome_text)
+    
+    def _update_send_button_style(self, is_stop: bool):
+        """切换发送按钮样式：发送(橙色) / 停止(灰色)"""
+        if is_stop:
+            self.btn_ai_send.setText("停止")
+            self.btn_ai_send.setStyleSheet("""
+                QPushButton {
+                    background-color: #9E9E9E;
+                    color: white;
+                    border: none;
+                    border-radius: 4px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #757575;
+                }
+            """)
+        else:
+            self.btn_ai_send.setText("发送")
+            self.btn_ai_send.setStyleSheet("""
+                QPushButton {
+                    background-color: #FF6B35;
+                    color: white;
+                    border: none;
+                    border-radius: 4px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #E55A2B;
+                }
+            """)
+    
+    def _on_ai_send_or_stop(self):
+        """发送/停止按钮的统一入口"""
+        if self._ai_query_running:
+            self._on_ai_stop_query()
+        else:
+            self.on_ai_send_message()
+    
+    def _on_ai_stop_query(self):
+        """用户手动停止当前 AI 查询"""
+        self._ai_query_cancelled = True
+        self._ai_query_running = False
+        self._update_send_button_style(False)
+        
+        # 停止线程
+        if hasattr(self, '_ai_thread') and self._ai_thread:
+            self._ai_thread.cancel()
+        
+        # 隐藏流式输出区域
+        self.thinking_area.hide()
+        self.ai_action_buttons.show()
+        
+        # 在对话中追加取消提示
+        from services.ai_assistant_service import ConversationMessage
+        from datetime import datetime
+        self.ai_assistant._history.append(ConversationMessage(
+            role='system', content='⏹ 用户已停止本次查询',
+            timestamp=datetime.now().strftime("%H:%M:%S")
+        ))
+        self._ai_update_chat_display()
+    
+    def _on_thinking_token(self, token: str):
+        """接收 thinking token，实时追加到思考区
+        
+        安全保护：如果查询已结束（_ai_query_running=False），忽略延迟到达的 token，
+        防止 C++ 层内存损坏（0xC0000409）。
+        """
+        if not getattr(self, '_ai_query_running', False):
+            return
+        try:
+            self.thinking_area.insertPlainText(token)
+            scrollbar = self.thinking_area.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
+        except Exception as e:
+            print(f"[MainWindow] _on_thinking_token error: {e}")
+    
+    def _on_result_token(self, segment: str):
+        """接收 result 段落，追加到对话历史并刷新 UI
+        
+        分段输出模式：将段落追加到历史最后一条 assistant 消息，
+        然后调用 _ai_update_chat_display() 重新渲染（使用 setHtml，避免 insertPlainText 冲突）。
+        """
+        if not getattr(self, '_ai_query_running', False):
+            return
+        try:
+            # 将段落追加到历史最后一条 assistant 消息
+            if (self.ai_assistant._history and 
+                self.ai_assistant._history[-1].role == 'assistant'):
+                self.ai_assistant._history[-1].content += segment
+                # 重新渲染 UI（setHtml 全量刷新，安全）
+                self._ai_update_chat_display()
+            else:
+                # 如果没有 assistant 消息（异常情况），直接忽略
+                print(f"[MainWindow] _on_result_token: no assistant msg to append")
+        except Exception as e:
+            print(f"[MainWindow] _on_result_token error: {e}")
+    
+    def _on_ai_copy_result(self):
+        """复制 AI 回复到剪贴板"""
+        text = self.result_area.toPlainText()
+        if text:
+            clipboard = QApplication.clipboard()
+            clipboard.setText(text)
+            self._append_ai_system_msg("✅ 已复制到剪贴板")
+    
+    def _on_ai_regenerate(self):
+        """重新生成上一条回复"""
+        query = getattr(self, '_current_ai_query', '')
+        if query:
+            self.ai_input.setPlainText(query)
+            self.on_ai_send_message()
+    
+    def _on_action_preview_confirmed(self):
+        """Build 模式：用户确认执行操作预览（使用事务提交）"""
+        import traceback
+        print("[MainWindow] _on_action_preview_confirmed called")
+        self.action_preview_widget.hide()
+        if not self._pending_action:
+            print("[MainWindow] No pending action, returning")
+            return
+        action, params, query = self._pending_action
+        self._pending_action = None
+        
+        self._save_scroll_state()
+        
+        # 执行操作（事务方式）
+        try:
+            print(f"[MainWindow] Building action_preview for action={action}")
+            # 1. 生成结构化操作预览（根据当前 vault 传正确缓存）
+            context_items = self._cached_accounts if self.current_vault == 'accounts' else self._cached_urls
+            action_preview = self.ai_assistant.build_action_preview(
+                action, params, context_items, self.current_vault
+            )
+            print(f"[MainWindow] action_preview built: preview_items={len(action_preview.get('preview_items', []))}")
+            
+            # 1.5 过滤用户取消勾选的条目
+            selected_items = self.action_preview_widget.get_selected_items()
+            action_preview['preview_items'] = selected_items
+            action_preview['affected_count'] = len(selected_items)
+            print(f"[MainWindow] User selected {len(selected_items)} items after filtering")
+            
+            # 2. 执行操作
+            print("[MainWindow] Calling execute_build_action_with_transaction")
+            result = self.ai_assistant.execute_build_action_with_transaction(
+                action_preview, user_query=query
+            )
+            print(f"[MainWindow] Execution result: success={result.get('success')}, affected={result.get('affected_count')}")
+            
+            # 处理超量删除的二次确认
+            if result.get('needs_confirmation'):
+                reply = QMessageBox.question(
+                    self, "二次确认",
+                    result.get('message', '即将删除大量记录，是否确认执行？'),
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                )
+                if reply == QMessageBox.StandardButton.Yes:
+                    action_preview['_force'] = True
+                    result = self.ai_assistant.execute_build_action_with_transaction(
+                        action_preview, user_query=query
+                    )
+                else:
+                    result = {'success': False, 'error': '用户取消执行'}
+            
+            if result.get('success'):
+                item_name = '账号' if self.current_vault == 'accounts' else '网址'
+                result_msg = result.get('result_msg', f"✅ 成功执行操作，共影响 {result.get('affected_count', 0)} 个{item_name}")
+            else:
+                error = result.get('error', '未知错误')
+                if error == '用户取消执行':
+                    result_msg = "⏹️ 已取消执行"
+                else:
+                    result_msg = f"❌ 执行失败：{error}"
+            
+            # 刷新列表和分类导航（根据当前 vault）
+            self.clear_account_highlight()
+            self._reload_categories()
+        except Exception as e:
+            print(f"[MainWindow] _on_action_preview_confirmed exception: {e}")
+            traceback.print_exc()
+            result_msg = f"❌ 执行失败：{str(e)}"
+        
+        self._restore_scroll_state()
+        
+        # 追加结果到历史
+        from services.ai_assistant_service import ConversationMessage
+        from datetime import datetime
+        self.ai_assistant._history.append(ConversationMessage(
+            role='assistant', content=result_msg,
+            timestamp=datetime.now().strftime("%H:%M:%S")
+        ))
+        self._ai_update_chat_display()
+        self.ai_action_buttons.show()
+    
+    def _on_action_preview_cancelled(self):
+        """Build 模式：用户取消操作预览"""
+        self.action_preview_widget.hide()
+        self._pending_action = None
+        
+        from services.ai_assistant_service import ConversationMessage
+        from datetime import datetime
+        self.ai_assistant._history.append(ConversationMessage(
+            role='assistant', content="❌ 操作已取消。",
+            timestamp=datetime.now().strftime("%H:%M:%S")
+        ))
+        self._ai_update_chat_display()
+        self.ai_action_buttons.show()
+    
+    def _show_batch_add_dialog(self, batch_items, vault_type, query, action_preview):
+        """显示批量导入预览对话框"""
+        from core.repositories import RepositoryFactory
+        
+        repo = RepositoryFactory.get_repository(vault_type)
+        categories = repo.get_categories()
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("批量导入预览")
+        dialog.setMinimumSize(800, 500)
+        
+        layout = QVBoxLayout(dialog)
+        
+        preview_widget = BatchAddPreviewWidget(parent=dialog, repo=repo)
+        preview_widget.set_items(batch_items, vault_type, categories)
+        layout.addWidget(preview_widget)
+        
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        
+        btn_cancel = QPushButton("取消")
+        btn_cancel.clicked.connect(dialog.reject)
+        btn_layout.addWidget(btn_cancel)
+        
+        btn_confirm = QPushButton("✅ 确认导入")
+        btn_confirm.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                font-weight: bold;
+                padding: 4px 16px;
+            }
+            QPushButton:hover {
+                background-color: #388E3C;
+            }
+        """)
+        btn_layout.addWidget(btn_confirm)
+        layout.addLayout(btn_layout)
+        
+        def on_confirm():
+            self._save_scroll_state()
+            try:
+                result = self.ai_assistant.execute_build_action_with_transaction(
+                    action_preview, user_query=query
+                )
+                if result.get('success'):
+                    result_msg = result.get('result_msg', f"✅ 成功导入 {result.get('affected_count', 0)} 条")
+                else:
+                    result_msg = f"❌ 导入失败：{result.get('error', '未知错误')}"
+                
+                self._cache_dirty = True
+                self._url_cache_dirty = True
+                if vault_type == 'accounts':
+                    self.load_accounts()
+                else:
+                    self.load_urls()
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                result_msg = f"❌ 导入失败：{str(e)}"
+            
+            self._restore_scroll_state()
+            
+            from services.ai_assistant_service import ConversationMessage
+            from datetime import datetime
+            self.ai_assistant._history.append(ConversationMessage(
+                role='assistant', content=result_msg,
+                timestamp=datetime.now().strftime("%H:%M:%S")
+            ))
+            self._ai_update_chat_display()
+            self.ai_action_buttons.show()
+            dialog.accept()
+        
+        btn_confirm.clicked.connect(on_confirm)
+        
+        result = dialog.exec()
+        if result != QDialog.DialogCode.Accepted:
+            # 用户取消
+            from services.ai_assistant_service import ConversationMessage
+            from datetime import datetime
+            self.ai_assistant._history.append(ConversationMessage(
+                role='assistant', content="❌ 批量导入已取消。",
+                timestamp=datetime.now().strftime("%H:%M:%S")
+            ))
+            self._ai_update_chat_display()
+            self.ai_action_buttons.show()
+    
+    def on_ai_send_message(self):
+        """发送 AI 指令：启动后台线程避免阻塞 UI"""
+        query = self.ai_input.toPlainText().strip()
+        if not query:
+            return
+        
+        # 防止重复提交（如果已有查询在进行中，忽略）
+        if getattr(self, '_ai_query_running', False):
+            return
+        
+        self._ai_query_running = True
+        self._ai_query_cancelled = False
+        self._update_send_button_style(True)
+        
+        # 记录查询开始时间
+        self._ai_query_start_time = time.time()
+        
+        # 清空输入框
+        self.ai_input.setPlainText("")
+        
+        # 保存当前查询（供线程回调使用）
+        self._current_ai_query = query
+        
+        # 清除之前的流式状态和预览 widget
+        # 非流式模式下隐藏 thinking_area，仅在 result_area 显示最终结果
+        self.thinking_area.clear()
+        self.thinking_area.hide()
+        self.ai_action_buttons.hide()
+        self.action_preview_widget.hide()
+        self.ai_confirm_widget.hide()
+        self._pending_action = None
+        
+        # 发送新 query 时清除左侧筛选
+        self.clear_account_highlight()
+        
+        # 添加到对话历史：用户消息 + 空的 assistant 占位消息（用于分段输出追加）
+        from services.ai_assistant_service import ConversationMessage
+        from datetime import datetime
+        now_str = datetime.now().strftime("%H:%M:%S")
+        self.ai_assistant._history.append(ConversationMessage(
+            role='user', content=query,
+            timestamp=now_str
+        ))
+        self.ai_assistant._history.append(ConversationMessage(
+            role='assistant', content="",
+            timestamp=now_str,
+            thinking="",
+            action="explain"
+        ))
+        
+        # 标记为已交互（下次不再显示欢迎语）
+        self._ai_interacted = True
+        
+        # 重新渲染（显示用户消息 + "思考中"）
+        self._ai_update_chat_display()
+        
+        # 获取当前库上下文
+        if self.current_vault == 'accounts':
+            if not self._cached_accounts or self._cache_dirty:
+                self._cached_accounts = self.account_service.get_all_accounts()
+                self._cache_dirty = False
+            context = self._cached_accounts
+            vault_type = 'accounts'
+        else:
+            if self._url_cache_dirty or not self._cached_urls:
+                self._cached_urls = self._url_service.get_all_urls()
+                self._url_cache_dirty = False
+            context = self._cached_urls
+            vault_type = 'urls'
+        
+        # 启动后台线程执行 AI 查询（避免 GPU 满载阻塞主线程）
+        self._ai_thread = AIQueryThread(self.ai_assistant, query, context, self._ai_mode, vault_type)
+        self._ai_thread.result_ready.connect(self._on_ai_query_finished)
+        self._ai_thread.thinking_token.connect(self._on_thinking_token)
+        self._ai_thread.result_token.connect(self._on_result_token)
+        self._ai_thread.start()
+    
+    def _on_ai_query_finished(self, result_json: str):
+        """AI 查询完成后在主线程回调（更新 UI）
+        
+        安全设计：
+        1. 立即标记 _ai_query_running = False，让延迟到达的流式 token 被丢弃
+        2. 立即断开流式信号连接，防止后续 token 干扰 UI 清理
+        3. 隐藏 thinking_area 后再操作 result_area，避免双区并发写入
+        
+        Plan 模式：只给建议，联动左侧列表高亮
+        Build 模式：安全操作直接执行；危险操作显示 ActionPreviewWidget
+        """
+        import json
+        import traceback
+        print(f"[MainWindow] _on_ai_query_finished called, json_len={len(result_json)}")
+        
+        # ========== 第零步：安全关闸 ==========
+        # 标记查询已结束，延迟 token 将被 _on_thinking_token/_on_result_token 丢弃
+        self._ai_query_running = False
+        
+        # 断开流式信号连接，防止任何后续 token 触发 slot
+        if self._ai_thread is not None:
+            try:
+                self._ai_thread.thinking_token.disconnect(self._on_thinking_token)
+                print("[MainWindow] thinking_token disconnected")
+            except Exception:
+                pass
+            try:
+                self._ai_thread.result_token.disconnect(self._on_result_token)
+                print("[MainWindow] result_token disconnected")
+            except Exception:
+                pass
+            # 释放线程引用，允许 GC
+            self._ai_thread = None
+        
+        # 解析结果
+        try:
+            result = json.loads(result_json)
+            print(f"[MainWindow] Parsed result: action={result.get('action')}, mode={self._ai_mode}, success={result.get('success')}")
+        except json.JSONDecodeError as e:
+            print(f"[MainWindow] JSON decode error: {e}")
+            result = {
+                "success": False,
+                "thinking": "",
+                "action": "explain",
+                "params": {},
+                "response": "AI 返回数据解析失败",
+                "error": "JSON decode error"
+            }
+        
+        self._ai_query_running = False
+        self._update_send_button_style(False)
+        
+        # 如果用户已取消本次查询，忽略结果
+        if self._ai_query_cancelled:
+            self._ai_query_cancelled = False
+            return
+        
+        # 计算回答用时
+        if self._ai_query_start_time:
+            self._ai_last_elapsed = time.time() - self._ai_query_start_time
+        else:
+            self._ai_last_elapsed = 0.0
+        self._ai_query_start_time = None
+        
+        query = getattr(self, '_current_ai_query', '')
+        action = result.get('action', 'explain')
+        params = result.get('params', {})
+        
+        # 根据当前 vault 确定上下文数据
+        context_items = self._cached_accounts if self.current_vault == 'accounts' else self._cached_urls
+        vault_type = self.current_vault
+        item_name = "账号" if self.current_vault == 'accounts' else "网址"
+        
+        # ========== 第一步：安全清理流式 UI ==========
+        # 先清空流式追加的 plain text，再隐藏 thinking_area，最后 setHtml
+        # 避免 insertPlainText 与 setHtml 的并发冲突
+        try:
+            self.result_area.clear()
+            self.thinking_area.clear()
+            self.thinking_area.hide()
+            print("[MainWindow] Stream UI cleaned")
+        except Exception as e:
+            print(f"[MainWindow] Stream UI clean error: {e}")
+        
+        # 重新渲染历史为 HTML
+        self._ai_update_chat_display()
+        
+        # ========== Plan 模式：只建议，联动左侧列表 ==========
+        if self._ai_mode == 'plan':
+            print(f"[MainWindow] Plan mode handling action={action}, vault={vault_type}")
+            try:
+                # 统一尝试语义高亮（不依赖 action 类型，只要 semantic_result 有有效匹配就高亮）
+                semantic_matched = False
+                semantic_result = result.get('semantic_result')
+                if semantic_result and semantic_result.get('matched_ids'):
+                    matched_ids = semantic_result.get('matched_ids', [])
+                    total_items = len(context_items)
+                    # 防护：如果语义匹配返回了超过总数80%的ID，视为无效（模型理解偏差）
+                    if total_items > 0 and len(matched_ids) <= total_items * 0.8:
+                        matched_id_set = {str(m) for m in matched_ids}
+                        matched = [item for item in context_items if getattr(item, 'id', None) is not None and str(item.id) in matched_id_set]
+                        if matched:
+                            matched_ids = [item.id for item in matched]
+                            query_summary = result.get('query_summary', '') or getattr(self, '_current_ai_query', '')
+                            self.highlight_matched_accounts(matched_ids, query_text=query_summary)
+                            semantic_matched = True
+                            # 只在 response 中还没有高亮提示时才追加
+                            if "已找到" not in result['response'] and "已高亮" not in result['response']:
+                                result['response'] += f"\n\n✅ 已找到 **{len(matched)}** 个相关{item_name}，左侧已高亮显示。"
+                
+                # 然后按 action 类型追加额外提示
+                if action in ('search', 'filter'):
+                    if not semantic_matched:
+                        # Fallback：本地 Repository 关键词搜索兜底
+                        try:
+                            local_result = self.ai_assistant.execute_action(action, params, context_items, vault_type)
+                            local_matched = local_result.get('matched_accounts', [])
+                            if local_matched:
+                                matched_ids = [item.id for item in local_matched]
+                                query_summary = result.get('query_summary', '') or getattr(self, '_current_ai_query', '')
+                                self.highlight_matched_accounts(matched_ids, query_text=query_summary)
+                                # 清除模型回复中矛盾的"未找到"字样
+                                import re
+                                result['response'] = re.sub(r'[^\n]*(?:未找到|没有找到|暂未找到|不存在)[^\n]*', '', result['response'])
+                                result['response'] = re.sub(r'\n{3,}', '\n\n', result['response']).strip()
+                                result['response'] += f"\n\n✅ 已找到 **{len(local_matched)}** 个相关{item_name}，左侧已高亮显示。"
+                            else:
+                                result['response'] += f"\n\n❌ 未找到匹配的{item_name}"
+                        except Exception as e:
+                            print(f"[MainWindow] Fallback search error: {e}")
+                            result['response'] += f"\n\n❌ 未找到匹配的{item_name}"
+                elif action == 'list':
+                    scope = params.get('scope', 'all')
+                    if scope == 'all':
+                        result['response'] += f"\n\n📋 数据库中共有 **{len(context_items)}** 个{item_name}。"
+                    elif scope == 'uncategorized':
+                        uncategorized = [item for item in context_items if not getattr(item, 'category', '') or getattr(item, 'category', '') == '其他']
+                        result['response'] += f"\n\n📋 未分类{item_name}共 **{len(uncategorized)}** 个。"
+                    else:
+                        result['response'] += f"\n\n📋 已列出{item_name}。"
+                elif action in ('reorganize', 'add_remark'):
+                    result['response'] += "\n\n> 💡 **Plan 模式**：以上是整理建议，切换到 **Build 模式** 并经你确认后可执行。"
+                
+                # 更新历史中的最后一条 assistant 消息
+                if self.ai_assistant._history and self.ai_assistant._history[-1].role == 'assistant':
+                    self.ai_assistant._history[-1].content = result['response']
+                self._ai_update_chat_display()
+                self.ai_action_buttons.show()
+                
+                if not result.get('success', True):
+                    self._append_ai_system_msg(f"处理出错：{result.get('error', '未知错误')}")
+            except Exception as e:
+                print(f"[MainWindow] Plan mode handling error: {e}")
+                traceback.print_exc()
+                self._append_ai_system_msg(f"处理出错：{str(e)}")
+            return
+        
+        # ========== Build 模式 ==========
+        print(f"[MainWindow] Build mode handling action={action}, vault={vault_type}")
+        try:
+            if self._is_ai_action_safe(action):
+                # 安全操作：直接执行
+                if action in ('search', 'filter', 'list'):
+                    action_result = self.ai_assistant.execute_action(action, params, context_items, vault_type)
+                    matched = action_result.get('matched_accounts', [])
+                    if matched:
+                        matched_ids = [item.id for item in matched]
+                        query_summary = result.get('query_summary', '') or getattr(self, '_current_ai_query', '')
+                        self.highlight_matched_accounts(matched_ids, query_text=query_summary)
+                        result['response'] += f"\n\n✅ 已找到 **{len(matched)}** 个{item_name}，已高亮显示在左侧列表"
+                    else:
+                        result['response'] += f"\n\n❌ 未找到匹配的{item_name}"
+                
+                if self.ai_assistant._history and self.ai_assistant._history[-1].role == 'assistant':
+                    self.ai_assistant._history[-1].content = result['response']
+                self._ai_update_chat_display()
+                self.ai_action_buttons.show()
+                
+                if not result.get('success', True):
+                    self._append_ai_system_msg(f"处理出错：{result.get('error', '未知错误')}")
+            else:
+                WRITE_ACTIONS = {'reorganize', 'add_remark', 'delete', 'add'}
+                BATCH_ADD_ACTIONS = {'batch_add_account', 'batch_add_url'}
+                if action in BATCH_ADD_ACTIONS:
+                    # 批量导入预览
+                    vault_type = 'accounts' if action == 'batch_add_account' else 'urls'
+                    context = self._cached_accounts if vault_type == 'accounts' else self._cached_urls
+                    preview = self.ai_assistant.build_action_preview(action, params, context, vault_type)
+                    batch_items = []
+                    for item in preview.get('preview_items', []):
+                        if item.get('type') == 'batch_add' and 'batch_item' in item:
+                            batch_items.append(item['batch_item'])
+                    if batch_items:
+                        self.ai_action_buttons.hide()
+                        # 更新历史显示建议文本
+                        if self.ai_assistant._history and self.ai_assistant._history[-1].role == 'assistant':
+                            self.ai_assistant._history[-1].content = result['response']
+                        self._ai_update_chat_display()
+                        self._show_batch_add_dialog(batch_items, vault_type, query, preview)
+                    else:
+                        result['response'] += "\n\n❌ 没有可导入的数据"
+                        if self.ai_assistant._history and self.ai_assistant._history[-1].role == 'assistant':
+                            self.ai_assistant._history[-1].content = result['response']
+                        self._ai_update_chat_display()
+                        self.ai_action_buttons.show()
+                elif action in WRITE_ACTIONS:
+                    # 统一生成预览（确保预览与执行数据一致）
+                    print(f"[MainWindow] Showing ActionPreviewWidget for action={action}")
+                    self.ai_action_buttons.hide()
+                    preview = self.ai_assistant.build_action_preview(action, params, context_items, vault_type)
+                    self.action_preview_widget.update_action(action, params, preview.get('preview_items', []))
+                    self.action_preview_widget.show()
+                    self._pending_action = (action, params, query)
+                    
+                    # 更新历史显示建议文本（但不追加执行结果，等待用户确认）
+                    if self.ai_assistant._history and self.ai_assistant._history[-1].role == 'assistant':
+                        self.ai_assistant._history[-1].content = result['response']
+                    self._ai_update_chat_display()
+                else:
+                    # 未知的非安全操作，直接显示结果
+                    if self.ai_assistant._history and self.ai_assistant._history[-1].role == 'assistant':
+                        self.ai_assistant._history[-1].content = result['response']
+                    self._ai_update_chat_display()
+                    self.ai_action_buttons.show()
+        except Exception as e:
+            print(f"[MainWindow] Build mode handling error: {e}")
+            traceback.print_exc()
+            self._append_ai_system_msg(f"处理出错：{str(e)}")
+    
+    def _refresh_account_list(self):
+        """刷新账号列表"""
+        self._cache_dirty = True
+        self.load_accounts()
+    
+    def _append_ai_system_msg(self, content: str):
+        """追加系统消息到 AI 对话历史"""
+        from services.ai_assistant_service import ConversationMessage
+        from datetime import datetime
+        self.ai_assistant._history.append(ConversationMessage(
+            role='system', content=content,
+            timestamp=datetime.now().strftime("%H:%M:%S")
+        ))
+        self._ai_update_chat_display()
+    
+    def _ai_start_typing(self, full_text: str):
+        """直接显示完整文本（不逐字打字，先测试稳定性）"""
+        if self.ai_assistant._history and self.ai_assistant._history[-1].role == 'assistant':
+            self.ai_assistant._history[-1].content = full_text
+        self._ai_update_chat_display()
+    
+    def _ai_update_chat_display(self):
+        """根据对话历史重新渲染整个聊天区域为 HTML"""
+        try:
+            history = self.ai_assistant.get_history()
+        except Exception as e:
+            print(f"[MainWindow] get_history error: {e}")
+            return
+        
+        html_parts = []
+        has_interaction = any(m.role == 'user' for m in history)
+        
+        # 显示欢迎语（如果还没有交互）
+        if not has_interaction and not getattr(self, '_ai_interacted', False):
+            try:
+                welcome_html = self._markdown_to_html(self._ai_welcome_md())
+                html_parts.append(f'<div style="padding:10px;">{welcome_html}</div>')
+            except Exception as e:
+                print(f"[MainWindow] Welcome render error: {e}")
+        
+        # 渲染每条消息
+        for idx, msg in enumerate(history):
+            try:
+                if msg.role == 'user':
+                    user_html = self._markdown_to_html(self._render_user_md(msg.content))
+                    html_parts.append(f'<div style="margin:8px 0;">{user_html}</div>')
+                elif msg.role == 'assistant':
+                    assistant_md = self._render_assistant_md(msg, idx, is_last=(idx == len(history) - 1))
+                    assistant_html = self._markdown_to_html(assistant_md)
+                    html_parts.append(f'<div style="margin:8px 0;">{assistant_html}</div>')
+                elif msg.role == 'system':
+                    html_parts.append(
+                        f'<div style="margin:8px 0;padding:6px 10px;background:#f5f5f5;border-radius:4px;color:#999;font-size:12px;">'
+                        f'{self._escape_html(msg.content)}</div>'
+                    )
+            except Exception as e:
+                print(f"[MainWindow] Message render error at idx={idx}: {e}")
+                # 跳过这条消息，继续渲染其他
+                continue
+        
+        # 如果正在处理（最后一条是用户消息，没有 assistant 回复），显示"思考中"
+        if history and history[-1].role == 'user':
+            html_parts.append(
+                '<div style="margin:8px 0;padding:10px;color:#999;font-style:italic;">'
+                '🤔 炽阳正在思考...</div>'
+            )
+        
+        full_html = '\n'.join(html_parts)
+        try:
+            self.result_area.setHtml(full_html)
+        except Exception as e:
+            print(f"[MainWindow] setHtml error: {e}")
+            # 降级：只显示纯文本
+            try:
+                plain_text = '\n'.join(f"{m.role}: {m.content}" for m in history)
+                self.result_area.setPlainText(plain_text)
+            except Exception as e2:
+                print(f"[MainWindow] setPlainText fallback error: {e2}")
+        
+        # 滚动到底部
+        try:
+            scrollbar = self.result_area.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
+        except Exception as e:
+            print(f"[MainWindow] Scrollbar error: {e}")
+    
+    def _escape_html(self, text: str) -> str:
+        """转义 HTML 特殊字符"""
+        return (text
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace('"', "&quot;"))
+    
+    def _ai_welcome_md(self) -> str:
+        """欢迎语 Markdown（根据当前库切换内容）"""
+        if self.current_vault == 'accounts':
+            return (
+                "🦁🔥 **密码库模式**\n\n"
+                "**炽阳 已觉醒**\n\n"
+                "你好，狮子座的主人。\n"
+                "我是你的守护 AI，诞生于火焰与光芒之中。\n\n"
+                "**🎯 试试这样问：**\n"
+                "- 找出所有支付类账号\n"
+                "- 哪些账号还没分类？\n"
+                "- 帮我重新整理分类\n\n"
+                "*♌ 只读取元数据，绝不触碰密码*"
+            )
+        else:
+            return (
+                "🦁🔥 **网址库模式**\n\n"
+                "**炽阳 已觉醒**\n\n"
+                "你好，狮子座的主人。\n"
+                "我是你的守护 AI，诞生于火焰与光芒之中。\n\n"
+                "**🎯 试试这样问：**\n"
+                "- 找出和青岛大学有关的网址\n"
+                "- 把开发工具类的网址列出来\n"
+                "- 帮我整理网址分类\n\n"
+                "*♌ 只读取元数据，绝不触碰密码*"
+            )
+    
+    def _render_user_md(self, text: str) -> str:
+        """渲染用户消息（Markdown）"""
+        # 用户消息用引用块显示在右侧
+        lines = text.strip().split('\n')
+        quoted = '\n'.join(f'> {line}' for line in lines)
+        return f"**用户**：\n\n{quoted}"
+    
+    def _render_assistant_md(self, msg, msg_index: int, is_last: bool = False) -> str:
+        """渲染 AI 消息（Markdown）—— 思考过程在回答上方，可展开/折叠"""
+        parts = []
+        
+        # 思考过程（放在回答上方，参考图3 Thinking 风格；如果和回复重复则不显示）
+        if msg.thinking and msg.thinking.strip() and not self._thinking_is_redundant(msg.thinking, msg.content):
+            expanded = self._ai_thinking_expanded.get(msg_index, False)
+            if expanded:
+                thinking_lines = msg.thinking.strip().split('\n')
+                quoted = '\n'.join(f'> {line}' for line in thinking_lines)
+                parts.append(f"> 💡 [思考过程 ▲](thinking://{msg_index})\n>\n{quoted}")
+            else:
+                parts.append(f"> 💡 [思考过程 ▼](thinking://{msg_index})")
+        
+        parts.append(f"**🦁 炽阳**：\n")
+        parts.append(msg.content)
+        
+        # 最后一条消息显示回答用时
+        if is_last and self._ai_last_elapsed > 0:
+            parts.append(f"\n_⏱️ 用时 {self._ai_last_elapsed:.1f}s_")
+        
+        return '\n\n'.join(parts)
+    
+    def _ai_display_results_in_list(self, accounts, query_text):
+        """将 炽阳 搜索结果展示在左侧账号列表中"""
+        self.account_list.clear()
+        
+        if not accounts:
+            item = QListWidgetItem("未找到匹配的账号")
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
+            self.account_list.addItem(item)
+            self.lbl_list_title.setText(f"炽阳 搜索结果")
+            return
+        
+        # 标题
+        header = QListWidgetItem(f"  炽阳 推荐结果")
+        header.setFlags(Qt.ItemFlag.NoItemFlags)
+        font = QFont()
+        font.setBold(True)
+        font.setPointSize(11)
+        header.setFont(font)
+        header.setBackground(QColor("#E3F2FD"))
+        header.setForeground(QColor("#1565C0"))
+        self.account_list.addItem(header)
+        
+        for account in accounts:
+            item = QListWidgetItem()
+            item.setSizeHint(QSize(self.account_list.width() - 20, 56))
+            item.setData(Qt.ItemDataRole.UserRole, account)
+            self.account_list.addItem(item)
+            
+            badges = [("炽阳推荐", "#1565C0")]
+            widget = AccountListItem(account, badges=badges, selection_mode=self._selection_mode)
+            if self._selection_mode and account.id in self._selected_ids:
+                widget.set_checked(True)
+            self.account_list.setItemWidget(item, widget)
+        
+        self.lbl_list_title.setText(f"炽阳 搜索结果 ({len(accounts)})")
+    
+    def highlight_matched_accounts(self, matched_ids: list, query_text: str = ""):
+        """Plan 模式：高亮左侧列表中的匹配条目（支持密码库和网址库）"""
+        if not matched_ids:
+            return
+        
+        self._highlight_matched_ids = set(matched_ids)
+        
+        self.account_list.clear()
+        
+        # 根据当前 vault 选择数据源和 Widget 类型
+        if self.current_vault == 'accounts':
+            all_items = self._cached_accounts if self._cached_accounts else self.account_service.get_all_accounts()
+            item_name = "账号"
+            ItemWidget = AccountListItem
+            use_badges = True
+        else:
+            all_items = self._cached_urls if self._cached_urls else self._url_service.get_all_urls()
+            item_name = "网址"
+            ItemWidget = URLListItem
+            use_badges = False
+        
+        matched_items = [item for item in all_items if getattr(item, 'id', None) in matched_ids]
+        unmatched_items = [item for item in all_items if getattr(item, 'id', None) not in matched_ids]
+        
+        # 隐藏列表标题（筛选信息已在横幅中显示）
+        self.lbl_list_title.hide()
+        
+        # 显示匹配项（置顶，蓝色边框）
+        if matched_items:
+            header = QListWidgetItem(f"  匹配{item_name}")
+            header.setFlags(Qt.ItemFlag.NoItemFlags)
+            font = QFont()
+            font.setBold(True)
+            font.setPointSize(11)
+            header.setFont(font)
+            header.setBackground(QColor("#E3F2FD"))
+            header.setForeground(QColor("#1565C0"))
+            self.account_list.addItem(header)
+            
+            for item_obj in matched_items:
+                item = QListWidgetItem()
+                item.setSizeHint(QSize(self.account_list.width() - 20, 56))
+                item.setData(Qt.ItemDataRole.UserRole, item_obj)
+                item.setBackground(QColor("#E3F2FD"))
+                self.account_list.addItem(item)
+                
+                badges = [("匹配", "#2196F3")]
+                if use_badges:
+                    widget = ItemWidget(item_obj, badges=badges, selection_mode=self._selection_mode)
+                else:
+                    widget = ItemWidget(item_obj, badges=badges, selection_mode=self._selection_mode)
+                
+                if self._selection_mode and getattr(item_obj, 'id', None) in self._selected_ids:
+                    if hasattr(widget, 'set_checked'):
+                        widget.set_checked(True)
+                # 增强边框高亮
+                if hasattr(widget, 'styleSheet'):
+                    enhanced_style = widget.styleSheet().replace(
+                        'border: none;',
+                        'border: 2px solid #2196F3;'
+                    )
+                    widget.setStyleSheet(enhanced_style)
+                self.account_list.setItemWidget(item, widget)
+        
+        # 显示未匹配项（灰色）
+        if unmatched_items:
+            header = QListWidgetItem(f"  其他{item_name}")
+            header.setFlags(Qt.ItemFlag.NoItemFlags)
+            font = QFont()
+            font.setBold(True)
+            font.setPointSize(11)
+            header.setFont(font)
+            header.setBackground(QColor("#f5f5f5"))
+            header.setForeground(QColor("#999"))
+            self.account_list.addItem(header)
+            
+            for item_obj in unmatched_items:
+                item = QListWidgetItem()
+                item.setSizeHint(QSize(self.account_list.width() - 20, 56))
+                item.setData(Qt.ItemDataRole.UserRole, item_obj)
+                item.setForeground(QColor(150, 150, 150))
+                self.account_list.addItem(item)
+                
+                widget = ItemWidget(item_obj, selection_mode=self._selection_mode)
+                
+                if self._selection_mode and getattr(item_obj, 'id', None) in self._selected_ids:
+                    if hasattr(widget, 'set_checked'):
+                        widget.set_checked(True)
+                # 降低可见度
+                if hasattr(widget, 'styleSheet'):
+                    widget.setStyleSheet(widget.styleSheet() + """
+                        QLabel { color: #aaa; }
+                    """)
+                self.account_list.setItemWidget(item, widget)
+        
+        # 横幅显示用户原始查询和匹配数量
+        self.lbl_ai_filter.setText(f"炽阳已找到 {len(matched_items)} 个与「{query_text}」相关的{item_name}")
+        self.ai_filter_banner.show()
+    
+    def clear_account_highlight(self):
+        """清除左侧列表的高亮筛选"""
+        self._highlight_matched_ids = None
+        self._highlight_reasoning = ""
+        if hasattr(self, 'ai_filter_banner'):
+            self.ai_filter_banner.hide()
+        # 恢复列表标题显示
+        self.lbl_list_title.show()
+        if self.current_vault == 'accounts':
+            self.load_accounts()
+        else:
+            self.load_urls()
+    
+    def _markdown_to_html(self, text: str) -> str:
+        """将 Markdown 转为 HTML（安全可控，避免 Qt setMarkdown 崩溃）"""
+        import re
+        
+        # 安全清理：移除 NULL 字节和控制字符（这些可能导致 Qt 解析器崩溃）
+        text = text.replace('\x00', '')
+        text = ''.join(ch if ord(ch) >= 32 or ch in '\n\r\t' else ' ' for ch in text)
+        
+        # 先转义 HTML 特殊字符
+        text = (text
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;"))
+        
+        # 代码块 ```code```
+        def code_block_repl(m):
+            code = m.group(1)
+            return f'<pre style="background:#f5f5f5;padding:8px;border-radius:4px;overflow-x:auto;font-size:12px;"><code>{code}</code></pre>'
+        text = re.sub(r'```(.*?)```', code_block_repl, text, flags=re.DOTALL)
+        
+        # 行内代码 `code`
+        text = re.sub(r'`([^`]+)`', r'<code style="background:#f5f5f5;padding:2px 4px;border-radius:3px;font-size:12px;">\1</code>', text)
+        
+        # 加粗 **text**
+        text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+        
+        # 斜体 *text*（避免匹配已处理的 **）
+        text = re.sub(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)', r'<i>\1</i>', text)
+        
+        # 标题
+        text = re.sub(r'^###\s+(.+)$', r'<h4 style="margin:6px 0;color:#333;">\1</h4>', text, flags=re.MULTILINE)
+        text = re.sub(r'^##\s+(.+)$', r'<h3 style="margin:8px 0;color:#333;">\1</h3>', text, flags=re.MULTILINE)
+        text = re.sub(r'^#\s+(.+)$', r'<h2 style="margin:10px 0;color:#333;">\1</h2>', text, flags=re.MULTILINE)
+        
+        # 分隔线 ---
+        text = re.sub(r'^---+\s*$', r'<hr style="border:none;border-top:1px solid #ddd;margin:8px 0;">', text, flags=re.MULTILINE)
+        
+        # 链接 [text](url)
+        text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2" style="color:#FF9800;text-decoration:none;">\1</a>', text)
+        
+        # 列表项 - item
+        def list_repl(m):
+            items = m.group(0).strip().split('\n')
+            lis = ''.join(f'<li style="margin:3px 0;">{item.lstrip("- ").strip()}</li>' for item in items)
+            return f'<ul style="margin:6px 0;padding-left:18px;">{lis}</ul>'
+        text = re.sub(r'(?:^-\s+.+\n?)+', list_repl, text, flags=re.MULTILINE)
+        
+        # 引用块 > text
+        def quote_repl(m):
+            lines = m.group(0).strip().split('\n')
+            content = '<br>'.join(line.lstrip('> ').strip() for line in lines)
+            return f'<blockquote style="margin:6px 0;padding:6px 10px;border-left:3px solid #FF9800;color:#666;background:#FFF8F0;border-radius:0 4px 4px 0;">{content}</blockquote>'
+        text = re.sub(r'(?:^>\s*.+\n?)+', quote_repl, text, flags=re.MULTILINE)
+        
+        # 段落处理：保留换行
+        paragraphs = text.split('\n\n')
+        result = []
+        for p in paragraphs:
+            p = p.strip()
+            if not p:
+                continue
+            # 如果已经是块级元素，不加 p 包裹
+            if p.startswith('<') and any(tag in p for tag in ['<pre', '<ul', '<blockquote', '<h', '<hr']):
+                result.append(p)
+            else:
+                p = p.replace('\n', '<br>')
+                result.append(f'<p style="margin:4px 0;">{p}</p>')
+        
+        return '\n'.join(result)
+    
+    def _on_ai_anchor_clicked(self, url):
+        """处理聊天区域内的链接点击（思考过程展开/折叠）"""
+        url_str = url.toString()
+        if url_str.startswith("thinking://"):
+            try:
+                idx = int(url_str.split("://")[-1])
+                current = self._ai_thinking_expanded.get(idx, False)
+                self._ai_thinking_expanded[idx] = not current
+                self._ai_update_chat_display()
+            except ValueError:
+                pass
+    
+    def _on_ai_confirm_dialog_finished(self, result_code: int, action: str, params: dict, desc: str):
+        """确认对话框关闭后的回调（非模态，避免 exec() 崩溃）"""
+        if result_code == int(QMessageBox.StandardButton.Yes):
+            # 执行操作
+            action_result = self.ai_assistant.execute_action(action, params, self._cached_accounts)
+            result_msg = action_result.get('message', '✅ 已执行操作。')
+            
+            # 刷新列表（如果操作影响了数据）
+            self._refresh_account_list()
+        else:
+            result_msg = "❌ 操作已取消。"
+        
+        # 追加结果消息到历史，并更新显示
+        from services.ai_assistant_service import ConversationMessage
+        from datetime import datetime
+        self.ai_assistant._history.append(ConversationMessage(
+            role='assistant', content=result_msg,
+            timestamp=datetime.now().strftime("%H:%M:%S")
+        ))
+        self._ai_start_typing(result_msg)
+    
+    def on_ai_clear_history(self):
+        """清空 AI 对话历史"""
+        self.ai_assistant.clear_history()
+        self.ai_assistant.conversation_context.reset()
+        self._ai_thinking_expanded.clear()
+        self._ai_interacted = False
+        self._ai_update_chat_display()
+    
+    def _setup_session_security(self):
+        """设置会话安全：锁定界面 + 空闲检测"""
+        # 创建锁定屏幕（作为中央部件的子控件，全屏覆盖）
+        self._lock_screen = LockScreen(self.db, self.config_path, parent=self.centralWidget())
+        self._lock_screen.unlocked.connect(self._on_unlocked)
+        self._lock_screen.hide()
+        
+        # 创建空闲检测定时器（10分钟 = 600000ms）
+        self._idle_timer = IdleTimer(timeout_ms=600000, parent=self)
+        self._idle_timer.lock_requested.connect(self.show_lock_screen)
+        self._idle_timer.start()
+        
+        # 安装事件过滤器到整个应用，捕获鼠标/键盘操作
+        QApplication.instance().installEventFilter(self)
+    
+    def eventFilter(self, watched, event):
+        """事件过滤器：检测用户活动，重置空闲定时器"""
+        event_type = event.type()
+        
+        # 检测用户活动，重置空闲定时器
+        if self._idle_timer and self._lock_screen and not self._lock_screen.isVisible():
+            if event_type in (
+                event.Type.MouseButtonPress,
+                event.Type.MouseButtonRelease,
+                event.Type.MouseMove,
+                event.Type.KeyPress,
+                event.Type.KeyRelease,
+                event.Type.Wheel,
+            ):
+                self._idle_timer.reset()
+        return super().eventFilter(watched, event)
+    
+    def show_lock_screen(self):
+        """显示锁定屏幕"""
+        if not self._lock_screen:
+            return
+        # 重置错误计数
+        self._lock_screen.reset_lockout()
+        # 调整大小覆盖整个中央部件
+        self._lock_screen.setGeometry(self.centralWidget().rect())
+        self._lock_screen.show()
+        self._lock_screen.raise_()
+    
+    def _on_unlocked(self):
+        """解锁后的回调：重置空闲定时器"""
+        if self._idle_timer:
+            self._idle_timer.reset()
+    
+    def on_lock(self):
+        """手动锁定程序"""
+        reply = QMessageBox.question(
+            self, "锁定", "确定要锁定程序吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.show_lock_screen()
+    
+    def on_sync_to_mobile(self):
+        """同步到手机：生成加密 HTML 密包"""
+        try:
+            # 检查是否有 crypto_manager
+            if not self.db.crypto:
+                QMessageBox.warning(self, "提示", "当前未启用加密，无法生成密包")
+                return
+            
+            # 获取所有账号（解密后的明文）
+            accounts = self.account_service.get_all_accounts()
+            if not accounts:
+                reply = QMessageBox.question(
+                    self, "提示",
+                    "当前没有账号数据，是否仍要生成空密包？",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
+            
+            # 弹出保存对话框
+            default_name = "leopassword.html"
+            from PyQt6.QtWidgets import QFileDialog
+            output_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "保存密包文件",
+                str(Path.home() / default_name),
+                "HTML 文件 (*.html)"
+            )
+            if not output_path:
+                return
+            
+            # 生成密包
+            from services.sync_service import SyncService
+            sync_service = SyncService()
+            sync_service.generate_pwa_package(
+                self.db.crypto,
+                accounts,
+                output_path
+            )
+            
+            # 成功提示
+            QMessageBox.information(
+                self,
+                "生成成功",
+                f"密包已保存至：\n{output_path}\n\n"
+                f"包含 {len(accounts)} 条账号数据\n\n"
+                f"📱 请手动将该 HTML 文件复制到手机，用手机浏览器打开即可查看。\n"
+                f"打开后输入主密码即可本地解密。"
+            )
+            
+        except Exception as e:
+            QMessageBox.critical(self, "生成失败", f"密包生成失败：{str(e)}")
+            import traceback
+            traceback.print_exc()
+    
+    def on_recycle_bin(self):
+        """打开回收站"""
+        from ui.recycle_bin_dialog import RecycleBinDialog
+        
+        self._save_scroll_state()
+        
+        dialog = RecycleBinDialog(self.db, self._url_db, parent=self)
+        dialog.exec()
+        # 恢复后刷新
+        self._cache_dirty = True
+        self._url_cache_dirty = True
+        self.load_accounts()
+        self.load_urls()
+        self._reload_categories()
+        if self.current_vault == 'accounts':
+            self.load_accounts()
+        else:
+            self.load_urls()
+        self._restore_scroll_state()
+    
+    def closeEvent(self, event):
+        """程序关闭时清理资源"""
+        if self._url_db:
+            self._url_db.close()
+        event.accept()

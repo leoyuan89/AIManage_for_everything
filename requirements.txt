@@ -35,3 +35,6 @@ pyperclip>=1.8.0
 Pillow>=10.0.0
 # HTML 模板引擎（生成 PWA 离线同步文件）
 Jinja2>=3.1.0
+
+# 拼音转换（中文搜索）
+pypinyin>=0.50.0

@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#2196F3">
+<title>密码保险箱</title>
+<style>
+  :root {
+    --primary: #2196F3;
+    --primary-dark: #1976D2;
+    --bg: #f5f5f5;
+    --surface: #ffffff;
+    --text: #333333;
+    --text-secondary: #666666;
+    --error: #f44336;
+    --success: #4CAF50;
+    --border: #e0e0e0;
+    --shadow: 0 2px 8px rgba(0,0,0,0.1);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+    min-height: 100vh;
+  }
+  .app-header {
+    background: var(--primary);
+    color: white;
+    padding: 16px;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    box-shadow: var(--shadow);
+  }
+  .app-header h1 {
+    font-size: 18px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .app-header .subtitle {
+    font-size: 12px;
+    opacity: 0.9;
+    margin-top: 2px;
+  }
+  .container {
+    max-width: 600px;
+    margin: 0 auto;
+    padding: 16px;
+  }
+  /* 解锁页 */
+  #unlock-page {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: calc(100vh - 100px);
+    padding: 24px;
+  }
+  .lock-icon {
+    font-size: 64px;
+    margin-bottom: 16px;
+  }
+  .unlock-title {
+    font-size: 20px;
+    font-weight: 600;
+    margin-bottom: 8px;
+    color: var(--text);
+  }
+  .unlock-desc {
+    font-size: 14px;
+    color: var(--text-secondary);
+    margin-bottom: 24px;
+    text-align: center;
+  }
+  .input-group {
+    width: 100%;
+    max-width: 320px;
+    margin-bottom: 16px;
+  }
+  .input-group label {
+    display: block;
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+  }
+  .input-group input {
+    width: 100%;
+    padding: 12px 14px;
+    font-size: 16px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .input-group input:focus {
+    border-color: var(--primary);
+  }
+  .btn {
+    width: 100%;
+    max-width: 320px;
+    padding: 12px;
+    font-size: 16px;
+    font-weight: 600;
+    color: white;
+    background: var(--primary);
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  .btn:active {
+    background: var(--primary-dark);
+  }
+  .btn:disabled {
+    background: #b0b0b0;
+    cursor: not-allowed;
+  }
+  .error-msg {
+    color: var(--error);
+    font-size: 13px;
+    margin-top: 12px;
+    text-align: center;
+    min-height: 20px;
+  }
+  .info-msg {
+    color: var(--text-secondary);
+    font-size: 12px;
+    margin-top: 16px;
+    text-align: center;
+    line-height: 1.6;
+  }
+  /* 主内容页 */
+  #vault-page {
+    display: none;
+  }
+  .toolbar {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+  }
+  .search-box {
+    flex: 1;
+    min-width: 200px;
+    padding: 10px 12px;
+    font-size: 14px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    outline: none;
+  }
+  .search-box:focus {
+    border-color: var(--primary);
+  }
+  .category-tabs {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    padding-bottom: 4px;
+    margin-bottom: 12px;
+    -webkit-overflow-scrolling: touch;
+  }
+  .category-tabs::-webkit-scrollbar { display: none; }
+  .tab {
+    padding: 6px 14px;
+    font-size: 13px;
+    border-radius: 16px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-secondary);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.2s;
+  }
+  .tab.active {
+    background: var(--primary);
+    color: white;
+    border-color: var(--primary);
+  }
+  .account-card {
+    background: var(--surface);
+    border-radius: 12px;
+    padding: 14px 16px;
+    margin-bottom: 10px;
+    box-shadow: var(--shadow);
+    border: 1px solid var(--border);
+  }
+  .account-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  .account-name {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .account-category {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: #e3f2fd;
+    color: var(--primary-dark);
+  }
+  .account-field {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 0;
+    border-top: 1px solid #f0f0f0;
+  }
+  .account-field:first-of-type {
+    border-top: none;
+  }
+  .field-label {
+    font-size: 12px;
+    color: var(--text-secondary);
+    min-width: 50px;
+  }
+  .field-value {
+    font-size: 14px;
+    color: var(--text);
+    font-family: "Courier New", monospace;
+    word-break: break-all;
+    flex: 1;
+    text-align: right;
+    margin-left: 8px;
+  }
+  .copy-btn {
+    padding: 4px 10px;
+    font-size: 12px;
+    color: var(--primary);
+    background: #e3f2fd;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    margin-left: 8px;
+  }
+  .copy-btn:active {
+    background: #bbdefb;
+  }
+  .tags {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-top: 6px;
+  }
+  .tag {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: #f5f5f5;
+    color: var(--text-secondary);
+  }
+  .empty-state {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--text-secondary);
+  }
+  .empty-state .icon {
+    font-size: 48px;
+    margin-bottom: 12px;
+  }
+  .stats-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 12px;
+  }
+  .lock-btn {
+    padding: 6px 12px;
+    font-size: 12px;
+    color: var(--error);
+    background: #ffebee;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  /* 加载动画 */
+  .spinner {
+    width: 24px;
+    height: 24px;
+    border: 2px solid #e0e0e0;
+    border-top-color: var(--primary);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin: 12px auto;
+    display: none;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  /* Toast */
+  .toast {
+    position: fixed;
+    bottom: 40px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0,0,0,0.8);
+    color: white;
+    padding: 10px 20px;
+    border-radius: 20px;
+    font-size: 13px;
+    z-index: 200;
+    opacity: 0;
+    transition: opacity 0.3s;
+    pointer-events: none;
+  }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+
+<header class="app-header">
+  <h1>🔐 密码保险箱</h1>
+  <div class="subtitle">离线密包 · 本地解密</div>
+</header>
+
+<div class="container">
+  <!-- 解锁页面 -->
+  <div id="unlock-page">
+    <div class="lock-icon">🔒</div>
+    <div class="unlock-title">密包已加密</div>
+    <div class="unlock-desc">请输入您的主密码以解密查看账号数据</div>
+    <div class="input-group">
+      <label for="master-password">主密码</label>
+      <input type="password" id="master-password" placeholder="输入主密码" autocomplete="off">
+    </div>
+    <button class="btn" id="btn-unlock" onclick="doUnlock()">解密查看</button>
+    <div class="spinner" id="spinner"></div>
+    <div class="error-msg" id="error-msg"></div>
+    <div class="info-msg">
+      💡 此文件完全离线运行，不连接任何服务器<br>
+      所有解密操作均在您的设备本地完成
+    </div>
+  </div>
+
+  <!-- 主内容页面 -->
+  <div id="vault-page">
+    <div class="stats-bar">
+      <span id="stats-text">共 0 条</span>
+      <button class="lock-btn" onclick="doLock()">🔒 锁定</button>
+    </div>
+    <div class="toolbar">
+      <input type="text" class="search-box" id="search-input" placeholder="搜索应用名、账号、备注..." oninput="onSearch()">
+    </div>
+    <div class="category-tabs" id="category-tabs">
+      <div class="tab active" data-cat="全部" onclick="filterCategory('全部')">全部</div>
+    </div>
+    <div id="account-list"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+  // ==================== 配置数据（由 Python 注入） ====================
+  const ENCRYPTED_DATA = "{{ENCRYPTED_DATA}}";
+  const SALT_BASE64 = "{{SALT_BASE64}}";
+  const GENERATED_AT = "{{GENERATED_AT}}";
+  const ACCOUNT_COUNT = parseInt("{{ACCOUNT_COUNT}}" || "0", 10);
+
+  // ==================== 全局状态 ====================
+  let accounts = [];
+  let currentCategory = '全部';
+  let searchKeyword = '';
+  let derivedKey = null;
+
+  // ==================== WebCrypto 解密 ====================
+  async function deriveKey(password, saltBytes) {
+    const encoder = new TextEncoder();
+    const keyMaterial = await crypto.subtle.importKey(
+      'raw', encoder.encode(password), 'PBKDF2', false, ['deriveKey']
+    );
+    return crypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt: saltBytes, iterations: 100000, hash: 'SHA-256' },
+      keyMaterial,
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['decrypt']
+    );
+  }
+
+  async function decryptData(key, encryptedBase64) {
+    const data = base64ToUint8Array(encryptedBase64);
+    // 格式: nonce (12 bytes) + tag (16 bytes) + ciphertext
+    if (data.length < 28) throw new Error('密文格式无效');
+    const nonce = data.slice(0, 12);
+    const ciphertext = data.slice(12);
+    const decrypted = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: nonce },
+      key,
+      ciphertext
+    );
+    return new TextDecoder().decode(decrypted);
+  }
+
+  function base64ToUint8Array(base64) {
+    const binary = atob(base64);
+    const len = binary.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+  }
+
+  // ==================== UI 交互 ====================
+  async function doUnlock() {
+    const passwordInput = document.getElementById('master-password');
+    const btn = document.getElementById('btn-unlock');
+    const spinner = document.getElementById('spinner');
+    const errorEl = document.getElementById('error-msg');
+    const password = passwordInput.value.trim();
+
+    if (!password) {
+      showError('请输入主密码');
+      return;
+    }
+
+    btn.disabled = true;
+    spinner.style.display = 'block';
+    errorEl.textContent = '';
+
+    try {
+      const saltBytes = base64ToUint8Array(SALT_BASE64);
+      derivedKey = await deriveKey(password, saltBytes);
+      const jsonText = await decryptData(derivedKey, ENCRYPTED_DATA);
+      accounts = JSON.parse(jsonText);
+      showVault();
+    } catch (e) {
+      console.error(e);
+      showError('密码错误或解密失败，请确认主密码是否正确');
+      derivedKey = null;
+    } finally {
+      btn.disabled = false;
+      spinner.style.display = 'none';
+    }
+  }
+
+  function showError(msg) {
+    document.getElementById('error-msg').textContent = msg;
+  }
+
+  function showVault() {
+    document.getElementById('unlock-page').style.display = 'none';
+    document.getElementById('vault-page').style.display = 'block';
+    document.title = '密码保险箱 - 已解锁';
+    renderCategories();
+    renderAccounts();
+    updateStats();
+  }
+
+  function doLock() {
+    accounts = [];
+    derivedKey = null;
+    currentCategory = '全部';
+    searchKeyword = '';
+    document.getElementById('vault-page').style.display = 'none';
+    document.getElementById('unlock-page').style.display = 'flex';
+    document.getElementById('master-password').value = '';
+    document.getElementById('error-msg').textContent = '';
+    document.title = '密码保险箱';
+  }
+
+  function showToast(msg) {
+    const toast = document.getElementById('toast');
+    toast.textContent = msg;
+    toast.classList.add('show');
+    setTimeout(() => toast.classList.remove('show'), 2000);
+  }
+
+  // ==================== 账号列表渲染 ====================
+  function renderCategories() {
+    const tabs = document.getElementById('category-tabs');
+    const categories = new Set(['全部']);
+    accounts.forEach(a => { if (a.category) categories.add(a.category); });
+    const catArray = Array.from(categories);
+    // 保持顺序：全部优先
+    catArray.sort((a, b) => {
+      if (a === '全部') return -1;
+      if (b === '全部') return 1;
+      return a.localeCompare(b, 'zh-CN');
+    });
+    tabs.innerHTML = catArray.map(cat =>
+      `<div class="tab ${cat === currentCategory ? 'active' : ''}" data-cat="${escapeHtml(cat)}" onclick="filterCategory('${escapeHtml(cat)}')">${escapeHtml(cat)}</div>`
+    ).join('');
+  }
+
+  function filterCategory(cat) {
+    currentCategory = cat;
+    renderCategories();
+    renderAccounts();
+    updateStats();
+  }
+
+  function onSearch() {
+    searchKeyword = document.getElementById('search-input').value.trim().toLowerCase();
+    renderAccounts();
+    updateStats();
+  }
+
+  function getFilteredAccounts() {
+    let list = accounts;
+    if (currentCategory !== '全部') {
+      list = list.filter(a => a.category === currentCategory);
+    }
+    if (searchKeyword) {
+      const kw = searchKeyword;
+      list = list.filter(a =>
+        (a.app_name && a.app_name.toLowerCase().includes(kw)) ||
+        (a.username && a.username.toLowerCase().includes(kw)) ||
+        (a.remark && a.remark.toLowerCase().includes(kw)) ||
+        (a.url && a.url.toLowerCase().includes(kw))
+      );
+    }
+    return list;
+  }
+
+  function renderAccounts() {
+    const container = document.getElementById('account-list');
+    const list = getFilteredAccounts();
+    if (list.length === 0) {
+      container.innerHTML = `
+        <div class="empty-state">
+          <div class="icon">📭</div>
+          <div>暂无账号</div>
+        </div>`;
+      return;
+    }
+    container.innerHTML = list.map(acc => renderAccountCard(acc)).join('');
+  }
+
+  function renderAccountCard(acc) {
+    const tags = parseTags(acc.tags);
+    const tagsHtml = tags.length
+      ? `<div class="tags">${tags.map(t => `<span class="tag">${escapeHtml(t)}</span>`).join('')}</div>`
+      : '';
+
+    let fields = '';
+    if (acc.username) {
+      fields += makeField('账号', acc.username, `copyText('${escapeJs(acc.username)}', '账号')`);
+    }
+    if (acc.password) {
+      fields += makeField('密码', maskText(acc.password), `copyText('${escapeJs(acc.password)}', '密码')`, true);
+    }
+    if (acc.url) {
+      fields += makeField('网址', acc.url, `copyText('${escapeJs(acc.url)}', '网址')`);
+    }
+    if (acc.remark) {
+      fields += `<div class="account-field"><span class="field-label">备注</span><span class="field-value" style="font-family:inherit;">${escapeHtml(acc.remark)}</span></div>`;
+    }
+
+    return `
+      <div class="account-card">
+        <div class="account-header">
+          <div class="account-name">${escapeHtml(acc.app_name || '未命名')}</div>
+          <div class="account-category">${escapeHtml(acc.category || '其他')}</div>
+        </div>
+        ${fields}
+        ${tagsHtml}
+      </div>
+    `;
+  }
+
+  function makeField(label, value, copyAction, isPassword = false) {
+    const display = isPassword ? maskText(value) : escapeHtml(value);
+    return `
+      <div class="account-field">
+        <span class="field-label">${escapeHtml(label)}</span>
+        <span class="field-value">${display}</span>
+        <button class="copy-btn" onclick="${copyAction}">复制</button>
+      </div>
+    `;
+  }
+
+  function maskText(text) {
+    if (!text) return '';
+    if (text.length <= 4) return '•'.repeat(text.length);
+    return text.slice(0, 2) + '•'.repeat(text.length - 4) + text.slice(-2);
+  }
+
+  function parseTags(tags) {
+    if (!tags) return [];
+    if (Array.isArray(tags)) return tags;
+    try {
+      const parsed = JSON.parse(tags);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function updateStats() {
+    const filtered = getFilteredAccounts();
+    const total = accounts.length;
+    const text = currentCategory === '全部' && !searchKeyword
+      ? `共 ${total} 条`
+      : `显示 ${filtered.length} / ${total} 条`;
+    document.getElementById('stats-text').textContent = text;
+  }
+
+  async function copyText(text, label) {
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast(`已复制${label}`);
+    } catch (e) {
+      // 降级方案
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      showToast(`已复制${label}`);
+    }
+  }
+
+  function escapeHtml(text) {
+    if (text === null || text === undefined) return '';
+    const div = document.createElement('div');
+    div.textContent = String(text);
+    return div.innerHTML;
+  }
+
+  function escapeJs(str) {
+    if (!str) return '';
+    return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
+  }
+
+  // ==================== 初始化 ====================
+  document.addEventListener('DOMContentLoaded', () => {
+    // 回车解锁
+    document.getElementById('master-password').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') doUnlock();
+    });
+  });
+</script>
+</body>
+</html>

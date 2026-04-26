@@ -3434,8 +3434,9 @@ class MainWindow(QMainWindow):
         self._ai_update_chat_display()
         self.ai_action_buttons.show()
         
-        # 恢复 ReAct 循环：将执行结果通知 AI，继续下一轮
-        self._continue_react_loop()
+        # 操作已完成，结束 ReAct 循环，不再继续追问 AI
+        self._react_state = ReActState.IDLE
+        self._pending_tool = None
     
     def _on_react_preview_cancelled(self):
         """ReAct 模式：用户取消预览，记录 Observation 并恢复 IDLE"""

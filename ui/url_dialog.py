@@ -5,7 +5,7 @@
 from PyQt6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLineEdit, QLabel, QTextEdit,
-    QMessageBox, QFrame
+    QMessageBox, QFrame, QComboBox
 )
 from PyQt6.QtCore import Qt
 
@@ -106,10 +106,25 @@ class URLEditDialog(QDialog):
         lbl_category.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         category_layout.addWidget(lbl_category)
         
-        self.cmb_category = QLineEdit()
-        self.cmb_category.setPlaceholderText("选择或输入分类")
-        self.cmb_category.setFixedHeight(36)
-        category_layout.addWidget(self.cmb_category)
+        self.cmb_parent = QComboBox()
+        self.cmb_parent.setEditable(True)
+        self.cmb_parent.setPlaceholderText("请选择")
+        self.cmb_parent.setFixedHeight(36)
+        self.cmb_parent.currentTextChanged.connect(self._on_parent_changed)
+        category_layout.addWidget(self.cmb_parent)
+        
+        lbl_sep = QLabel(">")
+        lbl_sep.setStyleSheet("color: #999; font-size: 14px; font-weight: bold;")
+        lbl_sep.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        category_layout.addWidget(lbl_sep)
+        
+        self.cmb_child = QComboBox()
+        self.cmb_child.setEditable(True)
+        self.cmb_child.setPlaceholderText("子类（可选）")
+        self.cmb_child.setFixedHeight(36)
+        category_layout.addWidget(self.cmb_child)
+        
+        self._load_categories()
         
         self.btn_ai_categorize = QPushButton("AI 智能分类")
         self.btn_ai_categorize.setFixedHeight(36)
@@ -118,14 +133,6 @@ class URLEditDialog(QDialog):
         category_layout.addWidget(self.btn_ai_categorize)
         
         layout.addLayout(category_layout)
-        
-        # 分类下拉提示标签
-        categories = self._get_categories()
-        if categories:
-            lbl_cats = QLabel(f"可用分类：{', '.join(categories[:10])}")
-            lbl_cats.setStyleSheet("color: #999; font-size: 11px;")
-            lbl_cats.setIndent(84)
-            layout.addWidget(lbl_cats)
         
         # ===== 标签（带 AI 生成按钮）=====
         tags_layout = QHBoxLayout()
@@ -239,6 +246,23 @@ class URLEditDialog(QDialog):
             btn_delete.clicked.connect(self.on_delete)
             layout.addWidget(btn_delete, alignment=Qt.AlignmentFlag.AlignCenter)
     
+    def _load_categories(self):
+        """加载主类下拉框"""
+        tree = self.url_service.get_category_tree()
+        self.cmb_parent.clear()
+        self.cmb_parent.addItem("请选择")
+        self.cmb_parent.addItems(sorted(tree.keys()))
+    
+    def _on_parent_changed(self, parent_name):
+        """主类改变时更新子类下拉框"""
+        self.cmb_child.clear()
+        self.cmb_child.addItem("")  # 空表示无子类（一级分类）
+        
+        tree = self.url_service.get_category_tree()
+        if parent_name in tree:
+            for child in sorted(tree[parent_name]['children']):
+                self.cmb_child.addItem(child)
+    
     def _update_ai_buttons(self, state):
         """根据 AI 状态更新按钮可用性"""
         enabled = state.status == AIStatus.ONLINE
@@ -253,7 +277,17 @@ class URLEditDialog(QDialog):
         """加载网址数据（编辑模式）"""
         self.txt_title.setText(self.url_item.title)
         self.txt_url.setText(self.url_item.url)
-        self.cmb_category.setText(self.url_item.category or '其他')
+        category = self.url_item.category or '其他'
+        from core.category_utils import parse_category_path
+        parent, child = parse_category_path(category)
+        if parent:
+            idx = self.cmb_parent.findText(parent)
+            if idx < 0:
+                self.cmb_parent.addItem(parent)
+                idx = self.cmb_parent.count() - 1
+            self.cmb_parent.setCurrentIndex(idx)
+            if child:
+                self.cmb_child.setCurrentText(child)
         self.txt_remark.setText(self.url_item.remark)
         self.txt_ai_remark.setText(self.url_item.ai_remark)
         
@@ -270,7 +304,16 @@ class URLEditDialog(QDialog):
             return
         
         category = self.url_service.auto_categorize(url, title)
-        self.cmb_category.setText(category)
+        from core.category_utils import parse_category_path
+        parent, child = parse_category_path(category)
+        if parent:
+            idx = self.cmb_parent.findText(parent)
+            if idx < 0:
+                self.cmb_parent.addItem(parent)
+                idx = self.cmb_parent.count() - 1
+            self.cmb_parent.setCurrentIndex(idx)
+            if child:
+                self.cmb_child.setCurrentText(child)
         QMessageBox.information(self, "分类成功", f"AI 识别分类：{category}")
     
     def on_ai_generate_tags(self):
@@ -368,9 +411,28 @@ class URLEditDialog(QDialog):
         tags_text = self.txt_tags.text().strip()
         tags = [t.strip() for t in tags_text.split(",") if t.strip()]
         
+        from core.category_utils import validate_category_name, format_category_path
+        
+        parent = self.cmb_parent.currentText().strip()
+        child = self.cmb_child.currentText().strip()
+        
+        if not parent or parent == "请选择":
+            QMessageBox.warning(self, "验证失败", "请选择主分类")
+            return
+        
+        if not validate_category_name(parent):
+            QMessageBox.warning(self, "验证失败", "主分类名不能包含 /、>、· 或首尾空白")
+            return
+        
+        if child and not validate_category_name(child):
+            QMessageBox.warning(self, "验证失败", "子分类名不能包含 /、>、· 或首尾空白")
+            return
+        
+        category = format_category_path(parent, child if child else None)
+        
         self.url_item.title = title
         self.url_item.url = url
-        self.url_item.category = self.cmb_category.text().strip() or '其他'
+        self.url_item.category = category
         self.url_item.remark = self.txt_remark.toPlainText().strip()
         self.url_item.ai_remark = self.txt_ai_remark.toPlainText().strip()
         self.url_item.set_tags_list(tags)

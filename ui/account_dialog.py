@@ -363,27 +363,23 @@ class AccountDialog(QDialog):
             )
             RepositoryFactory.register('accounts', repo)
     
-    def _get_categories(self) -> list:
-        """通过 RepositoryFactory 获取分类列表（确保与数据库同步，不显示幽灵类别）"""
-        self._ensure_repository_registered()
-        try:
-            return RepositoryFactory.get_repository('accounts').get_categories()
-        except Exception as e:
-            print(f"[AccountDialog] RepositoryFactory 获取分类失败: {e}")
-            # fallback：只取有账号在用的类别，按 category_order 排序
-            used_cats = set(self.db.get_categories())
-            order_map = self.db.get_category_orders()
-            # 有排序的放前面，按 sort_index 排序
-            sorted_with_order = sorted(
-                [c for c in used_cats if c in order_map],
-                key=lambda c: order_map.get(c, 0)
-            )
-            # 没有排序的放后面，按字母排序
-            sorted_without_order = sorted([c for c in used_cats if c not in order_map])
-            db_cats = sorted_with_order + sorted_without_order
-            if '其他' not in db_cats:
-                db_cats.append('其他')
-            return db_cats
+
+    def _load_categories(self):
+        """加载主类下拉框"""
+        tree = self.account_service.get_category_tree()
+        self.cmb_parent.clear()
+        self.cmb_parent.addItem("请选择")
+        self.cmb_parent.addItems(sorted(tree.keys()))
+    
+    def _on_parent_changed(self, parent_name):
+        """主类改变时更新子类下拉框"""
+        self.cmb_child.clear()
+        self.cmb_child.addItem("")  # 空表示无子类（一级分类）
+        
+        tree = self.account_service.get_category_tree()
+        if parent_name in tree:
+            for child in sorted(tree[parent_name]['children']):
+                self.cmb_child.addItem(child)
     
     def get_ocr_service(self):
         """延迟获取 OCR 服务"""
@@ -579,12 +575,25 @@ class AccountDialog(QDialog):
         lbl_category.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         category_layout.addWidget(lbl_category)
         
-        self.cmb_category = PopupComboBox()
-        # 通过 RepositoryFactory 获取分类（确保与数据库实时同步）
-        db_cats = self._get_categories()
-        self.cmb_category.addItems(db_cats)
-        self.cmb_category.setFixedHeight(36)
-        category_layout.addWidget(self.cmb_category)
+        self.cmb_parent = QComboBox()
+        self.cmb_parent.setEditable(True)
+        self.cmb_parent.setPlaceholderText("请选择")
+        self.cmb_parent.setFixedHeight(36)
+        self.cmb_parent.currentTextChanged.connect(self._on_parent_changed)
+        category_layout.addWidget(self.cmb_parent)
+        
+        lbl_sep = QLabel(">")
+        lbl_sep.setStyleSheet("color: #999; font-size: 14px; font-weight: bold;")
+        lbl_sep.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        category_layout.addWidget(lbl_sep)
+        
+        self.cmb_child = QComboBox()
+        self.cmb_child.setEditable(True)
+        self.cmb_child.setPlaceholderText("子类（可选）")
+        self.cmb_child.setFixedHeight(36)
+        category_layout.addWidget(self.cmb_child)
+        
+        self._load_categories()
         
         self.btn_ai_categorize = QPushButton("AI 智能分类")
         self.btn_ai_categorize.setFixedHeight(36)
@@ -844,9 +853,16 @@ class AccountDialog(QDialog):
         self.btn_ai_categorize.setEnabled(True)
         self.btn_ai_categorize.setText("AI 智能分类")
         
-        index = self.cmb_category.findText(result)
-        if index >= 0:
-            self.cmb_category.setCurrentIndex(index)
+        from core.category_utils import parse_category_path
+        parent, child = parse_category_path(result)
+        if parent:
+            idx = self.cmb_parent.findText(parent)
+            if idx < 0:
+                self.cmb_parent.addItem(parent)
+                idx = self.cmb_parent.count() - 1
+            self.cmb_parent.setCurrentIndex(idx)
+            if child:
+                self.cmb_child.setCurrentText(child)
             QMessageBox.information(self, "分类成功", f"AI 识别分类：{result}")
     
     def _on_categorize_failed(self, task_id, error):
@@ -993,13 +1009,18 @@ class AccountDialog(QDialog):
         self.txt_remark.setText(self.account.remark)
         self.txt_ai_remark.setText(self.account.ai_remark)
         
-        # 设置分类（若账号当前分类不在列表中，临时加入）
+        # 设置分类
         if self.account.category:
-            index = self.cmb_category.findText(self.account.category)
-            if index < 0:
-                self.cmb_category.addItem(self.account.category)
-                index = self.cmb_category.count() - 1
-            self.cmb_category.setCurrentIndex(index)
+            from core.category_utils import parse_category_path
+            parent, child = parse_category_path(self.account.category)
+            if parent:
+                idx = self.cmb_parent.findText(parent)
+                if idx < 0:
+                    self.cmb_parent.addItem(parent)
+                    idx = self.cmb_parent.count() - 1
+                self.cmb_parent.setCurrentIndex(idx)
+                if child:
+                    self.cmb_child.setCurrentText(child)
         
         # 刷新标签显示
         self.refresh_tags_display()
@@ -1073,7 +1094,10 @@ class AccountDialog(QDialog):
         """AI 生成备注按钮点击（异步）"""
         app_name = self.txt_app_name.text().strip()
         url = self.txt_url.text().strip()
-        category = self.cmb_category.currentText()
+        parent = self.cmb_parent.currentText().strip()
+        child = self.cmb_child.currentText().strip()
+        from core.category_utils import format_category_path
+        category = format_category_path(parent if parent != "请选择" else "", child if child else None)
         
         if not app_name:
             QMessageBox.warning(self, "提示", "请先输入应用名")
@@ -1128,6 +1152,25 @@ class AccountDialog(QDialog):
         strength_result = evaluate_password_strength(password)
         security_level = strength_result['label']
         
+        from core.category_utils import validate_category_name, format_category_path
+        
+        parent = self.cmb_parent.currentText().strip()
+        child = self.cmb_child.currentText().strip()
+        
+        if not parent or parent == "请选择":
+            QMessageBox.warning(self, "验证失败", "请选择主分类")
+            return
+        
+        if not validate_category_name(parent):
+            QMessageBox.warning(self, "验证失败", "主分类名不能包含 /、>、· 或首尾空白")
+            return
+        
+        if child and not validate_category_name(child):
+            QMessageBox.warning(self, "验证失败", "子分类名不能包含 /、>、· 或首尾空白")
+            return
+        
+        category = format_category_path(parent, child if child else None)
+        
         # 创建账号对象
         account = Account(
             id=self.account.id if self.is_edit_mode else None,
@@ -1135,7 +1178,7 @@ class AccountDialog(QDialog):
             url=self.txt_url.text().strip(),
             username=username,
             password=password,
-            category=self.cmb_category.currentText(),
+            category=category,
             tags=self.account.tags if self.is_edit_mode else '[]',
             remark=self.txt_remark.toPlainText().strip(),
             ai_remark=self.txt_ai_remark.text().strip(),
@@ -1215,6 +1258,11 @@ class AccountDialog(QDialog):
         from .tag_editor_dialog import TagEditorDialog
         from services.tag_service import TagService
         
+        parent = self.cmb_parent.currentText().strip()
+        child = self.cmb_child.currentText().strip()
+        from core.category_utils import format_category_path
+        category = format_category_path(parent if parent != "请选择" else "", child if child else None)
+        
         # 创建临时账号对象（用于编辑）
         temp_account = Account(
             id=self.account.id if self.is_edit_mode else None,
@@ -1222,7 +1270,7 @@ class AccountDialog(QDialog):
             url=self.txt_url.text(),
             username=self.txt_username.text(),
             password=self.txt_password.text(),
-            category=self.cmb_category.currentText(),
+            category=category,
             tags=self.account.tags if self.is_edit_mode else '[]'
         )
         

@@ -62,6 +62,56 @@ class AIClassificationService:
     # 冷却时间已移除：用户可随时执行一键整理
     # 低置信度阈值
     LOW_CONFIDENCE_THRESHOLD = 0.6
+
+    def _format_category_tree(self, categories: list) -> str:
+        """将分类列表格式化为树形文本，用于注入 Prompt"""
+        from core.category_utils import build_category_tree
+        tree = build_category_tree([c for c in categories if c and c != '全部'])
+        lines = []
+        for parent, info in sorted(tree.items()):
+            children = sorted(info.get('children', set()))
+            if children:
+                lines.append(f"- {parent}")
+                for child in children:
+                    lines.append(f"  - {parent}>{child}")
+            else:
+                lines.append(f"- {parent}")
+        return "\n".join(lines) if lines else "（暂无分类）"
+    
+    def _sanitize_classified_category(self, raw_category: str, approved_categories: list) -> str:
+        """校验并修正 AI 输出的分类路径"""
+        from core.category_utils import format_category_path, parse_category_path, validate_category_name
+        cleaned = raw_category.strip()
+        if not cleaned:
+            return '其他'
+
+        parent = None
+        child = None
+        try:
+            parent, child = parse_category_path(cleaned)
+            if not validate_category_name(parent) or (child and not validate_category_name(child)):
+                raise ValueError("Invalid category name")
+            cleaned = format_category_path(parent, child)
+        except ValueError:
+            # 回退：尝试提取一级分类
+            if parent is not None:
+                parent_fallback = parent
+            else:
+                sep_idx = cleaned.find('>')
+                parent_fallback = cleaned[:sep_idx].strip() if sep_idx != -1 else cleaned.strip()
+
+            if validate_category_name(parent_fallback) and parent_fallback in approved_categories:
+                return parent_fallback
+            # 完全回退到"其他"
+            return '其他'
+
+        # 如果不在批准列表中，回退
+        if cleaned not in approved_categories:
+            # 尝试一级分类回退
+            if parent in approved_categories:
+                return parent
+            return '其他'
+        return cleaned
     
     def __init__(self, db_manager=None, url_db_manager=None):
         self.db = db_manager
@@ -125,8 +175,15 @@ class AIClassificationService:
 6. **目标**："其他"类别的账号数量不得超过总数的 10%
 7. 对于当前已在合理分类中的账号，保留其现有分类
 
-## 现有类别参考（仅供参考，不限于此）
-{', '.join(existing_categories)}
+## 当前分类体系（请优先在此体系内归类，必要时可新建）
+{self._format_category_tree(existing_categories)}
+
+## 输出规则
+1. 分类名称使用路径格式 `主类>子类`（最多二级），如 `工作>开发工具`、`娱乐>游戏`
+2. 如果某个条目只属于一个大类、不需要细分，可只输出主类，如 `学术与研究`
+3. 如需新建子类，确保主类已存在于体系中；如需新建主类，直接输出主类名
+4. 分类名禁止包含 `/`、`>`、`·` 三个符号（`>` 仅作为层级分隔符出现一次）
+5. 并列概念用"与"连接，如 `金融与支付`
 
 ## 账号列表（共{len(accounts)}条，请务必分析全部）：
 {items_str}
@@ -152,8 +209,11 @@ class AIClassificationService:
             
             proposals = []
             for prop in data.get('proposals', []):
+                raw_name = prop.get('name', '未命名')
+                from services.ai_tools import sanitize_ai_category
+                sanitized_name = sanitize_ai_category(raw_name)
                 proposal = CategoryProposal(
-                    name=prop.get('name', '未命名'),
+                    name=sanitized_name,
                     description=prop.get('description', ''),
                     estimated_count=prop.get('estimated_count', 0),
                     examples=prop.get('examples', []),
@@ -201,8 +261,15 @@ class AIClassificationService:
 6. **目标**："其他"类别的网址数量不得超过总数的 10%
 7. 对于当前已在合理分类中的网址，保留其现有分类
 
-## 现有类别参考（仅供参考，不限于此）
-{', '.join(existing_categories)}
+## 当前分类体系（请优先在此体系内归类，必要时可新建）
+{self._format_category_tree(existing_categories)}
+
+## 输出规则
+1. 分类名称使用路径格式 `主类>子类`（最多二级），如 `工作>开发工具`、`娱乐>游戏`
+2. 如果某个条目只属于一个大类、不需要细分，可只输出主类，如 `学术与研究`
+3. 如需新建子类，确保主类已存在于体系中；如需新建主类，直接输出主类名
+4. 分类名禁止包含 `/`、`>`、`·` 三个符号（`>` 仅作为层级分隔符出现一次）
+5. 并列概念用"与"连接，如 `金融与支付`
 
 ## 网址列表（共{len(urls)}条，请务必分析全部）：
 {items_str}
@@ -226,8 +293,11 @@ class AIClassificationService:
             
             proposals = []
             for prop in data.get('proposals', []):
+                raw_name = prop.get('name', '未命名')
+                from services.ai_tools import sanitize_ai_category
+                sanitized_name = sanitize_ai_category(raw_name)
                 proposal = CategoryProposal(
-                    name=prop.get('name', '未命名'),
+                    name=sanitized_name,
                     description=prop.get('description', ''),
                     estimated_count=prop.get('estimated_count', 0),
                     examples=prop.get('examples', []),
@@ -446,7 +516,7 @@ class AIClassificationService:
         prompt = f"""请将以下{item_type}分配到最合适的类别中。
 
 ## 可用类别（用户已确认的分类体系）
-{', '.join(categories)}
+{self._format_category_tree(categories)}
 
 ## 分类原则
 1. 仔细阅读每个条目的名称、网址、备注，找到与类别的最佳匹配
@@ -454,6 +524,9 @@ class AIClassificationService:
 3. 只有当条目与所有类别的关联度都极低（几乎完全不相关）时，才归入"其他"
 4. "其他"的使用比例应控制在 10% 以内
 5. 对于跨域条目，选择最相关的一个类别（强制单选）
+6. 类别名使用分类路径格式 `主类>子类`（最多二级），如 `工作>开发工具`
+7. 如果某个条目只属于一个大类、不需要细分，可只输出主类，如 `学术与研究`
+8. 分类名禁止包含 `/`、`>`、`·` 三个符号（`>` 仅作为层级分隔符出现一次）
 
 ## 条目列表（格式：序号|名称|网址|当前分类|备注）：
 {items_str}
@@ -482,12 +555,11 @@ class AIClassificationService:
                 if 0 <= idx < len(batch):
                     item = batch[idx]
                     old_cat = item.category
-                    new_cat = res.get('category', old_cat)
+                    raw_cat = res.get('category', old_cat)
                     confidence = res.get('confidence', 0.5)
                     
-                    # 如果类别不在批准列表中，归入"其他"
-                    if new_cat not in categories:
-                        new_cat = '其他'
+                    # 校验并修正 AI 输出的分类路径
+                    new_cat = self._sanitize_classified_category(raw_cat, categories)
                     
                     change = ClassificationChange(
                         item_id=item.id if hasattr(item, 'id') else 0,

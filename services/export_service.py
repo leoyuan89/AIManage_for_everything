@@ -1,7 +1,8 @@
 """
 导出服务模块
-支持：Excel 导出、加密备份导出
+支持：Excel 导出、加密备份导出、HTML 书签导出
 """
+import html
 import json
 import base64
 from pathlib import Path
@@ -174,6 +175,109 @@ class ExportService:
             
         except Exception as e:
             print(f"[Export] Encrypted backup failed: {e}")
+            return False
+    
+    def export_urls_to_html(self, urls: List, file_path: str) -> bool:
+        """
+        导出网址到 HTML 书签文件（Netscape Bookmark Format）
+        可被 Chrome / Edge / Firefox 导入
+        
+        按二级分类嵌套结构生成：<H3> 主类 → <DL> → <H3> 子类 → <DL> → <A> 链接
+        
+        Args:
+            urls: 要导出的网址列表（URLItem）
+            file_path: 导出文件路径
+            
+        Returns:
+            是否成功
+        """
+        try:
+            from core.category_utils import parse_category_path
+            
+            def _build_nested_groups(urls):
+                """构建二级嵌套结构：{parent: {'direct': [], 'children': {child: []}}}"""
+                groups = {}
+                for item in urls:
+                    parent, child = parse_category_path(item.category or '其他')
+                    if parent not in groups:
+                        groups[parent] = {'direct': [], 'children': {}}
+                    if child:
+                        if child not in groups[parent]['children']:
+                            groups[parent]['children'][child] = []
+                        groups[parent]['children'][child].append(item)
+                    else:
+                        groups[parent]['direct'].append(item)
+                return groups
+            
+            def to_timestamp(dt) -> int:
+                if isinstance(dt, datetime):
+                    return int(dt.timestamp())
+                return int(datetime.now().timestamp())
+            
+            lines = [
+                '<!DOCTYPE NETSCAPE-Bookmark-file-1>',
+                '<!-- This is an automatically generated file.',
+                '     It will be read and overwritten.',
+                '     DO NOT EDIT! -->',
+                '<META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=UTF-8">',
+                '<TITLE>Bookmarks</TITLE>',
+                '<H1>Bookmarks</H1>',
+                '<DL><p>',
+            ]
+            
+            now_ts = to_timestamp(datetime.now())
+            groups = _build_nested_groups(urls)
+            
+            for parent_name in sorted(groups.keys()):
+                data = groups[parent_name]
+                # 取父文件夹时间戳（优先用直接条目，否则用子类条目）
+                parent_items = data['direct'] or (
+                    next(iter(data['children'].values())) if data['children'] else []
+                )
+                parent_ts = to_timestamp(parent_items[0].created_at) if parent_items else now_ts
+                
+                # 一级文件夹
+                lines.append(f'    <DT><H3 ADD_DATE="{parent_ts}" LAST_MODIFIED="{now_ts}">{html.escape(parent_name)}</H3>')
+                lines.append('    <DL><p>')
+                
+                # 属于一级分类本身的条目（无子类）
+                for item in data['direct']:
+                    item_ts = to_timestamp(item.created_at)
+                    title = html.escape(item.title or item.url or '未命名')
+                    url = html.escape(item.url or '')
+                    tip = html.escape(item.remark or item.ai_remark or '')
+                    attr_title = f' TITLE="{tip}"' if tip else ''
+                    lines.append(f'        <DT><A HREF="{url}" ADD_DATE="{item_ts}"{attr_title}>{title}</A>')
+                
+                # 二级文件夹
+                for child_name in sorted(data['children'].keys()):
+                    child_items = data['children'][child_name]
+                    child_ts = to_timestamp(child_items[0].created_at) if child_items else now_ts
+                    
+                    lines.append(f'        <DT><H3 ADD_DATE="{child_ts}" LAST_MODIFIED="{now_ts}">{html.escape(child_name)}</H3>')
+                    lines.append('        <DL><p>')
+                    
+                    for item in child_items:
+                        item_ts = to_timestamp(item.created_at)
+                        title = html.escape(item.title or item.url or '未命名')
+                        url = html.escape(item.url or '')
+                        tip = html.escape(item.remark or item.ai_remark or '')
+                        attr_title = f' TITLE="{tip}"' if tip else ''
+                        lines.append(f'            <DT><A HREF="{url}" ADD_DATE="{item_ts}"{attr_title}>{title}</A>')
+                    
+                    lines.append('        </DL><p>')
+                
+                lines.append('    </DL><p>')
+            
+            lines.append('</DL><p>')
+            
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(lines))
+            
+            return True
+            
+        except Exception as e:
+            print(f"[Export] URL HTML export failed: {e}")
             return False
     
     def export_urls_to_excel(self, urls: List, file_path: str) -> bool:

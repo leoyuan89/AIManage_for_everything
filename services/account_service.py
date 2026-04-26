@@ -11,8 +11,6 @@ from models.account import Account
 class AccountService:
     """账号服务：CRUD 操作"""
     
-    CATEGORIES = ['全部', '金融', '社交', '邮箱', '游戏', '工作', '其他']
-    
     def __init__(self, db_manager: DatabaseManager):
         """
         初始化账号服务
@@ -105,6 +103,10 @@ class AccountService:
         """
         按分类获取账号
         
+        如果 category 不含 '>'，视为父节点，返回该父节点下所有条目
+        （含直接条目和子类条目）。
+        如果含 '>'，精确匹配。
+        
         Args:
             category: 分类名称（'全部' 返回所有）
             
@@ -114,8 +116,10 @@ class AccountService:
         if category == '全部':
             return self.get_all_accounts()
         
-        accounts_data = self.db.get_accounts_by_category(category)
-        accounts = [Account.from_dict(data) for data in accounts_data]
+        from core.category_utils import get_prefix_matcher
+        matcher = get_prefix_matcher(category)
+        all_accounts = self.get_all_accounts()
+        accounts = [a for a in all_accounts if matcher(a.category)]
         accounts.sort(key=lambda x: x.app_name.lower())
         return accounts
     
@@ -183,6 +187,17 @@ class AccountService:
             result.append('其他')
         return result
     
+    def get_category_tree(self) -> dict:
+        """
+        获取分类树，用于 UI 级联选择和 AI 分类树注入。
+        
+        Returns:
+            {parent: {'children': set(), 'has_direct_items': bool}}
+        """
+        from core.category_utils import build_category_tree
+        cats = self.get_categories()
+        return build_category_tree([c for c in cats if c != '全部'])
+    
     def get_category_orders(self) -> Dict[str, int]:
         """获取分类自定义排序"""
         return self.db.get_category_orders()
@@ -191,17 +206,38 @@ class AccountService:
         """保存分类自定义排序"""
         self.db.save_category_orders(orders)
     
-    def rename_category(self, old_name: str, new_name: str) -> int:
-        """重命名分类"""
-        return self.db.rename_category(old_name, new_name)
+    def rename_category(self, old_category: str, new_category: str) -> bool:
+        """重命名分类（支持子类条目）"""
+        from core.category_utils import get_prefix_matcher
+        matcher = get_prefix_matcher(old_category)
+        all_accounts = self.get_all_accounts()
+        updated = False
+        for account in all_accounts:
+            if matcher(account.category):
+                if account.category == old_category:
+                    new_cat = new_category
+                else:
+                    suffix = account.category[len(old_category):]
+                    new_cat = new_category + suffix
+                self.db.update_account(account.id, {'category': new_cat})
+                updated = True
+        return updated
     
     def add_category(self, category_name: str) -> bool:
         """新建分类（插入排序表，不创建任何账号）"""
         return self.db.add_category_order(category_name)
 
-    def delete_category(self, category_name: str) -> int:
-        """删除分类：条目移至'其他'"""
-        return self.db.delete_category(category_name)
+    def delete_category(self, category: str) -> bool:
+        """删除分类：将匹配条目（含子类）移至'其他'"""
+        from core.category_utils import get_prefix_matcher
+        matcher = get_prefix_matcher(category)
+        all_accounts = self.get_all_accounts()
+        updated = False
+        for account in all_accounts:
+            if matcher(account.category):
+                self.db.update_account(account.id, {'category': '其他'})
+                updated = True
+        return updated
     
     def get_accounts_grouped(self) -> dict:
         """

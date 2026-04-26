@@ -11,6 +11,7 @@ from enum import Enum
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLineEdit, QListWidget, QListWidgetItem,
+    QTreeWidget, QTreeWidgetItem,
     QLabel, QFrame, QSplitter, QMessageBox, QApplication,
     QMenu, QCheckBox, QDialog, QInputDialog, QTextBrowser, QTextEdit,
     QTableWidget, QTableWidgetItem, QHeaderView
@@ -890,19 +891,25 @@ class ActionPreviewWidget(QFrame):
             return
         new_val = edited_item.text()
         updated = False
-        if 'updates' in raw and isinstance(raw['updates'], dict):
-            for field in list(raw['updates'].keys()):
-                raw['updates'][field] = new_val
+
+        if (self._is_build_mode and self._preview_data
+                and self._preview_data.get("operation_type") == "classify"):
+            raw['new_value'] = new_val
+            updated = True
+        else:
+            if 'updates' in raw and isinstance(raw['updates'], dict):
+                for field in list(raw['updates'].keys()):
+                    raw['updates'][field] = new_val
+                    updated = True
+            if 'new_value' in raw:
+                raw['new_value'] = new_val
                 updated = True
-        if 'new_value' in raw:
-            raw['new_value'] = new_val
-            updated = True
-        if 'content' in raw:
-            raw['content'] = new_val
-            updated = True
-        if 'field' in raw and 'new_value' not in raw:
-            raw['new_value'] = new_val
-            updated = True
+            if 'content' in raw:
+                raw['content'] = new_val
+                updated = True
+            if 'field' in raw and 'new_value' not in raw:
+                raw['new_value'] = new_val
+                updated = True
         if updated:
             check_item.setData(Qt.ItemDataRole.UserRole, raw)
             print(f"[ActionPreviewWidget] Row {row} col {col} edited, raw_data updated: {raw}")
@@ -1232,67 +1239,69 @@ class MainWindow(QMainWindow):
         category_header.addWidget(self.btn_category_batch_delete)
         left_layout.addLayout(category_header)
         
-        # 分类列表
-        self.category_list = QListWidget()
-        self.category_list.setFrameShape(QFrame.Shape.NoFrame)
+        # 分类树
+        self.category_tree = QTreeWidget()
+        self.category_tree.setFrameShape(QFrame.Shape.NoFrame)
+        self.category_tree.setHeaderHidden(True)
+        self.category_tree.setColumnCount(1)
         # 新增：占满父容器高度
         from PyQt6.QtWidgets import QSizePolicy
-        self.category_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self._category_list_normal_style = """
-            QListWidget {
+        self.category_tree.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._category_tree_normal_style = """
+            QTreeWidget {
                 background-color: #fafafa;
                 border: none;
             }
-            QListWidget::item {
+            QTreeWidget::item {
                 padding: 12px 15px;
                 border-radius: 0;
             }
-            QListWidget::item:selected {
+            QTreeWidget::item:selected {
                 background-color: #e3f2fd;
                 color: #1976D2;
                 border-left: 3px solid #2196F3;
             }
-            QListWidget::item:hover {
+            QTreeWidget::item:hover {
                 background-color: #d0d0d0;
                 border-left: 3px solid #64B5F6;
             }
         """
-        self._category_list_checkbox_style = """
-            QListWidget {
+        self._category_tree_checkbox_style = """
+            QTreeWidget {
                 background-color: #fafafa;
                 border: none;
             }
-            QListWidget::item {
+            QTreeWidget::item {
                 padding: 12px 15px;
                 border-radius: 0;
             }
-            QListWidget::item:selected {
+            QTreeWidget::item:selected {
                 background-color: #e3f2fd;
                 color: #1976D2;
                 border-left: 3px solid #2196F3;
             }
-            QListWidget::indicator {
+            QTreeWidget::indicator {
                 width: 16px;
                 height: 16px;
             }
-            QListWidget::indicator:unchecked {
+            QTreeWidget::indicator:unchecked {
                 border: 2px solid #90CAF9;
                 background-color: white;
                 border-radius: 3px;
             }
-            QListWidget::indicator:checked {
+            QTreeWidget::indicator:checked {
                 background-color: #2196F3;
                 border: 2px solid #2196F3;
             }
         """
-        self.category_list.setStyleSheet(self._category_list_normal_style)
-        self.category_list.itemClicked.connect(self.on_category_selected)
-        self.category_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.category_list.customContextMenuRequested.connect(self._on_category_context_menu)
-        self.category_list.setDragDropMode(QListWidget.DragDropMode.NoDragDrop)
-        self.category_list.itemChanged.connect(self._on_category_check_changed)
+        self.category_tree.setStyleSheet(self._category_tree_normal_style)
+        self.category_tree.itemClicked.connect(self._on_category_clicked)
+        self.category_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.category_tree.customContextMenuRequested.connect(self._on_category_context_menu)
+        self.category_tree.setDragDropMode(QTreeWidget.DragDropMode.NoDragDrop)
+        self.category_tree.itemChanged.connect(self._on_category_check_changed)
         
-        left_layout.addWidget(self.category_list, 1)  # stretch factor=1，占满剩余高度
+        left_layout.addWidget(self.category_tree, 1)  # stretch factor=1，占满剩余高度
         
         # 类别批量删除底部操作栏
         self.category_sel_bar = QWidget()
@@ -1967,80 +1976,101 @@ class MainWindow(QMainWindow):
         else:
             self.load_urls()
     
-    def _reload_categories(self):
-        """重新加载分类导航"""
-        self.category_list.clear()
+    def _get_total_count(self) -> int:
+        """获取当前模式下总条目数"""
         if self.current_vault == 'accounts':
-            categories = self.account_service.get_categories()
-            # 获取各类别数量
-            counts = {}
-            for acc in self.account_service.get_all_accounts():
-                cat = acc.category or '其他'
-                counts[cat] = counts.get(cat, 0) + 1
+            return len(self.account_service.get_all_accounts())
         else:
-            categories = self._url_service.get_categories()
-            counts = {}
-            for url in self._url_service.get_all_urls():
-                cat = getattr(url, 'category', '其他') or '其他'
-                counts[cat] = counts.get(cat, 0) + 1
+            return len(self._url_service.get_all_urls())
+    
+    def _get_category_count(self, category: str) -> int:
+        """获取指定分类（含子类）的条目数"""
+        if self.current_vault == 'accounts':
+            items = self.account_service.get_accounts_by_category(category)
+        else:
+            items = self._url_service.get_urls_by_category(category)
+        return len(items)
+    
+    def _iter_category_tree_items(self):
+        """遍历分类树中所有节点（排除'全部'根节点）"""
+        root = self.category_tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            top_item = root.child(i)
+            cat = top_item.data(0, Qt.ItemDataRole.UserRole)
+            if cat != '全部':
+                yield top_item
+            for j in range(top_item.childCount()):
+                yield top_item.child(j)
+    
+    def _reload_categories(self):
+        """重新加载分类导航（树形结构）"""
+        self.category_tree.clear()
+        
+        # 获取当前模式的分类树
+        if self.current_vault == 'accounts':
+            tree_data = self.account_service.get_category_tree()
+        else:
+            tree_data = self._url_service.get_category_tree()
         
         edit_mode = getattr(self, '_category_edit_mode', False)
         cat_sel_mode = getattr(self, '_category_selection_mode', False)
-        for category in categories:
-            count = counts.get(category, 0)
+        
+        # 添加"全部"节点
+        total_count = self._get_total_count()
+        root_all = QTreeWidgetItem(self.category_tree)
+        root_all.setText(0, f"全部 ({total_count})")
+        root_all.setData(0, Qt.ItemDataRole.UserRole, "全部")
+        if edit_mode:
+            root_all.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+        elif cat_sel_mode:
+            root_all.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+        
+        # 添加一级节点
+        for parent_name in tree_data.keys():
+            info = tree_data[parent_name]
+            count = self._get_category_count(parent_name)
+            
             # 过滤空分类（保留"全部"和"其他"，以及编辑/选择模式下的所有分类）
-            if not edit_mode and not cat_sel_mode and category not in ('全部', '其他') and count == 0:
+            if not edit_mode and not cat_sel_mode and parent_name not in ('全部', '其他') and count == 0 and not info['children']:
                 continue
-            display_text = f"{category} ({count})" if category != '全部' else f"{category} ({sum(counts.values())})"
+            
+            display_text = f"{parent_name} ({count})"
+            parent_item = QTreeWidgetItem(self.category_tree)
+            parent_item.setText(0, display_text)
+            parent_item.setData(0, Qt.ItemDataRole.UserRole, parent_name)
             
             if edit_mode:
-                # 编辑模式：用自定义 widget，≡ 精确右对齐
-                item = QListWidgetItem()
-                item.setSizeHint(QSize(self.category_list.width(), 40))
-                item.setData(Qt.ItemDataRole.UserRole, category)
-                if category == '全部':
-                    item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-                self.category_list.addItem(item)
-                
-                widget = QWidget()
-                # 透明背景，让 QListWidgetItem 的选中/悬浮效果透出来
-                widget.setStyleSheet("""
-                    QWidget { background-color: transparent; }
-                    QLabel { background-color: transparent; }
-                """)
-                w_layout = QHBoxLayout(widget)
-                w_layout.setContentsMargins(15, 0, 10, 0)
-                w_layout.setSpacing(0)
-                lbl = QLabel(display_text)
-                lbl.setStyleSheet("color: #333; font-size: 13px;")
-                w_layout.addWidget(lbl, 1)
-                if category != '全部':
-                    handle = QLabel("≡")
-                    handle.setStyleSheet("color: #999; font-size: 14px;")
-                    w_layout.addWidget(handle)
-                # 鼠标事件穿透到 QListWidget，保证点击和拖拽正常工作
-                widget.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-                self.category_list.setItemWidget(item, widget)
+                parent_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
             elif cat_sel_mode:
-                # 批量删除模式：带复选框
-                item = QListWidgetItem(f"  {display_text}")
-                item.setData(Qt.ItemDataRole.UserRole, category)
-                if category == '全部':
-                    item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-                else:
-                    item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-                    if category in self._selected_categories:
-                        item.setCheckState(Qt.CheckState.Checked)
+                if parent_name != '全部':
+                    parent_item.setFlags(parent_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                    if parent_name in self._selected_categories:
+                        parent_item.setCheckState(0, Qt.CheckState.Checked)
                     else:
-                        item.setCheckState(Qt.CheckState.Unchecked)
-                self.category_list.addItem(item)
-            else:
-                # 正常模式：简单文本，保持原有选中高亮样式
-                item = QListWidgetItem(f"  {display_text}")
-                item.setData(Qt.ItemDataRole.UserRole, category)
-                self.category_list.addItem(item)
+                        parent_item.setCheckState(0, Qt.CheckState.Unchecked)
+            
+            # 添加子节点
+            for child_name in sorted(info['children']):
+                full_path = f"{parent_name}>{child_name}"
+                child_count = self._get_category_count(full_path)
+                child_item = QTreeWidgetItem(parent_item)
+                child_item.setText(0, f"{child_name} ({child_count})")
+                child_item.setData(0, Qt.ItemDataRole.UserRole, full_path)
+                
+                if edit_mode:
+                    child_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                elif cat_sel_mode:
+                    child_item.setFlags(child_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                    if full_path in self._selected_categories:
+                        child_item.setCheckState(0, Qt.CheckState.Checked)
+                    else:
+                        child_item.setCheckState(0, Qt.CheckState.Unchecked)
+            
+            # 父节点默认展开
+            parent_item.setExpanded(True)
         
-        self.category_list.setCurrentRow(0)
+        # 默认选中"全部"
+        self.category_tree.setCurrentItem(root_all)
         self.current_category = '全部'
     
     def _on_category_edit_toggle(self):
@@ -2051,29 +2081,27 @@ class MainWindow(QMainWindow):
             # 进入编辑模式
             self.btn_category_sort.setText("✓")
             self.btn_category_sort.setToolTip("完成")
-            self.category_list.setDragDropMode(QListWidget.DragDropMode.InternalMove)
-            # "全部" 不能拖拽
-            first_item = self.category_list.item(0)
-            if first_item:
-                first_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-            # 刷新显示，添加拖拽手柄
+            # 树形结构下不启用拖拽，仅做视觉展示
+            self.category_tree.setDragDropMode(QTreeWidget.DragDropMode.NoDragDrop)
+            # 刷新显示
             self._reload_categories()
         else:
-            # 退出编辑模式，保存顺序
+            # 退出编辑模式，保存顺序（仅保存一级节点顺序）
             self._save_category_order()
             self.btn_category_sort.setText("☰")
             self.btn_category_sort.setToolTip("编辑分类顺序")
-            self.category_list.setDragDropMode(QListWidget.DragDropMode.NoDragDrop)
-            # 刷新显示，移除拖拽手柄
+            self.category_tree.setDragDropMode(QTreeWidget.DragDropMode.NoDragDrop)
+            # 刷新显示
             self._reload_categories()
     
     def _save_category_order(self):
-        """保存分类自定义排序到数据库"""
+        """保存分类自定义排序到数据库（仅保存一级节点顺序）"""
         orders = {}
         idx = 0
-        for i in range(self.category_list.count()):
-            item = self.category_list.item(i)
-            category = item.data(Qt.ItemDataRole.UserRole)
+        root = self.category_tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            item = root.child(i)
+            category = item.data(0, Qt.ItemDataRole.UserRole)
             if category == '全部':
                 continue
             orders[category] = idx
@@ -2095,23 +2123,23 @@ class MainWindow(QMainWindow):
             self.btn_category_batch_delete.setText("取消")
             self.btn_category_sort.hide()
             self.category_sel_bar.show()
-            self.category_list.setStyleSheet(self._category_list_checkbox_style)
+            self.category_tree.setStyleSheet(self._category_tree_checkbox_style)
             self._selected_categories.clear()
         else:
             self.btn_category_batch_delete.setText("删除")
             self.btn_category_sort.show()
             self.category_sel_bar.hide()
-            self.category_list.setStyleSheet(self._category_list_normal_style)
+            self.category_tree.setStyleSheet(self._category_tree_normal_style)
             self._selected_categories.clear()
         self._reload_categories()
         self._update_category_sel_bar()
     
-    def _on_category_check_changed(self, item):
+    def _on_category_check_changed(self, item, column):
         """类别复选框状态变化"""
-        category = item.data(Qt.ItemDataRole.UserRole)
+        category = item.data(0, Qt.ItemDataRole.UserRole)
         if category == '全部':
             return
-        if item.checkState() == Qt.CheckState.Checked:
+        if item.checkState(0) == Qt.CheckState.Checked:
             self._selected_categories.add(category)
         else:
             self._selected_categories.discard(category)
@@ -2122,7 +2150,7 @@ class MainWindow(QMainWindow):
         count = len(self._selected_categories)
         self.btn_cat_sel_delete.setText(f"删除({count})")
         # 更新全选按钮文字
-        total_selectable = self.category_list.count() - 1  # 排除"全部"
+        total_selectable = sum(1 for _ in self._iter_category_tree_items())
         if count == total_selectable and total_selectable > 0:
             self.btn_cat_sel_all.setText("取消全选")
         else:
@@ -2130,16 +2158,15 @@ class MainWindow(QMainWindow):
     
     def _toggle_category_select_all(self):
         """全选/取消全选类别"""
-        total_selectable = self.category_list.count() - 1  # 排除"全部"
+        total_selectable = sum(1 for _ in self._iter_category_tree_items())
         if len(self._selected_categories) == total_selectable and total_selectable > 0:
             # 取消全选
             self._selected_categories.clear()
         else:
             # 全选
             self._selected_categories.clear()
-            for i in range(self.category_list.count()):
-                item = self.category_list.item(i)
-                category = item.data(Qt.ItemDataRole.UserRole)
+            for item in self._iter_category_tree_items():
+                category = item.data(0, Qt.ItemDataRole.UserRole)
                 if category != '全部':
                     self._selected_categories.add(category)
         self._reload_categories()
@@ -2304,9 +2331,14 @@ class MainWindow(QMainWindow):
         
         self.lbl_list_title.setText(f"搜索结果 ({len(results)})")
     
-    def on_category_selected(self, item):
+    def _on_category_clicked(self, item, column):
         """分类选择事件"""
-        self.current_category = item.data(Qt.ItemDataRole.UserRole)
+        if item is None:
+            return
+        # 批量删除模式下仅更新选中状态，不切换列表视图
+        if getattr(self, '_category_selection_mode', False):
+            return
+        self.current_category = item.data(0, Qt.ItemDataRole.UserRole)
         # 切换分类时强制刷新缓存
         self._cache_dirty = True
         self._url_cache_dirty = True
@@ -2315,22 +2347,49 @@ class MainWindow(QMainWindow):
         else:
             self.load_urls()
     
+    def _rename_parent_category(self, old_name: str, new_name: str):
+        """重命名一级分类：批量修改所有旧名称和旧名称>xxx的前缀"""
+        if self.current_vault == 'accounts':
+            conn = self.db.conn
+            table = 'accounts'
+        else:
+            conn = self._url_db.conn
+            table = 'urls'
+        
+        cursor = conn.cursor()
+        # 1. 精确匹配的旧名称
+        cursor.execute(f"UPDATE {table} SET category = ? WHERE category = ?", (new_name, old_name))
+        # 2. 前缀匹配：old_name>xxx → new_name>xxx
+        cursor.execute(
+            f"UPDATE {table} SET category = ? || SUBSTR(category, ?) WHERE category LIKE ?",
+            (new_name, len(old_name) + 1, f"{old_name}>%")
+        )
+        conn.commit()
+    
     def _on_category_context_menu(self, pos: QPoint):
         """分类右键菜单：点击条目显示重命名/删除；点击空白处显示新建类别"""
-        item = self.category_list.itemAt(pos)
+        # 批量删除模式下不显示右键菜单
+        if getattr(self, '_category_selection_mode', False):
+            return
+        
+        item = self.category_tree.itemAt(pos)
         
         if not item:
-            # 空白处：新建类别
+            # 空白处：新建一级分类
             menu = QMenu(self)
-            action_new = menu.addAction("➕ 新建类别")
-            action = menu.exec(self.category_list.mapToGlobal(pos))
+            action_new = menu.addAction("➕ 新建一级分类")
+            action = menu.exec(self.category_tree.mapToGlobal(pos))
             
             if action == action_new:
-                new_name, ok = QInputDialog.getText(self, "新建类别", "类别名称：")
+                new_name, ok = QInputDialog.getText(self, "新建一级分类", "分类名称：")
                 if ok and new_name and new_name.strip():
                     new_name = new_name.strip()
                     if new_name in ('全部', '其他'):
                         QMessageBox.warning(self, "提示", "不能使用保留名称")
+                        return
+                    from core.category_utils import validate_category_name
+                    if not validate_category_name(new_name):
+                        QMessageBox.warning(self, "提示", "分类名不能包含 /、>、· 或首尾空格")
                         return
                     if self.current_vault == 'accounts':
                         success = self.account_service.add_category(new_name)
@@ -2338,28 +2397,69 @@ class MainWindow(QMainWindow):
                         success = self._url_service.add_category(new_name)
                     if success:
                         self._reload_categories()
-                        QMessageBox.information(self, "成功", f'类别 "{new_name}" 已创建')
+                        QMessageBox.information(self, "成功", f'分类 "{new_name}" 已创建')
                     else:
-                        QMessageBox.warning(self, "提示", "该类别已存在")
+                        QMessageBox.warning(self, "提示", "该分类已存在")
             return
         
-        category = item.data(Qt.ItemDataRole.UserRole)
+        category = item.data(0, Qt.ItemDataRole.UserRole)
         if category == '全部':
             return  # 全部分类不提供操作
         
-        menu = QMenu(self)
-        action_rename = menu.addAction("📝 重命名")
-        action_delete = menu.addAction("🗑️ 删除")
+        # 判断是一级节点还是二级节点
+        parent = item.parent()
+        is_parent_node = parent is None  # 顶级节点是一级分类
         
-        action = menu.exec(self.category_list.mapToGlobal(pos))
+        menu = QMenu(self)
+        if is_parent_node:
+            action_new_child = menu.addAction("➕ 新建子类")
+            action_rename = menu.addAction("📝 重命名")
+            action_delete = menu.addAction("🗑️ 删除")
+        else:
+            action_rename = menu.addAction("📝 重命名")
+            action_delete = menu.addAction("🗑️ 删除")
+        
+        action = menu.exec(self.category_tree.mapToGlobal(pos))
+        
+        if is_parent_node and action == action_new_child:
+            new_child, ok = QInputDialog.getText(self, "新建子类", f"在「{category}」下新建子类：")
+            if ok and new_child and new_child.strip():
+                new_child = new_child.strip()
+                from core.category_utils import validate_category_name, format_category_path
+                if not validate_category_name(new_child):
+                    QMessageBox.warning(self, "提示", "子分类名不能包含 /、>、· 或首尾空格")
+                    return
+                full_path = format_category_path(category, new_child)
+                if self.current_vault == 'accounts':
+                    success = self.account_service.add_category(full_path)
+                else:
+                    success = self._url_service.add_category(full_path)
+                if success:
+                    self._reload_categories()
+                    QMessageBox.information(self, "成功", f'子类 "{full_path}" 已创建')
+                else:
+                    QMessageBox.warning(self, "提示", "该子类已存在")
+            return
         
         if action == action_rename:
             new_name, ok = QInputDialog.getText(self, "重命名分类", "新名称：", text=category)
             if ok and new_name and new_name != category:
-                if self.current_vault == 'accounts':
-                    self.account_service.rename_category(category, new_name)
+                new_name = new_name.strip()
+                from core.category_utils import validate_category_name
+                if not validate_category_name(new_name):
+                    QMessageBox.warning(self, "提示", "分类名不能包含 /、>、· 或首尾空格")
+                    return
+                
+                if is_parent_node:
+                    # 一级节点：批量修改前缀
+                    self._rename_parent_category(category, new_name)
                 else:
-                    self._url_service.rename_category(category, new_name)
+                    # 二级节点：精确匹配修改
+                    if self.current_vault == 'accounts':
+                        self.account_service.rename_category(category, new_name)
+                    else:
+                        self._url_service.rename_category(category, new_name)
+                
                 self._reload_categories()
                 self._cache_dirty = True
                 self._url_cache_dirty = True
@@ -2369,16 +2469,21 @@ class MainWindow(QMainWindow):
         
         elif action == action_delete:
             # 获取该分类下条目数量
-            if self.current_vault == 'accounts':
-                count = len(self.account_service.get_accounts_by_category(category))
-            else:
-                count = len(self._url_service.get_urls_by_category(category))
+            count = self._get_category_count(category)
             
-            reply = QMessageBox.question(
-                self, "删除分类",
-                f'删除分类 "{category}"？\n该分类下的 {count} 个条目将移至"其他"。',
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-            )
+            if is_parent_node:
+                reply = QMessageBox.question(
+                    self, "删除分类",
+                    f'删除分类 "{category}"？\n该分类及其子类下的 {count} 个条目将移至"其他"。',
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                )
+            else:
+                reply = QMessageBox.question(
+                    self, "删除分类",
+                    f'删除分类 "{category}"？\n该分类下的 {count} 个条目将移至"其他"。',
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                )
+            
             if reply == QMessageBox.StandardButton.Yes:
                 if self.current_vault == 'accounts':
                     self.account_service.delete_category(category)
@@ -3319,10 +3424,27 @@ class MainWindow(QMainWindow):
                 self.ai_action_buttons.show()
             
             response = result.get('response', '请确认以下操作')
-            self.ai_assistant._history.append(ConversationMessage(
-                role='assistant', content=response, timestamp=now_str
-            ))
-            self._ai_update_chat_display()
+            
+            # 分类工具：强制简洁回复，覆盖流式输出阶段可能已生成的长篇分析
+            pending_tool = self._pending_tool or {}
+            if pending_tool.get('tool') in ('smart_classify_accounts', 'smart_classify_urls'):
+                response = result.get('response', '已生成分类预览，请确认')
+                # 如果最后一条是 assistant 的流式输出，直接替换内容
+                if (self.ai_assistant._history 
+                        and self.ai_assistant._history[-1].role == 'assistant'):
+                    self.ai_assistant._history[-1].content = response
+                    self.ai_assistant._history[-1].timestamp = now_str
+                    self._ai_update_chat_display()
+                else:
+                    self.ai_assistant._history.append(ConversationMessage(
+                        role='assistant', content=response, timestamp=now_str
+                    ))
+                    self._ai_update_chat_display()
+            else:
+                self.ai_assistant._history.append(ConversationMessage(
+                    role='assistant', content=response, timestamp=now_str
+                ))
+                self._ai_update_chat_display()
         elif result.get('done'):
             print("[DEBUG] _on_react_result: step 11a - done branch")
             self._react_state = ReActState.IDLE
@@ -3678,18 +3800,12 @@ class MainWindow(QMainWindow):
         # 重新渲染（显示用户消息 + "思考中"）
         self._ai_update_chat_display()
         
-        # 获取当前库上下文
+        # 获取当前库上下文（AI 查询必须基于全部数据，不受 UI 筛选状态影响）
         if self.current_vault == 'accounts':
-            if not self._cached_accounts or self._cache_dirty:
-                self._cached_accounts = self.account_service.get_all_accounts()
-                self._cache_dirty = False
-            context = self._cached_accounts
+            context = self.account_service.get_all_accounts()
             vault_type = 'accounts'
         else:
-            if self._url_cache_dirty or not self._cached_urls:
-                self._cached_urls = self._url_service.get_all_urls()
-                self._url_cache_dirty = False
-            context = self._cached_urls
+            context = self.url_service.get_all_urls()
             vault_type = 'urls'
         
         # 启动后台线程执行 AI 查询（避免 GPU 满载阻塞主线程）

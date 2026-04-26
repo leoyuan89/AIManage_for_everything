@@ -11,8 +11,6 @@ from models.url_item import URLItem
 class URLService:
     """网址服务"""
     
-    CATEGORIES = ['全部', '开发工具', '云服务', '社交平台', '学习资源', '娱乐', '购物', '其他']
-    
     def __init__(self, db_manager: URLDatabaseManager):
         """
         初始化网址服务
@@ -100,6 +98,10 @@ class URLService:
         """
         按分类获取网址
         
+        如果 category 不含 '>'，视为父节点，返回该父节点下所有条目
+        （含直接条目和子类条目）。
+        如果含 '>'，精确匹配。
+        
         Args:
             category: 分类名称
             
@@ -109,8 +111,10 @@ class URLService:
         if category == '全部':
             return self.get_all_urls()
         
-        urls_data = self.db.get_urls_by_category(category)
-        return [URLItem.from_dict(data) for data in urls_data]
+        from core.category_utils import get_prefix_matcher
+        matcher = get_prefix_matcher(category)
+        all_urls = self.get_all_urls()
+        return [u for u in all_urls if matcher(u.category)]
     
     def search_urls(self, keyword: str) -> List[URLItem]:
         """
@@ -174,6 +178,17 @@ class URLService:
             result.append('其他')
         return result
     
+    def get_category_tree(self) -> dict:
+        """
+        获取分类树，用于 UI 级联选择和 AI 分类树注入。
+        
+        Returns:
+            {parent: {'children': set(), 'has_direct_items': bool}}
+        """
+        from core.category_utils import build_category_tree
+        cats = self.get_categories()
+        return build_category_tree([c for c in cats if c != '全部'])
+    
     def get_category_orders(self) -> Dict[str, int]:
         """获取分类自定义排序"""
         return self.db.get_category_orders()
@@ -182,15 +197,38 @@ class URLService:
         """保存分类自定义排序"""
         self.db.save_category_orders(orders)
     
-    def rename_category(self, old_name: str, new_name: str) -> int:
-        return self.db.rename_category(old_name, new_name)
+    def rename_category(self, old_category: str, new_category: str) -> bool:
+        """重命名分类（支持子类条目）"""
+        from core.category_utils import get_prefix_matcher
+        matcher = get_prefix_matcher(old_category)
+        all_urls = self.get_all_urls()
+        updated = False
+        for url_item in all_urls:
+            if matcher(url_item.category):
+                if url_item.category == old_category:
+                    new_cat = new_category
+                else:
+                    suffix = url_item.category[len(old_category):]
+                    new_cat = new_category + suffix
+                self.db.update_url(url_item.id, {'category': new_cat})
+                updated = True
+        return updated
     
     def add_category(self, category_name: str) -> bool:
         """新建分类（插入排序表，不创建任何网址）"""
         return self.db.add_category_order(category_name)
 
-    def delete_category(self, category_name: str) -> int:
-        return self.db.delete_category(category_name)
+    def delete_category(self, category: str) -> bool:
+        """删除分类：将匹配条目（含子类）移至'其他'"""
+        from core.category_utils import get_prefix_matcher
+        matcher = get_prefix_matcher(category)
+        all_urls = self.get_all_urls()
+        updated = False
+        for url_item in all_urls:
+            if matcher(url_item.category):
+                self.db.update_url(url_item.id, {'category': '其他'})
+                updated = True
+        return updated
     
     def get_favicon_url(self, url: str) -> str:
         """

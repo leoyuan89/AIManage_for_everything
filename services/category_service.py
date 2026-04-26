@@ -9,8 +9,6 @@ from core.database import DatabaseManager
 class CategoryService:
     """分类服务：AI 智能分类 + 缓存管理"""
     
-    CATEGORIES = ['社交', '金融', '邮箱', '游戏', '工作', '其他']
-    
     def __init__(self, db_manager: DatabaseManager):
         """
         初始化分类服务
@@ -150,7 +148,7 @@ class CategoryService:
         基于规则的快速分类
         
         Returns:
-            分类名或 None
+            分类名或 None（返回完整路径，如 '工作>开发工具'）
         """
         app_lower = app_name.lower()
         url_lower = url.lower()
@@ -182,8 +180,14 @@ class CategoryService:
             if kw in app_lower or kw in url_lower:
                 return '游戏'
         
-        # 工作类关键词
-        work_keywords = ['工作', '办公', '企业', 'github', 'gitlab', 'jira', 'confluence',
+        # 工作类细分（返回完整路径）
+        if 'github' in app_lower or 'gitlab' in app_lower:
+            return '工作>开发工具'
+        if 'figma' in app_lower or 'sketch' in app_lower:
+            return '工作>设计'
+        
+        # 工作类（无法细分的返回一级）
+        work_keywords = ['工作', '办公', '企业', 'jira', 'confluence',
                         'slack', '飞书', '钉钉', '企业微信', 'work', 'office']
         for kw in work_keywords:
             if kw in app_lower or kw in url_lower:

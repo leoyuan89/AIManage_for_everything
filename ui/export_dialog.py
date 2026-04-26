@@ -8,6 +8,8 @@ from PyQt6.QtWidgets import (
     QFileDialog, QMessageBox, QGroupBox, QRadioButton,
     QButtonGroup, QProgressBar, QLineEdit
 )
+
+from core.category_utils import format_category_path
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 
@@ -35,7 +37,7 @@ class ExportDialog(QDialog):
     def setup_ui(self):
         """设置界面"""
         self.setWindowTitle(f"导出{'账号' if self.vault_type == 'accounts' else '网址'}")
-        self.setMinimumSize(500, 580)
+        self.setMinimumSize(1000, 1300)
         
         layout = QVBoxLayout(self)
         layout.setSpacing(15)
@@ -66,16 +68,35 @@ class ExportDialog(QDialog):
         self.rad_category = QRadioButton("指定分类")
         range_layout.addWidget(self.rad_category)
         
-        self.cmb_category = QComboBox()
-        if is_account:
-            self.cmb_category.addItems(['金融', '社交', '邮箱', '游戏', '工作', '其他'])
-        else:
-            self.cmb_category.addItems(['常用', '工具', '娱乐', '学习', '工作', '其他'])
-        self.cmb_category.setEnabled(False)
-        range_layout.addWidget(self.cmb_category)
+        # 级联分类选择（主类 + 子类）
+        category_select_layout = QHBoxLayout()
+        
+        self.cmb_parent = QComboBox()
+        self.cmb_parent.setEditable(True)
+        self.cmb_parent.setPlaceholderText("主分类")
+        self.cmb_parent.setFixedHeight(32)
+        self.cmb_parent.currentTextChanged.connect(self._on_parent_changed)
+        category_select_layout.addWidget(self.cmb_parent)
+        
+        lbl_sep = QLabel(">")
+        lbl_sep.setStyleSheet("color: #999; font-size: 14px; font-weight: bold;")
+        lbl_sep.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl_sep.setFixedWidth(20)
+        category_select_layout.addWidget(lbl_sep)
+        
+        self.cmb_child = QComboBox()
+        self.cmb_child.setEditable(True)
+        self.cmb_child.setPlaceholderText("子分类（可选）")
+        self.cmb_child.setFixedHeight(32)
+        category_select_layout.addWidget(self.cmb_child)
+        
+        range_layout.addLayout(category_select_layout)
+        self._load_categories()
         
         # 范围选择联动
-        self.rad_category.toggled.connect(self.cmb_category.setEnabled)
+        self.cmb_parent.setEnabled(False)
+        self.cmb_child.setEnabled(False)
+        self.rad_category.toggled.connect(self._on_category_toggled)
         
         layout.addWidget(range_group)
         
@@ -84,10 +105,13 @@ class ExportDialog(QDialog):
         format_layout = QVBoxLayout(format_group)
         
         self.cmb_format = QComboBox()
-        self.cmb_format.addItems([
+        formats = [
             "Excel 表格 (.xlsx)",
             "加密备份 (.vault)"
-        ])
+        ]
+        if not is_account:
+            formats.append("HTML 书签 (.html)")
+        self.cmb_format.addItems(formats)
         self.cmb_format.currentIndexChanged.connect(self.on_format_changed)
         format_layout.addWidget(self.cmb_format)
         
@@ -193,14 +217,63 @@ class ExportDialog(QDialog):
         
         layout.addLayout(button_layout)
     
+    def _load_categories(self):
+        """加载主类下拉框"""
+        is_account = self.vault_type == 'accounts'
+        try:
+            if is_account:
+                tree = self.account_service.get_category_tree()
+            else:
+                tree = self.url_service.get_category_tree() if self.url_service else {}
+        except Exception:
+            tree = {}
+        
+        self.cmb_parent.clear()
+        self.cmb_parent.addItem("请选择")
+        self.cmb_parent.addItems(sorted(tree.keys()))
+    
+    def _on_parent_changed(self, parent_name):
+        """主类改变时更新子类下拉框"""
+        self.cmb_child.clear()
+        self.cmb_child.addItem("")  # 空表示无子类（导出整个主类）
+        
+        is_account = self.vault_type == 'accounts'
+        try:
+            if is_account:
+                tree = self.account_service.get_category_tree()
+            else:
+                tree = self.url_service.get_category_tree() if self.url_service else {}
+        except Exception:
+            tree = {}
+        
+        if parent_name in tree:
+            for child in sorted(tree[parent_name]['children']):
+                self.cmb_child.addItem(child)
+    
+    def _get_selected_category(self) -> str:
+        """获取选中的分类路径"""
+        parent = self.cmb_parent.currentText().strip()
+        child = self.cmb_child.currentText().strip()
+        if not parent or parent == "请选择":
+            return ""
+        return format_category_path(parent, child if child else None)
+    
+    def _on_category_toggled(self, checked):
+        """指定分类选项切换"""
+        self.cmb_parent.setEnabled(checked)
+        self.cmb_child.setEnabled(checked)
+    
     def on_format_changed(self, index):
         """格式切换"""
         if index == 0:  # Excel
             self.group_excel.show()
             self.group_vault.hide()
-        else:  # 加密备份
+        elif index == 1:  # 加密备份
             self.group_excel.hide()
             self.group_vault.show()
+        else:  # HTML 书签
+            self.group_excel.hide()
+            self.group_vault.hide()
     
     def on_custom_password_changed(self, state):
         """独立密码选项切换"""
@@ -222,7 +295,10 @@ class ExportDialog(QDialog):
                 items = self.url_service.get_all_urls() if self.url_service else []
             scope_name = "全部"
         elif self.rad_category.isChecked():
-            category = self.cmb_category.currentText()
+            category = self._get_selected_category()
+            if not category:
+                QMessageBox.warning(self, "提示", "请选择要导出的分类")
+                return
             if is_account:
                 items = self.account_service.get_accounts_by_category(category)
             else:
@@ -268,7 +344,7 @@ class ExportDialog(QDialog):
                 else:
                     QMessageBox.critical(self, "导出失败", "导出过程中发生错误")
         
-        else:  # 加密备份
+        elif format_index == 1:  # 加密备份
             if not is_account:
                 QMessageBox.warning(self, "暂不支持", "网址暂不支持加密备份导出")
                 return
@@ -312,3 +388,29 @@ class ExportDialog(QDialog):
                     self.accept()
                 else:
                     QMessageBox.critical(self, "导出失败", "加密备份导出过程中发生错误")
+        
+        else:  # HTML 书签
+            if is_account:
+                QMessageBox.warning(self, "暂不支持", "账号暂不支持 HTML 书签导出")
+                return
+            
+            file_path, _ = QFileDialog.getSaveFileName(
+                self, "保存 HTML 书签",
+                f"bookmarks_{scope_name}",
+                "HTML 文件 (*.html)"
+            )
+            if file_path:
+                if not file_path.endswith('.html'):
+                    file_path += '.html'
+                
+                success = self.export_service.export_urls_to_html(items, file_path)
+                
+                if success:
+                    QMessageBox.information(
+                        self, "导出成功",
+                        f"成功导出 {len(items)} 个网址到 HTML 书签：\n{file_path}\n\n"
+                        f"提示：可在 Chrome / Edge / Firefox 的「书签管理器」→「导入书签」中使用此文件。"
+                    )
+                    self.accept()
+                else:
+                    QMessageBox.critical(self, "导出失败", "HTML 书签导出过程中发生错误")

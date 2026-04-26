@@ -101,7 +101,7 @@ class BatchAddProcessor:
     "account": "账号",
     "password": "密码",
     "url": "相关网址（可选）",
-    "category": "分类（可选，如金融/社交/工作等）",
+    "category": "分类路径（可选，如 工作>开发工具、金融与支付、学术与研究）",
     "remark": "备注（可选）",
     "tags": ["标签1", "标签2"]
   }}
@@ -113,6 +113,7 @@ class BatchAddProcessor:
 3. 不要添加任何解释、markdown代码块标记或其他文字
 4. 分类字段如果用户未提供，留空字符串或省略
 5. 标签字段如果用户未提供，返回空数组 []
+6. 分类路径使用 `主类>子类` 格式（最多二级），并列概念用"与"连接，禁止 `/`、`>`、`·`
 """
 
     @classmethod
@@ -128,7 +129,7 @@ class BatchAddProcessor:
   {{
     "title": "网址标题",
     "url": "网址链接",
-    "category": "分类（可选，如开发工具/学习资源等）",
+    "category": "分类路径（可选，如 工作>开发工具、金融与支付、学术与研究）",
     "tags": ["标签1", "标签2"],
     "remark": "备注（可选）",
     "ai_remark": "AI备注（可选）"
@@ -141,6 +142,7 @@ class BatchAddProcessor:
 3. 不要添加任何解释、markdown代码块标记或其他文字
 4. 分类字段如果用户未提供，留空字符串或省略
 5. 标签字段如果用户未提供，返回空数组 []
+6. 分类路径使用 `主类>子类` 格式（最多二级），并列概念用"与"连接，禁止 `/`、`>`、`·`
 """
 
     @classmethod
@@ -237,11 +239,28 @@ class BatchAddProcessor:
             return f"重复：已存在 ID={existing.id}", False
 
         # 3. 分类检查
+        from core.category_utils import validate_category_name, format_category_path, parse_category_path
         category = item.category or '其他'
-        valid_categories = repo.get_categories()
-        if category not in valid_categories:
-            item.category = '其他'
-            return f"分类'{category}'不存在，已归入'其他'", True
+
+        # 截断三级及以上为二级
+        try:
+            parent, child = parse_category_path(category)
+            category = format_category_path(parent, child)
+        except ValueError:
+            first_sep = category.find('>')
+            second_sep = category.find('>', first_sep + 1) if first_sep != -1 else -1
+            if second_sep != -1:
+                truncated = category[:second_sep]
+                parent, child = parse_category_path(truncated)
+                category = format_category_path(parent, child)
+            else:
+                category = '其他'
+        item.category = category
+
+        # 校验单级名称合法性
+        parent, child = parse_category_path(category)
+        if not validate_category_name(parent) or (child and not validate_category_name(child)):
+            return "格式警告：分类名称含非法字符", False
 
         return "就绪", True
 

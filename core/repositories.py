@@ -9,6 +9,7 @@ import json
 
 from models.account import Account
 from models.url_item import URLItem
+from core.category_utils import get_prefix_matcher
 
 
 # ============ 标准化数据结构 ============
@@ -208,7 +209,8 @@ class AccountRepository(VaultRepository):
     
     def filter_by_category(self, category: str) -> SearchResult:
         accounts = self.get_all()
-        matched = [a for a in accounts if a.category == category]
+        matcher = get_prefix_matcher(category)
+        matched = [a for a in accounts if matcher(a.category)]
         return SearchResult(
             items=matched, matched_ids=[a.id for a in matched],
             query_description=f"分类筛选: {category}"
@@ -403,7 +405,8 @@ class URLRepository(VaultRepository):
     
     def filter_by_category(self, category: str) -> SearchResult:
         urls = self.get_all()
-        matched = [u for u in urls if u.category == category]
+        matcher = get_prefix_matcher(category)
+        matched = [u for u in urls if matcher(u.category)]
         return SearchResult(
             items=matched, matched_ids=[u.id for u in matched],
             query_description=f"分类筛选: {category}"

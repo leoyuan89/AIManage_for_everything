@@ -192,7 +192,10 @@ class SearchService:
     
     def search_by_category(self, category: str, accounts: List[Account] = None) -> List[Account]:
         """
-        按分类搜索
+        按分类搜索，支持父节点前缀匹配
+        
+        选中 "工作" → 匹配 "工作" 和 "工作>开发工具"
+        选中 "工作>开发工具" → 仅精确匹配
         
         Args:
             category: 分类名称
@@ -201,11 +204,14 @@ class SearchService:
         Returns:
             该分类下的所有账号
         """
+        from core.category_utils import get_prefix_matcher
+        matcher = get_prefix_matcher(category)
+        
         if accounts is None:
-            accounts_data = self.db.get_accounts_by_category(category)
-            return [Account.from_dict(data) for data in accounts_data]
-        else:
-            return [acc for acc in accounts if acc.category == category]
+            accounts_data = self.db.get_all_accounts()
+            accounts = [Account.from_dict(data) for data in accounts_data]
+        
+        return [acc for acc in accounts if matcher(acc.category)]
     
     def get_recent_accounts(self, limit: int = 10) -> List[Account]:
         """

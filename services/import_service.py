@@ -490,61 +490,86 @@ class URLParser:
         """
         解析浏览器收藏夹 HTML 文件（NETSCAPE-Bookmark-file-1 格式）
         支持 Chrome/Edge/Firefox 等浏览器导出的收藏夹
+        
+        嵌套 <H3> 文件夹递归解析为 > 路径，三级及以上截断为二级。
+        文件夹名含非法字符（/、>、·）时替换为 -。
         """
         from html.parser import HTMLParser
+        from typing import List
+        
+        def _sanitize_folder_name(name: str) -> str:
+            """校验并清理文件夹名中的非法字符"""
+            return name.replace('/', '-').replace('>', '-').replace('·', '-')
+        
+        def _build_path(folder_stack: List[str], folder_name: str) -> str:
+            """构建分类路径，超过二级时截断"""
+            from core.category_utils import parse_category_path
+            folder_name = _sanitize_folder_name(folder_name)
+            if folder_stack:
+                parent = folder_stack[-1]
+                _, parent_child = parse_category_path(parent)
+                # 父路径已有子类，说明已在二级，直接归入父类（截断更深层）
+                if parent_child is not None:
+                    return parent
+                return f"{parent}>{folder_name}"
+            return folder_name
         
         class BookmarkParser(HTMLParser):
             def __init__(self):
                 super().__init__()
                 self.items = []
-                self.current_category = ""
+                self.folder_stack: List[str] = []  # 文件夹路径栈
                 self.in_h3 = False
                 self.h3_text = ""
-                self.current_a = None
-                self.current_a_text = ""
+                self.in_a = False
+                self.a_text = ""
+                self.a_attrs = {}
+                self.pending_h3 = None  # 刚关闭的 H3，等待下一个 <DL>
                 
             def handle_starttag(self, tag, attrs):
                 attrs_dict = dict(attrs)
+                tag_lower = tag.lower()
                 
-                if tag == 'h3':
+                if tag_lower == 'h3':
                     self.in_h3 = True
                     self.h3_text = ""
-                elif tag == 'a':
-                    # 提取链接信息
-                    href = attrs_dict.get('href', '')
-                    if href and href.startswith(('http://', 'https://')):
-                        self.current_a = {
-                            'url': href,
-                            'title': attrs_dict.get('title', ''),
-                            'category': self.current_category
-                        }
-                        self.current_a_text = ""
+                elif tag_lower == 'a':
+                    self.in_a = True
+                    self.a_text = ""
+                    self.a_attrs = attrs_dict
+                elif tag_lower == 'dl':
+                    # 如果刚关闭了一个 H3，说明这个 DL 属于该文件夹
+                    if self.pending_h3 is not None:
+                        path = _build_path(self.folder_stack, self.pending_h3)
+                        self.folder_stack.append(path)
+                        self.pending_h3 = None
                         
             def handle_endtag(self, tag):
-                if tag == 'h3':
+                tag_lower = tag.lower()
+                
+                if tag_lower == 'h3':
                     self.in_h3 = False
-                    # 使用 H3 作为分类名
-                    if self.h3_text:
-                        self.current_category = self.h3_text.strip()
-                elif tag == 'a' and self.current_a:
-                    # 如果没有 title 属性，使用标签内的文本
-                    if not self.current_a['title'] and self.current_a_text:
-                        self.current_a['title'] = self.current_a_text.strip()
-                    
-                    # 创建 URLItem
+                    self.pending_h3 = self.h3_text.strip()
+                elif tag_lower == 'a':
+                    self.in_a = False
+                    url = self.a_attrs.get('href', '')
+                    title = self.a_text.strip()
+                    category = self.folder_stack[-1] if self.folder_stack else '未分类'
                     self.items.append(URLItem(
-                        title=self.current_a['title'] or self.current_a['url'],
-                        url=self.current_a['url'],
-                        category=self.current_a['category'] if self.current_a['category'] else '未分类'
+                        title=title or url,
+                        url=url,
+                        category=category
                     ))
-                    self.current_a = None
-                    self.current_a_text = ""
+                elif tag_lower == 'dl':
+                    if self.folder_stack:
+                        self.folder_stack.pop()
+                    self.pending_h3 = None
                     
             def handle_data(self, data):
                 if self.in_h3:
                     self.h3_text += data
-                elif self.current_a is not None:
-                    self.current_a_text += data
+                elif self.in_a:
+                    self.a_text += data
         
         content = Path(file_path).read_text(encoding='utf-8')
         parser = BookmarkParser()

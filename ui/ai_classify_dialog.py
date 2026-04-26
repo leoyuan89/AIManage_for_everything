@@ -795,6 +795,25 @@ class AIClassifyDialog(QDialog):
     
     def on_apply_clicked(self):
         """正式生效"""
+        from core.category_utils import parse_category_path
+        
+        # 校验所有变更的路径合法性
+        invalid_changes = []
+        for c in self.changes:
+            try:
+                parse_category_path(c.new_category)
+            except ValueError as e:
+                invalid_changes.append((c.item_name, c.new_category, str(e)))
+        
+        if invalid_changes:
+            msg = "以下条目的分类路径非法，请修正后再生效：\n\n"
+            for name, cat, err in invalid_changes[:10]:
+                msg += f"• {name}: {cat} ({err})\n"
+            if len(invalid_changes) > 10:
+                msg += f"\n... 还有 {len(invalid_changes) - 10} 条"
+            QMessageBox.warning(self, "路径校验失败", msg)
+            return
+        
         # 先创建快照（记录修改前的状态）
         snapshot = self.service.create_snapshot(self.item_type, self.items)
         

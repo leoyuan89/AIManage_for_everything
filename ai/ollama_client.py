@@ -691,8 +691,9 @@ class OllamaClient:
 【极其重要 - 决策规则】
 1. 如果用户请求是**纯查询类**（查找、搜索、筛选、统计、询问信息），且不需要修改数据 → 使用 tool="direct_answer"
 2. 如果用户请求涉及**任何数据修改**（新增、删除、修改分类、修改备注、添加标签、整理、重组、批量更新） → **必须调用对应工具**，绝对不能用 direct_answer
-3. 如果 observation 中已经包含搜索结果（如 matched_ids），你要**直接使用这些 ID** 构造写操作工具的参数，不要返回 direct_answer 说"我找不到 ID"
-4. 你只能决定调用哪个工具，不能直接替用户执行修改
+3. **特别重要**：如果用户要求"分类"、"细分"、"细分二级子类"、"整理分类"、"重组分类" → **必须调用 smart_classify_accounts 或 smart_classify_urls**，绝对不能用 direct_answer。这是**分类操作**，不是纯查询！
+4. 如果 observation 中已经包含搜索结果（如 matched_ids），你要**直接使用这些 ID** 构造写操作工具的参数，不要返回 direct_answer 说"我找不到 ID"
+5. 你只能决定调用哪个工具，不能直接替用户执行修改
 
 【多轮工具调用示例】
 场景：用户说"查找青岛大学有关的网址，并将类别改为青岛大学"
@@ -704,6 +705,7 @@ class OllamaClient:
 - 用户："将支付类账号改为金融" → {{"thought": "用户要求修改分类", "tool": "batch_update_accounts", "params": {{"items": [{{"target_id": 1, "field": "category", "new_value": "金融"}}]}}}}
 - 用户："删除这些账号" → {{"thought": "用户要求删除", "tool": "batch_delete_accounts", "params": {{"target_ids": [1, 2, 3]}}}}
 - 用户："给这些账号添加备注" → {{"thought": "每个账号需要不同的针对性备注", "tool": "batch_add_remark_accounts", "params": {{"changes": [{{"target_id": 1, "content": "学工系统报到账号"}}, {{"target_id": 2, "content": "财务处缴费系统"}}]}}}}
+- 用户："给教育与学习细分二级子类" → {{"thought": "用户要求对教育与学习分类进行细分，生成二级子类", "tool": "smart_classify_accounts", "params": {{}}}}  
 - 用户："有哪些金融类账号？" → {{"thought": "用户只是询问", "tool": "direct_answer", "response": "..."}}
 
 【输出格式 - 严格JSON】

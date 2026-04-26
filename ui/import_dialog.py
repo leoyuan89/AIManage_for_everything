@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QLineEdit, QFileDialog,
     QTableWidget, QTableWidgetItem, QHeaderView,
     QMessageBox, QCheckBox, QAbstractItemView,
-    QGroupBox, QScrollArea, QFrame
+    QGroupBox, QScrollArea, QFrame, QComboBox
 )
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QFont, QColor
@@ -19,6 +19,69 @@ from PyQt6.QtGui import QFont, QColor
 from models.account import Account
 from services.import_service import parse_import_file, ImportItem
 from services.account_service import AccountService
+
+
+class CategoryCascadeCell(QWidget):
+    """级联分类选择单元格（主类 + 子类）"""
+    
+    def __init__(self, tree_data: dict, current_path: str = "", parent=None):
+        super().__init__(parent)
+        self._tree_data = tree_data
+        
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(2)
+        
+        self.cmb_parent = QComboBox()
+        self.cmb_parent.setEditable(True)
+        self.cmb_parent.addItem("")
+        self.cmb_parent.addItems(sorted(tree_data.keys()))
+        self.cmb_parent.setFixedHeight(28)
+        
+        lbl_sep = QLabel(">")
+        lbl_sep.setStyleSheet("color: #999; font-size: 12px;")
+        lbl_sep.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl_sep.setFixedWidth(15)
+        
+        self.cmb_child = QComboBox()
+        self.cmb_child.setEditable(True)
+        self.cmb_child.setFixedHeight(28)
+        
+        layout.addWidget(self.cmb_parent)
+        layout.addWidget(lbl_sep)
+        layout.addWidget(self.cmb_child)
+        
+        # 设置当前值
+        if current_path:
+            from core.category_utils import parse_category_path
+            p, c = parse_category_path(current_path)
+            idx = self.cmb_parent.findText(p)
+            if idx >= 0:
+                self.cmb_parent.setCurrentIndex(idx)
+            else:
+                self.cmb_parent.setCurrentText(p)
+            if c:
+                self.cmb_child.setCurrentText(c)
+        
+        self.cmb_parent.currentTextChanged.connect(self._on_parent_changed)
+        self._on_parent_changed(self.cmb_parent.currentText())
+    
+    def _on_parent_changed(self, parent_name):
+        """主类改变时更新子类下拉框"""
+        self.cmb_child.clear()
+        self.cmb_child.addItem("")  # 空表示无子类
+        if parent_name in self._tree_data:
+            for child in sorted(self._tree_data[parent_name]['children']):
+                self.cmb_child.addItem(child)
+    
+    def get_category(self) -> str:
+        """获取格式化后的分类路径"""
+        from core.category_utils import format_category_path
+        parent = self.cmb_parent.currentText().strip()
+        child = self.cmb_child.currentText().strip()
+        if not parent:
+            return ""
+        return format_category_path(parent, child if child else None)
 
 
 class ImportDialog(QDialog):
@@ -236,6 +299,12 @@ class ImportDialog(QDialog):
         """刷新表格"""
         self.table.setRowCount(len(self.import_items))
         
+        # 获取分类树（用于级联下拉）
+        try:
+            tree = self.account_service.get_category_tree() if self.account_service else {}
+        except Exception:
+            tree = {}
+        
         for row, item in enumerate(self.import_items):
             # 复选框
             chk = QTableWidgetItem()
@@ -264,8 +333,12 @@ class ImportDialog(QDialog):
             # 网址
             self.table.setItem(row, 4, QTableWidgetItem(item.url))
             
-            # 分类
-            self.table.setItem(row, 5, QTableWidgetItem(item.category))
+            # 分类 - 使用级联下拉
+            cell_widget = CategoryCascadeCell(tree, item.category)
+            self.table.setCellWidget(row, 5, cell_widget)
+            cat_item = QTableWidgetItem(item.category)
+            cat_item.setFlags(cat_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.table.setItem(row, 5, cat_item)
             
             # 备注
             self.table.setItem(row, 6, QTableWidgetItem(item.remark))
@@ -329,6 +402,10 @@ class ImportDialog(QDialog):
         if row >= len(self.import_items):
             return
         
+        # 分类列使用级联下拉，不通过 item text 更新
+        if col == 5:
+            return
+        
         import_item = self.import_items[row]
         value = item.text()
         
@@ -341,8 +418,6 @@ class ImportDialog(QDialog):
             import_item.password = value
         elif col == 4:
             import_item.url = value
-        elif col == 5:
-            import_item.category = value
         elif col == 6:
             import_item.remark = value
         
@@ -366,11 +441,15 @@ class ImportDialog(QDialog):
     
     def on_import(self):
         """执行导入"""
-        # 收集选中的有效项
+        # 收集选中的有效项（并读取级联分类控件中的值）
         items_to_import = []
         for row, item in enumerate(self.import_items):
             chk_item = self.table.item(row, 0)
             if chk_item and chk_item.checkState() == Qt.CheckState.Checked and item.valid:
+                # 读取级联分类控件的值
+                cell_widget = self.table.cellWidget(row, 5)
+                if cell_widget:
+                    item.category = cell_widget.get_category()
                 items_to_import.append(item)
         
         if not items_to_import:

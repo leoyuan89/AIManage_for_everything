@@ -52,3 +52,21 @@ vault_*.html
 
 # Logs
 *.log
+debug_output.txt
+error_output.txt
+
+# Test files
+test_*.py
+test_*.png
+create_test_image.py
+
+# Temp scripts
+replace_emoji.py
+replace_main_emoji.py
+temp_replace*.py
+
+# Screenshots
+screenshot_*.png
+
+# Backup files
+*.bak

@@ -113,8 +113,6 @@ class AIClassificationService:
             )
         
         # 传入全部数据，超过200条时截断到150条
-        if len(items_text) > 200:
-            items_text = items_text[:150]
         items_str = '\n'.join(items_text)
         prompt = f"""你是一款密码管理软件的AI分类专家。请对以下所有账号进行深度分析，提出一套精细、合理的分类体系。
 
@@ -133,25 +131,14 @@ class AIClassificationService:
 ## 账号列表（共{len(accounts)}条，请务必分析全部）：
 {items_str}
 
-## 输出格式（JSON）
-```json
-{{
-  "proposals": [
-    {{
-      "name": "类别名称",
-      "description": "类别定义和包含规则",
-      "estimated_count": 预计条目数,
-      "examples": ["示例应用名1", "示例应用名2", "示例应用名3"],
-      "conflicts": ["与'xxx'类别的边界说明"]
-    }}
-  ],
-  "uncategorized_analysis": "对将被归入'其他'的条目的分析说明，以及为什么它们无法归入其他分类"
-}}
-```
+## 输出格式（严格JSON）
+你必须只输出纯JSON，不要任何解释、markdown代码块标记或其他文字：
+{{"proposals":[{{"name":"类别名称","estimated_count":预计条目数}}]}}
 
 要求：
 - proposals 中的类别必须能覆盖绝大多数账号（>90%）
-- 只输出 JSON，不要其他解释"""
+- 只输出纯JSON，不要```json标记
+- 任何字段的值都不要包含英文双引号"，如果必须引用请使用中文引号「」"""
         
         try:
             from ai.ollama_client import OllamaClient
@@ -179,6 +166,8 @@ class AIClassificationService:
             
         except Exception as e:
             print(f"[AI Classify] Pre-analysis failed: {e}")
+            print(f"[AI Classify] Raw result full ({len(result)} chars): {result!r}")
+            print(f"[AI Classify] Extracted JSON full ({len(json_str)} chars): {json_str!r}")
             return self._heuristic_pre_analyze(accounts, existing_categories, 'account')
     
     def pre_analyze_urls(self, urls: List[URLItem], 
@@ -200,8 +189,6 @@ class AIClassificationService:
             )
         
         # 传入全部数据，超过200条时截断到150条
-        if len(items_text) > 200:
-            items_text = items_text[:150]
         items_str = '\n'.join(items_text)
         prompt = f"""你是一款网址管理软件的AI分类专家。请对以下所有网址进行深度分析，提出一套精细、合理的分类体系。
 
@@ -220,25 +207,14 @@ class AIClassificationService:
 ## 网址列表（共{len(urls)}条，请务必分析全部）：
 {items_str}
 
-## 输出格式（JSON）
-```json
-{{
-  "proposals": [
-    {{
-      "name": "类别名称",
-      "description": "类别定义和包含规则",
-      "estimated_count": 预计条目数,
-      "examples": ["示例标题1", "示例标题2", "示例标题3"],
-      "conflicts": ["与'xxx'类别的边界说明"]
-    }}
-  ],
-  "uncategorized_analysis": "对将被归入'其他'的条目的分析说明，以及为什么它们无法归入其他分类"
-}}
-```
+## 输出格式（严格JSON）
+你必须只输出纯JSON，不要任何解释、markdown代码块标记或其他文字：
+{{"proposals":[{{"name":"类别名称","estimated_count":预计条目数}}]}}
 
 要求：
 - proposals 中的类别必须能覆盖绝大多数网址（>90%）
-- 只输出 JSON，不要其他解释"""
+- 只输出纯JSON，不要```json标记
+- 任何字段的值都不要包含英文双引号"，如果必须引用请使用中文引号「」"""
         
         try:
             from ai.ollama_client import OllamaClient
@@ -482,20 +458,13 @@ class AIClassificationService:
 ## 条目列表（格式：序号|名称|网址|当前分类|备注）：
 {items_str}
 
-## 输出格式（JSON）
-```json
-{{
-  "results": [
-    {{
-      "index": 0,
-      "category": "类别名称",
-      "confidence": 0.95,
-      "reason": "归类理由（简要）",
-      "tags": ["建议标签1"]
-    }}
-  ]
-}}
-```"""
+## 输出格式（严格JSON）
+你必须只输出纯JSON，不要任何解释或markdown代码块：
+{{"results":[{{"index":0,"category":"类别名称"}}]}}
+注意：
+- category 只能从给定的类别列表中选择
+- 不要输出 reason、confidence、tags 等额外字段
+- 只输出纯JSON，不要```json标记"""
         
         try:
             from services.ai_service_manager import AIServiceManager
@@ -552,6 +521,8 @@ class AIClassificationService:
             
         except Exception as e:
             print(f"[AI Classify] Batch classification failed: {e}")
+            print(f"[AI Classify] Batch raw result preview (first 500 chars): {result[:500]!r}")
+            print(f"[AI Classify] Batch extracted JSON preview (first 500 chars): {json_str[:500]!r}")
             # 降级：全部归入当前分类
             changes = []
             for item in batch:
@@ -662,26 +633,26 @@ class AIClassificationService:
         )
     
     def _extract_json(self, text: str) -> str:
-        """从文本中提取JSON，支持代码块和普通文本"""
+        """从文本中提取JSON，支持代码块和普通文本，并修复常见语法错误"""
         import re
+        from ai.ollama_client import OllamaClient
 
         # 1. 先尝试提取 ```json ... ``` 代码块
         match = re.search(r'```json\s*(.*?)\s*```', text, re.DOTALL)
         if match:
-            return match.group(1).strip()
+            extracted = match.group(1).strip()
+        else:
+            # 2. 再尝试提取 ``` ... ``` 代码块
+            match = re.search(r'```\s*(.*?)\s*```', text, re.DOTALL)
+            if match:
+                extracted = match.group(1).strip()
+            else:
+                # 3. 使用 OllamaClient 的鲁棒提取
+                extracted = OllamaClient._extract_json_object_robust(text) or text
 
-        # 2. 再尝试提取 ``` ... ``` 代码块
-        match = re.search(r'```\s*(.*?)\s*```', text, re.DOTALL)
-        if match:
-            return match.group(1).strip()
-
-        # 3. 最后回退到找第一个 '{' 和最后一个 '}'
-        start = text.find('{')
-        end = text.rfind('}')
-        if start != -1 and end != -1 and end > start:
-            return text[start:end+1]
-
-        return text
+        # 4. 修复常见 JSON 语法错误
+        fixed = OllamaClient._fix_json(extracted)
+        return fixed
     
     def _cleanup_old_snapshots(self):
         """清理30天前的快照"""

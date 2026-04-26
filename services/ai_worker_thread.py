@@ -319,8 +319,7 @@ class AIWorkerThread(QThread):
 
         result = client.generate(prompt=prompt, temperature=0.3, num_predict=50)
         remark = result.strip().strip('"').strip("'")
-        if len(remark) > 30:
-            remark = remark[:30]
+        # 备注完整保留，不做截断
         return remark
 
     def _update_state_post_task(self, client: OllamaClient, success: bool = True, error: str = ""):

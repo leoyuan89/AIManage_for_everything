@@ -62,8 +62,7 @@ class AIRemarkService:
             # 移除可能的引号
             remark = remark.strip('"').strip("'").strip()
             # 限制长度
-            if len(remark) > 30:
-                remark = remark[:30]
+            # 备注完整保留，不做截断
             
             return remark
             

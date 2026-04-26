@@ -256,7 +256,15 @@ class AccountRepository(VaultRepository):
     def get_categories(self) -> List[str]:
         if self.category_service:
             return self.category_service.get_all_categories()
-        return ['全部', '金融', '社交', '工作', '娱乐', '购物', '其他']
+        # fallback：只从数据库读取真实存在的分类
+        try:
+            db_cats = set(self.db.get_categories())
+            result = sorted(db_cats - {'其他'})
+            if '其他' in db_cats:
+                result.append('其他')
+            return result
+        except Exception:
+            return ['其他']
     
     def get_item_type_name(self) -> str:
         return "账号"
@@ -443,7 +451,15 @@ class URLRepository(VaultRepository):
     def get_categories(self) -> List[str]:
         if self.url_service:
             return self.url_service.get_categories()
-        return ['全部', '开发工具', '云服务', '社交平台', '学习资源', '娱乐', '购物', '其他']
+        # fallback：只从数据库读取真实存在的分类
+        try:
+            db_cats = set(self.db.get_categories())
+            result = sorted(db_cats - {'其他'})
+            if '其他' in db_cats:
+                result.append('其他')
+            return result
+        except Exception:
+            return ['其他']
     
     def get_item_type_name(self) -> str:
         return "网址"

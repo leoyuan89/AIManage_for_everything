@@ -440,13 +440,19 @@ class DatabaseManager:
         return self.cursor.rowcount
 
     def delete_category(self, category_name: str) -> int:
-        """删除分类：将该分类下所有条目的 category 设为 '其他'，返回影响的行数"""
+        """删除分类：将该分类下所有条目的 category 设为 '其他'，并清理 category_order 表，返回影响的行数"""
         self.cursor.execute(
             "UPDATE accounts SET category = '其他' WHERE category = ?",
             (category_name,)
         )
+        affected = self.cursor.rowcount
+        # 同步清理 category_order 表，避免弹窗下拉框显示幽灵类别
+        self.cursor.execute(
+            "DELETE FROM category_order WHERE category = ?",
+            (category_name,)
+        )
         self.conn.commit()
-        return self.cursor.rowcount
+        return affected
     
     def _decrypt_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
         """解密一行数据"""

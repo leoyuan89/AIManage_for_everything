@@ -206,10 +206,10 @@ class SemanticSearchService:
             # 构建条目列表文本
             items_text = []
             if accounts:
-                for acc in accounts[:30]:  # 限制数量
+                for acc in accounts:  # 完整保留所有条目
                     items_text.append(f"账号:{acc.app_name} 分类:{acc.category}")
             if urls:
-                for url in urls[:30]:
+                for url in urls:
                     items_text.append(f"网址:{url.title} 分类:{url.category}")
             
             items_str = '\n'.join(items_text)

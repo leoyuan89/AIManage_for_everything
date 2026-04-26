@@ -53,85 +53,42 @@ class AIAssistantService:
     def build_db_summary(self, accounts: List[Account] = None, urls: List = None, vault_type: str = 'accounts', max_items: int = 200) -> str:
         """
         构建数据库摘要（不含密码）
-        
-        Args:
-            accounts: 账号列表，不传则从数据库读取
-            urls: 网址列表，不传则从 url_db 读取
-            vault_type: 'accounts' 或 'urls'
-            max_items: 最多包含多少条
-            
-        Returns:
-            格式化的数据库摘要文本
         """
         if vault_type == 'accounts':
             if accounts is None:
                 accounts_data = self.db.get_all_accounts()
                 accounts = [Account.from_dict(data) for data in accounts_data]
-            
             if not accounts:
-                return "数据库中暂无账号。"
-            
-            # 统计信息
+                return "无账号。"
             categories = {}
             for acc in accounts:
                 cat = acc.category or '未分类'
                 categories[cat] = categories.get(cat, 0) + 1
-            
-            lines = [
-                f"数据库共有 {len(accounts)} 个账号",
-                f"分类分布：{', '.join(f'{k}({v})' for k, v in sorted(categories.items(), key=lambda x: -x[1]))}",
-                "",
-                "账号列表（ID | 应用名 | 分类 | 标签 | 备注）：",
-                "-" * 50,
-            ]
-            
-            # 只取前 max_items 个
-            display_accounts = accounts[:max_items]
-            for acc in display_accounts:
-                tags_str = ""
-                if acc.tags:
-                    try:
-                        tags = json.loads(acc.tags) if isinstance(acc.tags, str) else acc.tags
-                        if isinstance(tags, list):
-                            tags_str = ','.join(tags)
-                    except:
-                        tags_str = str(acc.tags)
-                
-                remark = (acc.remark or '')[:20]  # 备注截断
-                lines.append(
-                    f"{acc.id:>3} | {acc.app_name:<15} | {acc.category:<6} | {tags_str:<10} | {remark}"
-                )
-            
+            cats = ' '.join(f"{k}({v})" for k, v in sorted(categories.items(), key=lambda x: -x[1]))
+            lines = [f"共{len(accounts)}个账号。分类：{cats}", "ID|应用名|分类|备注"]
+            for acc in accounts[:max_items]:
+                remark = (acc.remark or '')[:30]
+                lines.append(f"{acc.id}|{acc.app_name}|{acc.category or '未分类'}|{remark}")
             if len(accounts) > max_items:
-                lines.append(f"... 还有 {len(accounts) - max_items} 个账号未列出")
-            
+                lines.append(f"...还有{len(accounts)-max_items}个未列出")
             return '\n'.join(lines)
         else:
-            # 网址库摘要
             if urls is None and self.url_db:
                 urls = self.url_db.get_all_urls()
             if not urls:
-                return "网址库中暂无网址。"
-            
+                return "无网址。"
             categories = {}
             for u in urls:
-                cat = u.get('category', '未分类')
+                cat = getattr(u, 'category', None) or '未分类'
                 categories[cat] = categories.get(cat, 0) + 1
-            
-            lines = [
-                f"网址库共有 {len(urls)} 个网址",
-                f"分类分布：{', '.join(f'{k}({v})' for k, v in sorted(categories.items(), key=lambda x: -x[1]))}",
-                "",
-                "网址列表（ID | 标题 | 分类 | 网址）：",
-                "-" * 50,
-            ]
-            
+            cats = ' '.join(f"{k}({v})" for k, v in sorted(categories.items(), key=lambda x: -x[1]))
+            lines = [f"共{len(urls)}个网址。分类：{cats}", "ID|标题|分类|网址"]
             for u in urls[:max_items]:
-                lines.append(f"{u.get('id', 0):>3} | {u.get('title', '')[:15]:<15} | {u.get('category', ''):<6} | {u.get('url', '')[:30]}")
-            
+                title = getattr(u, 'title', '')[:25]
+                url_str = getattr(u, 'url', '')[:40]
+                lines.append(f"{getattr(u, 'id', 0)}|{title}|{getattr(u, 'category', '') or '未分类'}|{url_str}")
             if len(urls) > max_items:
-                lines.append(f"... 还有 {len(urls) - max_items} 个网址未列出")
-            
+                lines.append(f"...还有{len(urls)-max_items}个未列出")
             return '\n'.join(lines)
     
     def semantic_query(self, query: str, accounts: List[Account] = None, urls: List = None, vault_type: str = 'accounts') -> dict:
@@ -165,7 +122,7 @@ class AIAssistantService:
                             tags_str = ','.join(tags)
                     except Exception:
                         tags_str = str(acc.tags)
-                remark = (acc.remark or '')[:20]
+                remark = acc.remark or ''
                 lines.append(f"{acc.id} | {acc.app_name} | {acc.category or '未分类'} | {tags_str} | {remark}")
         else:
             if urls is None and self.url_db:
@@ -177,14 +134,15 @@ class AIAssistantService:
             lines = []
             for u in urls:
                 tags_str = ""
-                if u.get('tags'):
+                u_tags = getattr(u, 'tags', None)
+                if u_tags:
                     try:
-                        tags = json.loads(u['tags']) if isinstance(u['tags'], str) else u['tags']
+                        tags = json.loads(u_tags) if isinstance(u_tags, str) else u_tags
                         if isinstance(tags, list):
                             tags_str = ','.join(tags)
                     except Exception:
-                        tags_str = str(u['tags'])
-                lines.append(f"{u.get('id')} | {u.get('title', '')} | {u.get('category', '未分类')} | {tags_str} | {u.get('url', '')[:30]}")
+                        tags_str = str(u_tags)
+                lines.append(f"{getattr(u, 'id', '')} | {getattr(u, 'title', '')} | {getattr(u, 'category', '未分类')} | {tags_str} | {getattr(u, 'url', '')}")
         
         items_summary = '\n'.join(lines)
         
@@ -329,8 +287,8 @@ class AIAssistantService:
                 snapshot = TurnSnapshot(
                     user_input=query,
                     parsed_action=action,
-                    params_summary=str(result.get('params', {}))[:200],
-                    ai_reply_summary=result.get('response', '')[:200],
+                    params_summary=str(result.get('params', {})),
+                    ai_reply_summary=result.get('response', ''),
                     plan_entity_ids=set(matched_ids) if matched_ids else None,
                     vault_type=vault_type
                 )
@@ -537,8 +495,8 @@ class AIAssistantService:
                 snapshot = TurnSnapshot(
                     user_input=query,
                     parsed_action=action,
-                    params_summary=str(result.get('params', {}))[:200],
-                    ai_reply_summary=result.get('response', '')[:200],
+                    params_summary=str(result.get('params', {})),
+                    ai_reply_summary=result.get('response', ''),
                     plan_entity_ids=set(matched_ids) if matched_ids else None,
                     vault_type=vault_type
                 )
@@ -740,7 +698,7 @@ class AIAssistantService:
                     "error": ""
                 }
 
-            # READONLY 工具：执行后直接返回结果，不再进行第二轮模型调用
+            # READONLY 工具
             if tool.permission == PermissionLevel.READONLY:
                 # 构造格式化回复
                 response = tool_result.message or "查询完成"
@@ -760,23 +718,44 @@ class AIAssistantService:
                                 id_to_name[str(item_id)] = name
                         
                         names = []
-                        for mid in matched_ids[:10]:
+                        for mid in matched_ids:
                             names.append(id_to_name.get(str(mid), f"ID:{mid}"))
                         name_list = "、".join(names)
-                        suffix = f"等共 {matched_count} 个" if matched_count > len(names) else f"共 {matched_count} 个"
-                        response = f"找到 {matched_count} 个相关结果：{name_list}（{suffix}）"
-                return {
-                    "success": True,
-                    "done": True,
-                    "turns_used": turn + 1,
-                    "response": response,
-                    "preview": None,
-                    "awaiting_confirm": False,
-                    "pending_tool": None,
-                    "observations": observations,
-                    "error": "",
-                    "matched_ids": matched_ids
+                        response = f"找到 {matched_count} 个相关结果：{name_list}（共 {matched_count} 个）"
+                
+                # Plan 模式：直接返回查询结果，不再进行第二轮模型调用
+                if mode == 'plan':
+                    return {
+                        "success": True,
+                        "done": True,
+                        "turns_used": turn + 1,
+                        "response": response,
+                        "preview": None,
+                        "awaiting_confirm": False,
+                        "pending_tool": None,
+                        "observations": observations,
+                        "error": "",
+                        "matched_ids": matched_ids
+                    }
+                
+                # Build 模式：记录 observation 并继续循环，让模型有机会基于查询结果调用写操作工具
+                # 在 observation 中附加 matched_ids，让模型下一轮能精确构造写操作参数
+                obs_matched_ids = []
+                if tool_result.data:
+                    obs_matched_ids = tool_result.data.get("matched_ids", [])
+                obs_result = {
+                    "message": tool_result.message,
+                    "matched_ids": obs_matched_ids,
+                    "matched_count": len(obs_matched_ids)
                 }
+                observations.append({
+                    "turn": turn + 1,
+                    "tool": tool_name,
+                    "params": params,
+                    "result": obs_result
+                })
+                self.conversation_context.add_observation(tool_name, params, obs_result, turn + 1)
+                continue
 
             # 记录 observation 并继续（非 READONLY 工具）
             obs_record = {
@@ -786,7 +765,7 @@ class AIAssistantService:
                 "result": {
                     "success": tool_result.success,
                     "message": tool_result.message,
-                    "data_summary": str(tool_result.data)[:200] if tool_result.data else ""
+                    "data_summary": str(tool_result.data) if tool_result.data else ""
                 }
             }
             observations.append(obs_record)
@@ -1084,12 +1063,10 @@ class AIAssistantService:
             if not parsed_items:
                 parsed_items = params.get('items', [])
             
-            item_names = [item.get('app') or item.get('title', '未知') for item in parsed_items[:10]]
+            item_names = [item.get('app') or item.get('title', '未知') for item in parsed_items]
             msg = f"解析到 {len(parsed_items)} 条待导入数据"
             if item_names:
                 msg += "：" + "、".join(item_names)
-            if len(parsed_items) > 10:
-                msg += f" 等共 {len(parsed_items)} 条"
             msg += "\n\n💡 切换到 Build 模式可执行导入。"
             
             return {
@@ -1233,7 +1210,8 @@ class AIAssistantService:
         elif tool_name in ('batch_update_accounts', 'batch_update_urls',
                            'batch_reorganize_accounts', 'batch_reorganize_urls',
                            'batch_add_remark_accounts', 'batch_add_remark_urls',
-                           'batch_add_tags_accounts', 'batch_add_tags_urls'):
+                           'batch_add_tags_accounts', 'batch_add_tags_urls',
+                           'smart_classify_accounts', 'smart_classify_urls'):
             vault_type = 'accounts' if tool_name.endswith('_accounts') else 'urls'
             repo = RepositoryFactory.get_repository(vault_type)
             for item in confirmed_items:

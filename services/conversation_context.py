@@ -84,10 +84,10 @@ class ConversationContext:
         total = len(self.history)
         for idx, turn in enumerate(self.history, 1):
             if total - idx < 2:
-                detail = f"用户: {turn.user_input[:80]} | AI: {turn.ai_reply_summary[:80]}"
+                detail = f"用户: {turn.user_input} | AI: {turn.ai_reply_summary}"
             else:
                 detail = f"动作: {turn.parsed_action}"
-            entity_info = f"实体: {list(turn.plan_entity_ids or [])[:5]}" if turn.plan_entity_ids else ""
+            entity_info = f"实体: {list(turn.plan_entity_ids or [])}" if turn.plan_entity_ids else ""
             lines.append(f"第{idx}轮({turn.vault_type}): {detail} {entity_info}")
 
         result = "\n".join(lines)
@@ -116,7 +116,7 @@ class ConversationContext:
             # 极简格式：仅保留最近 2 轮
             lines = []
             for turn in list(self.history)[-2:]:
-                entity_ids = list(turn.plan_entity_ids or [])[:5]
+                entity_ids = list(turn.plan_entity_ids or [])
                 lines.append(f"({turn.parsed_action}, {entity_ids})")
             return "历史: " + " -> ".join(lines)
 
@@ -125,8 +125,8 @@ class ConversationContext:
             lines = []
             total = len(self.history)
             for idx, turn in enumerate(list(self.history)[-3:], max(1, total - 2)):
-                detail = f"用户: {turn.user_input[:80]} | AI: {turn.ai_reply_summary[:80]}"
-                entity_info = f"实体: {list(turn.plan_entity_ids or [])[:5]}" if turn.plan_entity_ids else ""
+                detail = f"用户: {turn.user_input} | AI: {turn.ai_reply_summary}"
+                entity_info = f"实体: {list(turn.plan_entity_ids or [])}" if turn.plan_entity_ids else ""
                 lines.append(f"第{idx}轮({turn.vault_type}): {detail} {entity_info}")
             return "\n".join(lines)
 
@@ -146,7 +146,7 @@ class ConversationContext:
         for idx, obs in enumerate(recent, 1):
             lines.append(f"[观察 {idx}] 工具: {obs.tool}")
             lines.append(f"  参数: {json.dumps(obs.params, ensure_ascii=False)}")
-            result_str = str(obs.result)[:200] if obs.result else "无结果"
+            result_str = str(obs.result) if obs.result else "无结果"
             lines.append(f"  结果: {result_str}")
         return "\n".join(lines)
 

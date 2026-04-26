@@ -1,0 +1,462 @@
+# 炽阳 AI 助手 V2 规划文档：多轮上下文对话、意图继承与批量导入
+
+> **文档状态**：需求澄清与架构设计阶段  
+> **目标**：在现有"用户输入 → parse_command → execute_action → 生成回复"三段式流水线基础上，引入**多轮上下文与意图继承**能力，并新增**基于大模型的批量导入（`batch_add`）**动作。  
+> **核心约束**：Gemma 4B（16K 上下文），仅支持 `/api/generate`，不支持 `/api/embeddings`。  
+> **待确认**：本文档包含大量问题，需逐项确认或讨论后进入实施阶段。
+
+---
+
+## 一、现状诊断：网址库与密码库的复用鸿沟
+
+在深入两个新功能之前，必须先厘清当前架构中密码库与网址库的复用现状。根据代码审查，当前状态为**"Service 层半支持、UI 层全不通"**：
+
+| 层级 | 密码库 (`accounts`) | 网址库 (`urls`) | 状态 |
+|------|---------------------|-----------------|------|
+| `parse_command` / Prompt | 完整支持 | 支持（通过 `vault_type` 传入摘要） | 模型能识别网址指令 |
+| `execute_action` (Plan 只读) | `search`/`filter`/`list`/`explain` | **硬编码操作 `Account` 列表**，网址的 search/filter/list 完全无效 | **严重缺陷** |
+| `build_action_preview` (Build 预览) | 从 `account_map` 查原值 | 只查 `account_map`，网址预览会显示空或错误 | **严重缺陷** |
+| `execute_build_action_with_transaction` | `add`/`delete`/`reorganize`/`add_remark` | `add`/`delete` 已支持；`reorganize`/`add_remark` 未处理网址字段 | 部分支持 |
+| UI 高亮 (`semantic_match`) | 高亮账号列表 | `_cached_urls` 被忽略，网址查询结果无法高亮左侧 | **严重缺陷** |
+
+### 核心问题区 1：复用策略（必须先解决）
+
+**问题 1.1**：当前 `execute_action` 和 `build_action_preview` 几乎完全硬编码了 `Account` 的字段和映射逻辑。在新功能开发前，是否必须**先将这两个方法重构为基于 `vault_type` 的策略分发模式**？还是允许两个功能在密码库先跑通、网址库后补？
+
+**问题 1.2**：网址库的数据模型 `URLItem` 字段远少于 `Account`（无 `username`/`password`/`remark`/`ai_remark` 等）。`reorganize` 和 `add_remark` 动作对网址库而言——`add_remark` 是否应映射为给网址加 `tags`？还是网址库需要新增 `remark` 字段？
+
+**问题 1.3**：`semantic_match` 当前返回 `matched_ids`，但 UI 层 `_on_ai_query_finished` 中只拿这些 ID 去 `_cached_accounts` 中做高亮。若当前处于网址库 Tab，这些 ID 应去 `_cached_urls` 中匹配。这里是否需要引入一个**统一的高亮接口**（如 `highlight_items(vault_type, id_set)`）？
+
+**问题 1.4**：批量导入 `batch_add` 的 Prompt 要求模型输出 `app`、`account`、`password`、`url`、`category`、`remark` 等字段。对于网址库，`app` 是否对应 `title`？`account`/`password` 是否应为可选字段？是否需要**为不同 vault_type 维护不同的 Prompt 模板**，还是使用统一的 JSON Schema 但允许字段缺失？
+
+**问题 1.5**：当前 `build_db_summary` 对密码库和网址库生成不同结构的摘要文本。多轮上下文中，上下文管理器是否需要记录**当前对话绑定的 vault_type**，以防止用户在密码库 Tab 发出"删除这些"指令后，切换到网址库 Tab 再次说"删除这些"导致跨库误操作？
+
+**问题 1.6**：如果用户要求在密码库和网址库之间做**跨库联合查询**（如"找出我GitHub相关的账号和网址"），当前架构是否应支持？还是严格按 `current_vault` 隔离作用域？
+
+---
+
+## 二、功能一：多轮上下文对话与意图继承
+
+### 2.1 设计概要
+
+```
+用户输入
+   ↓
+[指代消解预处理器] ——→ 检测到"这些"/"刚才"/"它们"？——→ 拼接前N轮实体ID到 scope
+   ↓
+[Prompt 上下文注入] ——→ 前6轮快照摘要（用户输入 + Action类型 + AI回复摘要 + 实体句柄）
+   ↓
+parse_command（Gemma 4B）
+   ↓
+execute_action / build_action_preview
+   ↓
+生成回复 + 更新 ConversationContext
+```
+
+### 2.2 ConversationContext 上下文管理器设计
+
+```python
+@dataclass
+class TurnSnapshot:
+    user_input: str                    # 原始输入
+    parsed_action: str                 # search / filter / list / add / delete / ...
+    params_summary: str                # 参数摘要（如 "keywords=['支付宝']"）
+    ai_reply_summary: str              # AI回复的摘要（可截取前50字）
+    plan_entity_ids: Optional[Set[int]]   # Plan模式下 semantic_match 高亮的ID集合
+    build_entity_refs: Optional[List[Dict]] # Build模式下 preview 中的对象引用列表
+    vault_type: str                    # 'accounts' | 'urls'
+    timestamp: float                   # 时间戳
+
+class ConversationContext:
+    def __init__(self, max_turns=6, idle_timeout=300):
+        self.history: deque[TurnSnapshot] = deque(maxlen=max_turns)
+        self.last_active_timestamp: float = time.time()
+        self.idle_timeout = idle_timeout
+        # ...
+```
+
+### 核心问题区 2：上下文管理器
+
+**问题 2.1**：上下文快照中，`ai_reply_summary` 是由本地代码截取生成，还是要求模型在输出中额外带一个 `<摘要>` 标签？若本地截取，长回复的摘要策略是什么（前N字 / 首尾拼接 / 关键词提取）？
+
+**问题 2.2**：`plan_entity_ids` 记录的是 `semantic_match` 返回的高亮 ID。但 `semantic_match` 当前在 `process_query_stream` 末尾异步执行，其返回值是否已经被可靠地传递到 UI 层并记录？如果语义匹配耗时较长（如15秒），用户在此期间已发出下一轮指令，是否需要**阻塞等待**语义结果入上下文，还是允许"无实体句柄的轮次"存在？
+
+**问题 2.3**：`build_entity_refs` 应存储什么？是仅存储 ID，还是存储完整的 `{id, app_name, title, url}` 对象？考虑到上下文窗口有限，序列化到 Prompt 时应做精简，但本地保留完整引用有助于指代消解。如何平衡？
+
+**问题 2.4**：上下文双端队列的 maxlen=6。这里的"6轮"是指**用户-AI 的完整问答对**算1轮，还是**每次用户输入**算1轮？若用户在 AI 回复前连续输入多条（虽然当前UI不支持，但未来可能），是否合并为1轮？
+
+**问题 2.5**：上下文重置条件目前设计了两种：① 用户切换 Plan/Build Tab；② 超过 `idle_timeout`（如5分钟）未活跃。是否还需要第三种：**切换密码库/网址库 Tab**？如果切换库不清空上下文，用户在网址库说"删除刚才那些"会指到密码库的实体，这是灾难性的。
+
+**问题 2.6**：`idle_timeout=300` 秒（5分钟）这个阈值是否应由用户设置在"设置对话框"中可调？对于不同使用习惯的用户，有人希望长会话保持（如写报告时边查边聊），有人希望快速重置（如多人共用）。
+
+**问题 2.7**：上下文管理器的生命周期绑定在哪里？作为 `AIAssistantService` 的实例变量？还是作为 `MainWindow` 的变量注入到 Service 中？如果是 Service 层，当 `MainWindow` 销毁并重建时上下文是否会丢失？
+
+**问题 2.8**：当前 `ai_worker_thread.py` 中的 `AIWorker` 每次请求是独立的线程实例。多轮上下文意味着每次请求都需要携带历史，这会导致**上下文在 Worker 线程间传递**的问题。是否需要将上下文序列化后通过 `process_query_stream` 的 `history` 参数传入？当前的 `history` 参数是否已经被充分利用？
+
+### 2.3 指代消解预处理器设计
+
+```python
+PRONOUNS = ['这些', '那些', '它们', '他们', '她们', '这个', '那个', '刚才', '之前', '上面']
+OMISSION_PATTERNS = [r'^删除$', r'^删掉$', r'^修改分类$', r'^确认$', r'^好的$']
+
+def resolve_references(query: str, context: ConversationContext) -> Tuple[str, Optional[Set[int]]]:
+    """
+    返回: (增强后的query, 需要强制注入的entity_ids)
+    """
+```
+
+### 核心问题区 3：指代消解
+
+**问题 3.1**：指代消解的触发词表（`这些`、`刚才` 等）是否需要可配置？对于不同方言或行业术语，是否会有误判？例如用户输入"这些密码太弱了"，其中"这些"是真实指代，但"这些"后面紧跟的是评价而非指令，是否仍应触发实体继承？
+
+**问题 3.2**：当检测到指代词时，预处理器自动将上一轮实体ID拼接进 Prompt 的 `scope` 字段。但如果**上一轮有多个实体集合**（如 Plan 模式下 semantic_match 返回了10个结果，Build 模式下 preview 涉及3个删除对象），应继承哪一个？是否应继承最近一轮的**所有**实体ID，还是需要根据动作类型做区分（如 search 的结果 vs delete 的候选）？
+
+**问题 3.3**：如果用户说"删除这些，还有刚才那些"，涉及**跨多轮的实体继承**（当前轮继承上一轮 + 上上一轮）。`scope` 字段能否容纳这种多轮合并集合？是否应在上下文中维护一个**累积的"当前作用域"**（类似 Shell 的 `$_`），每轮新查询根据情况继承或刷新？
+
+**问题 3.4**：省略主语的情况非常多样："删除"、"确认"、"分类改成工作"、"加备注"等。当前用正则 `OMISSION_PATTERNS` 硬编码是否足够？是否需要引入一个轻量级的本地分类器（如关键词匹配 + 句长阈值）来判断当前 Query 是否为"省略型指令"？
+
+**问题 3.5**：如果用户在 Plan 模式下说"这些"，模型解析出的 action 是 `delete`（写操作），但 Plan 模式本应只读。此时应：
+- A. 在指代消解阶段就拦截，将 action 降级为 `explain`；
+- B. 允许模型输出 `delete`，但在 `execute_action` 阶段按现有逻辑拒绝并提示切换 Build；
+- C. 允许模型输出 `delete`，但自动将当前模式视为 Build 的 preview？
+
+**问题 3.6**：左侧列表的高亮状态与上下文绑定后，如果用户在第1轮搜索"支付宝"（高亮3条），第2轮说"删除这些"，第3轮说"再看看"——这里的"再看看"是否应重新高亮第2轮被删除的那3条（如果还在回收站）？还是高亮清空？即高亮状态的**生命周期是否应与实体存在性挂钩**？
+
+### 2.4 Prompt 模板改造
+
+需在现有 Prompt 头部注入上下文摘要：
+
+```
+[系统指令]
+你是炽阳，本地密码保险箱的AI助手...
+
+[对话历史]
+第1轮（2分钟前）- 模式: Plan - 动作: search - 实体: [ID:3, ID:7, ID:12]
+用户: 找出支付相关的账号
+AI: 已为您找到3条记录：支付宝、微信、PayPal...
+
+第2轮（30秒前）- 模式: Build - 动作: delete_preview - 实体: [ID:3]
+用户: 删除支付宝那个
+AI: 请确认是否删除"支付宝"？
+
+[当前查询]
+用户输入: 确认
+（注意：用户使用了省略表达，已自动继承第2轮的实体 [ID:3]）
+```
+
+### 核心问题区 4：Prompt 工程
+
+**问题 4.1**：Gemma 4B 的 16K 上下文在注入6轮历史 + 数据库摘要 + 批量文本后，可能迅速耗尽。是否需要对历史摘要做**自适应压缩**？例如：
+- 最近2轮保留完整用户输入；
+- 更早的4轮只保留 (action, entity_ids) 的极简格式；
+- 当总长度超过阈值时，丢弃最老的轮次。
+
+**问题 4.2**：当前数据库摘要已经占用大量 Token。多轮上下文中，是否应在第一轮之后**省略数据库摘要**（因为模型已经知道库中有哪些内容），只在用户查询涉及新范围时重新注入？还是需要每轮都注入以确保准确性？
+
+**问题 4.3**：模型输出格式当前要求 `<思考>`、`<动作>`、`<回复>` 三个 XML 标签。引入多轮上下文后，是否应增加 `<记忆>` 或 `<继承>` 标签，让模型显式声明"我继承了第N轮的实体X"，以便本地做一致性校验？
+
+**问题 4.4**：在 Prompt 中明确写出实体 ID（如 `[ID:3]`）对 Gemma 4B 的理解能力是否有帮助？还是应将实体描述为"支付宝账号（ID:3）"？哪种形式对模型更友好且不容易产生幻觉？
+
+
+---
+
+## 三、功能二：基于大模型的批量导入（`batch_add`）
+
+### 3.1 设计概要
+
+新增第9种标准 Action：`batch_add`，专用于处理用户从外部复制粘贴的多条非结构化/半结构化文本块。
+
+```
+用户粘贴批量文本
+   ↓
+本地预处理器：长度估算
+   ↓
+超出安全阈值？——→ 是：按每批20条（或按字符数动态计算）切片
+   │                  ↓
+   │               逐批调用 Gemma 4B 解析
+   │                  ↓
+   │               本地聚合为完整 JSON 数组
+   │                  ↓
+   └──→ 否：单批调用 Gemma 4B 解析
+          ↓
+      模型输出标准 JSON 数组
+          ↓
+      Build 模式？——→ 是：BatchAddPreviewWidget 表格预览
+      │                  ↓
+      │               用户勾选/编辑/修正
+      │                  ↓
+      │               execute_build_action_with_transaction
+      │                  ↓
+      │               SQLite 事务批量 INSERT
+      │                  ↓
+      │               成功后重建语义向量索引
+      │
+      └──→ 否（Plan 模式）：降级为 `explain`，仅展示 JSON 预览与整理建议
+```
+
+### 3.2 JSON Schema 设计（模型输出规范）
+
+```json
+[
+  {
+    "app": "应用名称或网站标题",
+    "account": "账号名/用户名（可选）",
+    "password": "密码（可选）",
+    "url": "网址URL（可选）",
+    "category": "分类（可选，可由模型推断）",
+    "remark": "备注（可选）",
+    "tags": ["标签1", "标签2"]
+  }
+]
+```
+
+### 核心问题区 5：批量导入的数据模型
+
+**问题 5.1**：`batch_add` 是设计为**通用批量添加**（同时支持密码库和网址库），还是分为 `batch_add_account` 和 `batch_add_url`？如果是通用的，模型如何区分一条记录应入库到 `accounts` 表还是 `urls` 表？是否需要增加一个 `"target_vault": "accounts" | "urls"` 字段由模型推断？
+
+**问题 5.2**：对于网址库，`URLItem` 的字段为 `title`、`url`、`category`、`tags`、`related_account_id`、`visit_count`。模型输出的 `app` 字段是否应映射为 `title`？`visit_count` 和 `related_account_id` 是否应在批量导入时默认为 0 和 None？
+
+**问题 5.3**：用户粘贴的文本可能是纯 URL 列表（如浏览器导出的书签），也可能是"账号 密码 URL"的三列文本，也可能是更复杂的混合文本。Prompt 中是否需要提供**输入格式示例**（few-shot），让模型理解当前文本的结构？如何根据输入内容自动判断格式类型？
+
+**问题 5.4**：密码字段在批量导入时涉及**安全风险**。用户在 UI 中编辑批量记录时，密码字段是否应以掩码显示（如 `******`）？还是明文显示以便核对？当前单条 `add` 的预览是如何处理密码的？
+
+**问题 5.5**：批量导入中，模型可能将域名误识别为账号名（如 `github.com` 被填入 `account`）。`BatchAddPreviewWidget` 中允许用户逐行编辑，但编辑后是否需要**重新做字段合法性校验**（如 `url` 字段必须符合 URL 格式、`category` 必须是现有分类或允许新建）？
+
+### 3.3 分批切割机制
+
+```python
+MAX_BATCH_CHARS = 4000   # 单批字符数安全阈值（预留 Token 给 Prompt 和输出）
+MAX_BATCH_ITEMS = 20     # 单批最大条目数
+
+def chunk_text_for_batch(text: str) -> List[str]:
+    """按字符数和条目数双重约束切片"""
+```
+
+### 核心问题区 6：分批策略与性能
+
+**问题 6.1**：安全阈值 `MAX_BATCH_CHARS = 4000` 是否合理？Gemma 4B 的 16K 上下文中，Prompt 模板本身可能占 2K-3K，输出 JSON 可能占 4K-8K。是否需要根据**实时 Token 估算**（如按中文字符 × 1.5 系数）而非简单字符数？是否需要引入 `tiktoken` 或类似库做精确估算？
+
+**问题 6.2**：分批切割时，如果一批文本在语义上是一个整体（如20条记录属于同一分类说明段落），按固定条数切割是否会导致模型对后几批的**分类推断能力下降**？是否应在每批头部注入一个**上下文摘要**（如"以下记录与上批同属'开发工具'类"）？
+
+**问题 6.3**：逐批调用模型是**串行**还是**并行**？如果是串行，20批（400条记录）在模型响应慢时（如15秒/批）总耗时将达5分钟，用户体验极差。如果并行，本地 Ollama 的并发能力和显存是否撑得住？是否需要增加一个任务队列和进度条？
+
+**问题 6.4**：分批解析后，本地聚合为完整数组。如果第3批解析失败（模型返回非法 JSON），整体策略是：
+- A. 整单失败，提示用户重新提交；
+- B. 跳过失败批次，将成功批次聚合后进入预览，同时告知用户"第3批解析失败，已跳过"；
+- C. 对失败批次降级为 `explain`，展示原始文本并建议用户手动处理？
+
+**问题 6.5**：重建语义向量索引当前是否存在？如果不存在（当前 `semantic_search_service.py` 使用的是关键词 + 拼音匹配，而非真正的向量索引），那么"入库成功后同步触发语义向量索引重建"这句话是否需要修正？当前语义搜索的真实实现是什么？
+
+### 3.4 BatchAddPreviewWidget 设计
+
+```
+┌─────────────────────────────────────────────────────┐
+│  批量导入预览 - 共 35 条记录                           │
+├─────────────┬──────────┬──────────┬────────┬────────┤
+│ ☑ │ 应用    │ 账号     │ 密码     │ URL    │ 分类   │
+├─────────────┼──────────┼──────────┼────────┼────────┤
+│ ☑ │ GitHub  │ user1    │ ******   │ ...    │ 开发工具│  [编辑]│
+│ ☐ │ 百度    │ -        │ -        │ ...    │ 其他   │  [编辑]│ ← 模型推断为"其他"，用户可修正
+│ ☑ │ 支付宝   │ 138****  │ ******   │ -      │ 金融   │  [编辑]│
+├─────────────┴──────────┴──────────┴────────┴────────┤
+│ [全选] [全不选] [反选]  [批量修改分类 ▼]              │
+│                                                     │
+│ 检测到 3 个潜在问题：                                │
+│ ⚠ 第2行 "百度" 的分类被推断为"其他"，建议检查       │
+│ ⚠ 第5行 URL 格式不完整                             │
+│                                                     │
+│ [取消]                            [确认导入 (32条)] │
+└─────────────────────────────────────────────────────┘
+```
+
+### 核心问题区 7：预览与编辑交互
+
+**问题 7.1**：`BatchAddPreviewWidget` 的表格控件选型：使用 `QTableWidget`（简单但数据绑定弱）还是 `QTableView` + `QAbstractTableModel`（支持更复杂的数据驱动和排序）？考虑到需要支持行内编辑、复选框、以及底部快捷操作，哪种方案与现有代码风格更一致？
+
+**问题 7.2**：行内编辑的触发方式：双击单元格直接编辑 vs 每行右侧的"编辑"按钮打开迷你对话框？哪种更适合批量场景（用户可能只想改一个字母）？
+
+**问题 7.3**："批量修改分类"功能应如何交互？选中多行后，从下拉框选择一个分类并应用？如果选中行中已有不同分类，是否覆盖全部？是否需要"追加分类"（如给所有选中项添加"工作"标签）与"替换分类"两种模式？
+
+**问题 7.4**：表格底部的"潜在问题提示"（如 URL 格式不完整、分类置信度低）是由本地规则引擎生成，还是由模型在解析时附带生成？如果由模型生成，需要在 JSON Schema 中增加 `"warnings": [...]` 字段吗？
+
+**问题 7.5**：用户在预览阶段点击"取消"，这些解析结果是否应被丢弃？还是暂存在一个**草稿状态**中，允许用户切换去查其他信息后再回来继续编辑？
+
+**问题 7.6**：如果 35 条记录中有 3 条因格式问题无法解析（模型输出缺失必填字段），它们在表格中应显示为：
+- A. 红色高亮行，但允许用户手动补全字段后导入；
+- B. 单独放在"待修复"区域，与正常记录隔离；
+- C. 不显示在表格中，仅在底部警告中列出原始文本。
+
+### 3.5 事务与执行层
+
+```python
+def execute_build_action_with_transaction(self, action, params, mode='build'):
+    if action == 'batch_add':
+        items = params.get('items', [])
+        confirmed_items = [item for item in items if item.get('confirmed', True)]
+        
+        with self.db.transaction() as txn:
+            for item in confirmed_items:
+                if item['target_vault'] == 'accounts':
+                    self._insert_account(item, txn)
+                else:
+                    self._insert_url(item, txn)
+            # 任意一行失败 → 整单 ROLLBACK
+```
+
+### 核心问题区 8：事务与一致性
+
+**问题 8.1**：SQLite 事务中逐条 INSERT，若第20条因唯一约束（如 `url` 字段设为 UNIQUE）失败，整单 ROLLBACK 是否合理？还是应改为"跳过重复项，继续导入其余"？用户可能期望"尽可能多地导入"而非"全有或全无"。
+
+**问题 8.2**：批量导入是否需要**去重预检**？在事务开始前，先查询数据库中是否已存在相同 `app`+`account`（密码库）或相同 `url`（网址库），并将重复项标记为"已存在"？这种预检应该在预览阶段完成还是执行阶段完成？
+
+**问题 8.3**：当前 `execute_build_action_with_transaction` 写入了审计日志。批量导入 100 条记录时，是写入 100 条审计日志，还是写入 1 条聚合日志（如"批量导入 100 条"）？从数据库性能和审计可追溯性角度，如何平衡？
+
+**问题 8.4**：事务执行成功后，是否需要刷新主窗口的左侧列表和右侧 AI 面板的上下文？如果用户导入后立即说"给刚才导入的这些加备注"，上下文管理器是否能识别这 100 条新记录的 ID 作为当前作用域？
+
+---
+
+## 四、架构重构：统一的 Vault-Aware Action 执行层
+
+在引入两个新功能之前，强烈建议先对 `execute_action` 和 `build_action_preview` 做一层**仓库抽象（Repository Pattern）**，以解决密码库与网址库的长期复用问题。
+
+```python
+class VaultRepository(ABC):
+    @abstractmethod
+    def get_by_id(self, id: int) -> Any: ...
+    @abstractmethod
+    def search(self, keywords: List[str]) -> List[Any]: ...
+    @abstractmethod
+    def filter_by_category(self, category: str) -> List[Any]: ...
+    @abstractmethod
+    def list_all(self) -> List[Any]: ...
+    @abstractmethod
+    def update_field(self, id: int, field: str, value: Any) -> bool: ...
+    @abstractmethod
+    def delete(self, ids: List[int]) -> bool: ...
+    @abstractmethod
+    def add(self, item_data: Dict) -> int: ...
+
+class AccountRepository(VaultRepository): ...
+class URLRepository(VaultRepository): ...
+```
+
+### 核心问题区 9：架构重构优先级
+
+**问题 9.1**：上述 Repository 抽象是否应在本次规划中一并实施，还是作为**前置 PR** 单独完成？如果作为前置 PR，是否会阻塞两个新功能的开发进度？
+
+**问题 9.2**：`build_action_preview` 当前返回的是结构化字典，UI 层的 `ActionPreviewWidget` 硬编码了列名。若引入 Repository 模式，预览数据应如何标准化（如统一返回 `{id, display_name, fields: [{name, old_value, new_value}]}`），使 UI 层无需关心底层是 `Account` 还是 `URLItem`？
+
+**问题 9.3**：`semantic_match` 当前在 `ai/ollama_client.py` 中基于字符串匹配实现。是否需要将其也纳入 Repository 抽象，让 `AccountRepository` 和 `URLRepository` 各自实现语义匹配逻辑？还是保持统一的基于字段的子串匹配？
+
+**问题 9.4**：当前 `URLItem` 没有 `ai_remark` 字段，但 `Account` 有。如果要做完全统一的 Repository 接口，`ai_remark` 相关的 action 对网址库应如何处理？是：
+- A. 给 `URLItem` 增加 `ai_remark` 字段；
+- B. 在 Repository 层对不支持的操作抛出 `NotSupportedError`，UI 层降级展示；
+- C. 将 `ai_remark` 映射为 `tags` 的追加写入。
+
+---
+
+## 五、Plan 模式下的 `batch_add` 降级行为
+
+根据需求，`batch_add` 严格归属 Build 模式写操作。Plan 模式下若用户粘贴批量文本，系统自动降级为 `explain`。
+
+```python
+if mode == 'plan' and action == 'batch_add':
+    # 解析文本，生成 JSON 预览与整理建议，但不落库
+    return {
+        'action': 'explain',
+        'reply': '我已为您解析出以下 15 条记录，建议分类如下...\n\n[JSON 预览]',
+        'parsed_items': items  # 可选：附带给用户看
+    }
+```
+
+### 核心问题区 10：Plan 模式降级
+
+**问题 10.1**：Plan 模式下解析批量文本后，生成的 JSON 预览是否应在 UI 中以可折叠代码块形式展示？当前 AI 回复区域是纯文本还是支持富文本（如 Markdown / HTML）？
+
+**问题 10.2**：用户在 Plan 模式下看到预览后，若想直接"一键转入 Build 模式导入"，是否需要提供一个快捷按钮（如"切换到 Build 模式并导入"）？点击后是否自动携带当前解析结果进入 `BatchAddPreviewWidget`，避免用户重新粘贴？
+
+**问题 10.3**：Plan 模式下解析批量文本是否也消耗模型资源？如果用户只是在"试探"，结果每次都触发模型解析，可能造成资源浪费。是否需要先做一个**本地启发式预检**（如检测文本中是否包含多条 URL 或账号模式），确认像批量导入后再发送给模型？
+
+---
+
+## 六、待确认事项总清单
+
+请针对以下清单逐项确认（是 / 否 / 需讨论），确认后进入详细设计与编码阶段。
+
+### 6.1 复用与架构
+- [ ] **Q1.1**：是否优先重构 `execute_action` + `build_action_preview` 以支持网址库，再开发新功能？
+- [ ] **Q1.2**：网址库是否需要新增 `remark`/`ai_remark` 字段？还是复用 `tags`？
+- [ ] **Q1.4**：`batch_add` 的 JSON Schema 是否区分 vault_type，还是统一字段允许缺失？
+- [ ] **Q1.5**：切换密码库/网址库 Tab 时，是否清空 AI 助手对话上下文？
+
+### 6.2 多轮上下文
+- [ ] **Q2.1**：`ai_reply_summary` 的生成策略（本地截取 / 模型输出标签）？
+- [ ] **Q2.5**：上下文重置条件是否包含"切换 vault_type"？
+- [ ] **Q2.6**：`idle_timeout` 是否可配置？默认值多少？
+- [ ] **Q3.2**：指代消解继承的是最近一轮的所有实体，还是按动作类型过滤？
+- [ ] **Q3.5**：Plan 模式下模型输出写操作 + 指代消解的联合处理策略？
+- [ ] **Q4.1**：历史摘要是否需要自适应压缩策略？
+
+### 6.3 批量导入
+- [ ] **Q5.1**：`batch_add` 是通用动作还是分 `batch_add_account` / `batch_add_url`？
+- [ ] **Q5.3**：Prompt 中是否需要 few-shot 示例帮助模型理解输入格式？
+- [ ] **Q5.4**：批量导入预览中密码字段是明文还是掩码？
+- [ ] **Q6.1**：分批阈值的估算方式（字符数 / Token 数）？
+- [ ] **Q6.3**：多批解析是串行还是并行？是否需要进度条？
+- [ ] **Q6.4**：单批解析失败的整体策略（全败 / 跳过 / 降级）？
+- [ ] **Q7.1**：表格控件选型（`QTableWidget` vs `QTableView` + Model）？
+- [ ] **Q7.4**：潜在问题提示由本地规则还是模型生成？
+- [ ] **Q8.1**：事务失败策略（整单 ROLLBACK vs 跳过重复继续）？
+- [ ] **Q8.2**：是否需要去重预检？在哪个阶段完成？
+- [ ] **Q10.2**：Plan 预览后是否提供"一键转 Build 导入"的快捷按钮？
+
+### 6.4 其他开放问题
+- [ ] **开放问题 A**：当前 AI 助手面板在网址库 Tab 下是否应**强制禁用**（因为 search/filter/list 完全不支持），还是允许使用但明确提示"当前仅支持 Build 模式的 add/delete"？
+- [ ] **开放问题 B**：批量导入的 JSON 输出中，`category` 字段若模型推断为数据库中不存在的分类，是自动创建新分类、归入"其他"、还是标记为待确认？
+- [ ] **开放问题 C**：多轮上下文中，如果用户在第1轮 Build 模式下确认了删除操作，第2轮说"恢复刚才删除的"——当前系统无"恢复"Action，是否需要新增？还是超出本次规划范围？
+- [ ] **开放问题 D**：`visit_count`、`created_at`、`updated_at` 等系统字段在 `batch_add` 中是否允许用户指定？还是强制由系统生成？
+- [ ] **开放问题 E**：批量导入完成后，左侧列表的滚动位置是否应自动定位到新增的第一条记录？如何实现？
+
+---
+
+## 七、建议的实施路线图
+
+根据依赖关系，建议按以下阶段推进：
+
+```
+Phase 0: 架构修复（必须前置）
+  ├─ 重构 execute_action 支持 vault_type 分发
+  ├─ 重构 build_action_preview 支持 URLItem
+  └─ 修复 semantic_match 在网址库的高亮逻辑
+
+Phase 1: 多轮上下文基础
+  ├─ 实现 ConversationContext + TurnSnapshot
+  ├─ 集成 idle_timeout 与 Tab 切换生命周期
+  └─ 改造 parse_command Prompt 注入历史摘要
+
+Phase 2: 指代消解与意图继承
+  ├─ 实现指代消解预处理器
+  ├─ 实现 scope 字段继承机制
+  └─ 高亮状态与上下文绑定
+
+Phase 3: 批量导入核心
+  ├─ 新增 batch_add Action
+  ├─ 改造 Prompt 为批量解析模式
+  ├─ 实现分批切割与聚合机制
+  └─ 扩展 execute_build_action_with_transaction 批量 INSERT
+
+Phase 4: 批量导入 UI
+  ├─ 实现 BatchAddPreviewWidget
+  ├─ 行内编辑、复选框、批量修改分类
+  └─ Plan 模式降级与"一键转 Build"快捷通道
+
+Phase 5: 集成测试
+  ├─ 密码库多轮对话测试
+  ├─ 网址库多轮对话测试
+  ├─ 批量导入边界测试（超长文本、格式错误、重复数据）
+  └─ 性能测试（分批并发、事务回滚、上下文内存占用）
+```
+
+---
+
+**文档结束。请逐项审阅"待确认事项总清单"，回复确认意见或提出修改方向，以便进入下一阶段的详细设计。**

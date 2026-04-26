@@ -174,9 +174,10 @@ class PopupComboBox(QWidget):
             self._popup = None
         
         # 计算列表尺寸
-        item_h = 32
+        # item 实际高度 = min-height(24) + padding-top(6) + padding-bottom(6) = 36
+        item_h = 36
         max_items = min(len(self._items), 6)
-        list_height = item_h * max_items + 2
+        list_height = item_h * max_items + 4  # +4 给边框留余量
         popup_width = self.width()
         
         # 创建弹出窗口（Popup + 无边框，白色背景）
@@ -363,14 +364,23 @@ class AccountDialog(QDialog):
             RepositoryFactory.register('accounts', repo)
     
     def _get_categories(self) -> list:
-        """通过 RepositoryFactory 获取分类列表（确保与数据库同步）"""
+        """通过 RepositoryFactory 获取分类列表（确保与数据库同步，不显示幽灵类别）"""
         self._ensure_repository_registered()
         try:
             return RepositoryFactory.get_repository('accounts').get_categories()
         except Exception as e:
             print(f"[AccountDialog] RepositoryFactory 获取分类失败: {e}")
-            # fallback：使用现有逻辑
-            db_cats = sorted(set(self.db.get_categories()) | set(self.db.get_category_orders().keys()))
+            # fallback：只取有账号在用的类别，按 category_order 排序
+            used_cats = set(self.db.get_categories())
+            order_map = self.db.get_category_orders()
+            # 有排序的放前面，按 sort_index 排序
+            sorted_with_order = sorted(
+                [c for c in used_cats if c in order_map],
+                key=lambda c: order_map.get(c, 0)
+            )
+            # 没有排序的放后面，按字母排序
+            sorted_without_order = sorted([c for c in used_cats if c not in order_map])
+            db_cats = sorted_with_order + sorted_without_order
             if '其他' not in db_cats:
                 db_cats.append('其他')
             return db_cats

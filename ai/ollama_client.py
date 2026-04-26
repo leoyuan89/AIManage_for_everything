@@ -31,7 +31,91 @@ class OllamaClient:
         except:
             return False
     
-    def generate(self, prompt: str, temperature: float = 0.1, num_predict: int = -1) -> str:
+    @staticmethod
+    def _extract_json_object_robust(text: str) -> Optional[str]:
+        """使用括号深度计数，从文本中提取第一个完整的 JSON 对象"""
+        # 先尝试找 ```json ... ``` 代码块
+        code_block = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', text)
+        if code_block:
+            return code_block.group(1)
+        # 找第一个 { 开始的完整 JSON 对象
+        start = text.find('{')
+        if start == -1:
+            return None
+        depth = 0
+        in_string = False
+        escape = False
+        for i, ch in enumerate(text[start:], start):
+            if escape:
+                escape = False
+                continue
+            if ch == '\\':
+                escape = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                continue
+            if not in_string:
+                if ch == '{':
+                    depth += 1
+                elif ch == '}':
+                    depth -= 1
+                    if depth == 0:
+                        return text[start:i+1]
+        return None
+
+    @staticmethod
+    def _fix_json(text: str) -> str:
+        """修复常见的模型输出 JSON 语法错误"""
+        # 1. 去除首尾空白和常见非 JSON 前缀/后缀
+        text = text.strip()
+        # 去除可能的前缀，如 "输出："、"JSON:" 等
+        text = re.sub(r'^(?:输出[:：]|JSON[:：]|Response[:：])\s*', '', text, flags=re.IGNORECASE)
+        # 2. 中文引号 → 英文引号（注意保留 JSON 字符串内的中文内容）
+        text = text.replace('"', '"').replace('"', '"')
+        text = text.replace("'", "'").replace("'", "'")
+        # 3. 字符串内未转义的换行符/回车 → \\n
+        # 使用状态机修复字符串内的原始换行
+        result = []
+        in_string = False
+        escape = False
+        for ch in text:
+            if escape:
+                result.append(ch)
+                escape = False
+                continue
+            if ch == '\\':
+                result.append(ch)
+                escape = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                result.append(ch)
+                continue
+            if in_string and ch in '\n\r\t':
+                if ch == '\n':
+                    result.append('\\n')
+                elif ch == '\r':
+                    result.append('\\r')
+                else:
+                    result.append('\\t')
+                continue
+            result.append(ch)
+        text = ''.join(result)
+        # 4. 对象/数组末尾多余逗号（如 "a": 1,} → "a": 1}）
+        text = re.sub(r',(\s*[}\]])', r'\1', text)
+        # 5. 缺少逗号：}{ 之间、}{ 前面有引号等情况（保守修复，只处理明显的）
+        text = re.sub(r'"\s*\}\s*\{', r'"},{', text)
+        # 6. 去除 JSON 后可能粘着的解释文字（取最后一个 } 之前的内容）
+        last_brace = text.rfind('}')
+        if last_brace != -1 and last_brace < len(text) - 1:
+            # 检查最后一个 } 后面是否是非空白字符
+            tail = text[last_brace+1:].strip()
+            if tail and not tail.startswith('}'):
+                text = text[:last_brace+1]
+        return text
+
+    def generate(self, prompt: str, temperature: float = 0.1, num_predict: int = 16384) -> str:
         """
         调用 Ollama 生成文本
         
@@ -63,7 +147,14 @@ class OllamaClient:
             response.raise_for_status()
             
             result = response.json()
-            return result.get('response', '').strip()
+            raw_response = result.get('response', '').strip()
+            done_reason = result.get('done_reason', 'N/A')
+            prompt_eval_count = result.get('prompt_eval_count', 'N/A')
+            eval_count = result.get('eval_count', 'N/A')
+            print(f"[OllamaDebug] status={response.status_code}, prompt_len={len(prompt)}, prompt_tokens={prompt_eval_count}, gen_tokens={eval_count}, response_len={len(raw_response)}, done_reason={done_reason}, preview={raw_response[:200]!r}")
+            if not raw_response:
+                print(f"[OllamaDebug] FULL result keys={list(result.keys())}")
+            return raw_response
             
         except requests.exceptions.ConnectionError:
             raise Exception("无法连接到 Ollama 服务，请确保 Ollama 已启动")
@@ -72,7 +163,7 @@ class OllamaClient:
         except Exception as e:
             raise Exception(f"Ollama 调用失败: {str(e)}")
     
-    def generate_stream(self, prompt: str, temperature: float = 0.1, num_predict: int = -1) -> Generator[str, None, None]:
+    def generate_stream(self, prompt: str, temperature: float = 0.1, num_predict: int = 16384) -> Generator[str, None, None]:
         """
         流式生成文本，逐 token 返回。
         如果流式调用失败，降级为非流式 generate() 并一次性 yield 全部结果。
@@ -126,7 +217,7 @@ class OllamaClient:
             except Exception as fallback_e:
                 raise Exception(f"流式生成失败且降级失败: {fallback_e}")
     
-    def generate_with_think_result(self, prompt: str, temperature: float = 0.1, num_predict: int = -1) -> dict:
+    def generate_with_think_result(self, prompt: str, temperature: float = 0.1, num_predict: int = 16384) -> dict:
         """
         生成文本，并要求模型按 <think> 和 <result> 标签输出结构化结果。
         
@@ -253,7 +344,7 @@ class OllamaClient:
         print(f"[SemanticSearch] Prompt length: {len(prompt)} chars, accounts: {len(app_list)}")
         
         try:
-            result = self.generate(prompt, temperature=0.2, num_predict=1500)
+            result = self.generate(prompt, temperature=0.2)
             print(f"[SemanticSearch] Raw response ({len(result)} chars):\n{result[:500]}")
             
             # 如果结果只有"无"相关行（没有其他匹配项），返回空列表
@@ -308,15 +399,15 @@ class OllamaClient:
     
     def semantic_match(self, query: str, items_summary: str) -> dict:
         """
-        语义匹配：本地实现，无需调用模型。
-        
-        通过关键词匹配、拼音首字母匹配、同义词扩展等多维度算法，
-        从条目摘要中返回匹配的 ID 列表与置信度。
-        
+        语义匹配：调用本地 AI 模型进行真正的语义理解匹配。
+
+        将查询词和条目摘要一起发送给模型，由模型基于语义理解判断相关性。
+        如果模型调用失败，自动降级到本地关键词匹配。
+
         Args:
             query: 用户搜索词
             items_summary: 格式化的条目摘要（每行：ID | 应用名 | 分类 | 标签 | 备注）
-            
+
         Returns:
             {
                 "matched_ids": [匹配的ID列表],
@@ -324,19 +415,128 @@ class OllamaClient:
                 "confidence_scores": {"ID": 置信度(0-1)}
             }
         """
+        import json as _json
+
+        if not query or not items_summary:
+            return {"matched_ids": [], "reasoning": "空查询或空数据", "confidence_scores": {}}
+
+        prompt = f"""你是语义匹配专家。请根据用户的查询意图，从下面的条目列表中找出所有语义相关的条目。
+
+用户查询："{query}"
+
+条目列表（每行格式：ID | 应用名/标题 | 分类 | 标签 | 备注）：
+{items_summary}
+
+重要规则：
+1. 必须理解语义，不要只做字面匹配。例如：
+   - 查询"青岛大学"应该匹配"青大学工"、"青岛大学财务处"等
+   - 查询"支付类"应该匹配"支付宝"、"微信"、"银行"等
+   - 查询"学习"应该匹配"学习通"、"慕课"、"知网"等
+2. 综合考虑应用名、分类、标签、备注来判断相关性
+3. 选出所有相关的匹配项，不要遗漏
+4. 如果没有匹配的，返回空数组
+
+请严格输出JSON格式（不要添加任何其他文字、解释、markdown代码块）：
+{{"matched_ids": [相关的ID列表，如 [1, 5, 10]], "reasoning": "匹配理由", "confidence_scores": {{"1": 0.95, "5": 0.88}}}}
+
+输出："""
+
+        try:
+            raw = self.generate(prompt, temperature=0.2)
+            text = raw.strip()
+            print(f"[SemanticMatch] Raw response ({len(text)} chars):\n{text[:300]}")
+
+            # 去除 markdown 代码块
+            if text.startswith("```"):
+                text = text.strip("`").strip()
+                if text.lower().startswith("json"):
+                    text = text[4:].strip()
+
+            # 尝试直接解析
+            result = None
+            try:
+                result = _json.loads(text)
+            except _json.JSONDecodeError:
+                pass
+            
+            # 尝试 _fix_json 修复后解析
+            if result is None:
+                try:
+                    fixed = self._fix_json(text)
+                    result = _json.loads(fixed)
+                    print(f"[SemanticMatch] Used _fix_json, len={len(fixed)}")
+                except _json.JSONDecodeError:
+                    pass
+            
+            # 尝试 _extract_json_object_robust 提取后解析
+            if result is None:
+                extracted = self._extract_json_object_robust(text)
+                if extracted:
+                    try:
+                        result = _json.loads(extracted)
+                        print(f"[SemanticMatch] Used robust extraction, len={len(extracted)}")
+                    except _json.JSONDecodeError:
+                        pass
+                    
+                    # 提取后 _fix_json 再解析
+                    if result is None:
+                        try:
+                            fixed_extracted = self._fix_json(extracted)
+                            result = _json.loads(fixed_extracted)
+                            print(f"[SemanticMatch] Used robust+fix_json, len={len(fixed_extracted)}")
+                        except _json.JSONDecodeError:
+                            pass
+            
+            if result is None:
+                raise _json.JSONDecodeError("All JSON parsing attempts failed", text, 0)
+
+            matched_ids = result.get("matched_ids", [])
+            confidence_scores = result.get("confidence_scores", {})
+            reasoning = result.get("reasoning", "")
+
+            # 确保 matched_ids 都是整数
+            clean_ids = []
+            for mid in matched_ids:
+                try:
+                    clean_ids.append(int(mid))
+                except (ValueError, TypeError):
+                    pass
+
+            # 清理 confidence_scores 的 key
+            clean_scores = {}
+            for k, v in confidence_scores.items():
+                try:
+                    clean_scores[str(int(k))] = float(v)
+                except (ValueError, TypeError):
+                    pass
+
+            line_count = len([l for l in items_summary.strip().split(chr(10)) if l.strip()])
+            print(f"[SemanticMatch] Model match: query='{query}', items={line_count}, matched={len(clean_ids)}")
+
+            return {
+                "matched_ids": clean_ids,
+                "reasoning": reasoning or f"模型语义匹配：查询'{query}'命中{len(clean_ids)}条",
+                "confidence_scores": clean_scores
+            }
+
+        except Exception as e:
+            print(f"[SemanticMatch] Model match failed: {e}, fallback to local")
+            return self._local_semantic_match(query, items_summary)
+
+    def _local_semantic_match(self, query: str, items_summary: str) -> dict:
+        """本地语义匹配（降级备用）：关键词匹配、拼音首字母匹配、同义词扩展等。"""
         import re
         from difflib import SequenceMatcher
         try:
             from core.pinyin import PinyinConverter
         except Exception:
             PinyinConverter = None
-        
+
         if not query or not items_summary:
             return {"matched_ids": [], "reasoning": "空查询或空数据", "confidence_scores": {}}
-        
+
         query = query.strip().lower()
-        
-        # 同义词/相关词扩展映射
+
         synonym_map = {
             "竞赛": ["比赛", "大赛", "赛事", "美赛", "大创", "创新创业", "挑战杯", "acm", "cpcc", "蓝桥杯"],
             "论文": ["知网", "arxiv", "ieee", "学术", "文献", "期刊", "会议", "投稿"],
@@ -349,16 +549,13 @@ class OllamaClient:
             "视频": ["b站", "bilibili", "youtube", "抖音", "快手", "爱奇艺", "腾讯", "优酷", "netflix"],
             "开发": ["github", "gitlab", "gitee", "coding", "stackoverflow", "leetcode", "力扣", "vscode"],
         }
-        
-        # 构建扩展查询词列表
+
         search_terms = [query]
         for key, synonyms in synonym_map.items():
             if key in query or any(s in query for s in synonyms):
                 search_terms.extend([key] + synonyms)
-        # 去重
         search_terms = list(set(search_terms))
-        
-        # 解析 items_summary
+
         items = []
         for line in items_summary.strip().split("\n"):
             line = line.strip()
@@ -383,34 +580,26 @@ class OllamaClient:
                 "remark": remark,
                 "text": f"{app_name} {category} {tags} {remark}".lower()
             })
-        
+
         matched_ids = []
         confidence_scores = {}
         matched_details = []
-        
+
         for item in items:
             max_score = 0.0
-            best_match_term = ""
-            
             for term in search_terms:
                 term = term.lower().strip()
                 if not term:
                     continue
-                
                 score = 0.0
                 text = item["text"]
                 app = item["app_name"].lower()
-                
-                # 1. 应用名完全匹配（最高权重）
                 if term == app:
                     score = max(score, 1.0)
-                # 2. 应用名包含匹配
                 elif term in app:
                     score = max(score, 0.95)
-                # 3. 任意字段包含匹配
                 elif term in text:
                     score = max(score, 0.85)
-                # 4. 拼音首字母匹配
                 if PinyinConverter and score < 0.85:
                     try:
                         app_pinyin = PinyinConverter.get_pinyin_initials(item["app_name"])
@@ -420,7 +609,6 @@ class OllamaClient:
                             score = max(score, 0.8)
                     except Exception:
                         pass
-                # 5. 模糊匹配（编辑距离）
                 if score < 0.7 and len(term) >= 2 and len(app) >= 2:
                     try:
                         ratio = SequenceMatcher(None, term, app).ratio()
@@ -428,34 +616,31 @@ class OllamaClient:
                             score = max(score, ratio * 0.85)
                     except Exception:
                         pass
-                
                 if score > max_score:
                     max_score = score
-                    best_match_term = term
-            
+
             if max_score >= 0.6:
                 matched_ids.append(item["id"])
                 confidence_scores[str(item["id"])] = round(max_score, 2)
                 matched_details.append(f"{item['app_name']}({max_score:.0%})")
-        
-        # 按置信度排序
+
         matched_ids.sort(key=lambda x: confidence_scores.get(str(x), 0), reverse=True)
-        
+
         reasoning = f"本地语义匹配：查询词 '{query}'，在 {len(items)} 条记录中命中 {len(matched_ids)} 条"
         if matched_details:
             reasoning += "；主要匹配：" + ", ".join(matched_details[:8])
             if len(matched_details) > 8:
                 reasoning += f" 等共{len(matched_details)}项"
-        
-        print(f"[SemanticMatch] Local match: query='{query}', items={len(items)}, matched={len(matched_ids)}")
-        
+
+        print(f"[SemanticMatch] Local fallback: query='{query}', items={len(items)}, matched={len(matched_ids)}")
+
         return {
             "matched_ids": matched_ids,
             "reasoning": reasoning,
             "confidence_scores": confidence_scores
         }
     
-    def chat(self, messages: List[dict], temperature: float = 0.3, num_predict: int = 1200) -> str:
+    def chat(self, messages: List[dict], temperature: float = 0.3, num_predict: int = 16384) -> str:
         """
         对话模式：支持多轮上下文（通过 messages 拼接为 prompt）
         
@@ -503,17 +688,33 @@ class OllamaClient:
 可用工具列表：
 {tools_text}
 
-重要规则：
-1. 你必须严格输出JSON格式，不要添加任何其他解释
-2. 如果需要执行工具，输出：{{"thought": "你的思考过程", "tool": "工具名称", "params": {{参数}}}}
-3. 如果任务已完成或无需工具，输出：{{"thought": "任务已完成", "tool": "direct_answer", "response": "给用户的回复"}}
-4. 确保JSON格式正确，字符串使用双引号
+【极其重要 - 决策规则】
+1. 如果用户请求是**纯查询类**（查找、搜索、筛选、统计、询问信息），且不需要修改数据 → 使用 tool="direct_answer"
+2. 如果用户请求涉及**任何数据修改**（新增、删除、修改分类、修改备注、添加标签、整理、重组、批量更新） → **必须调用对应工具**，绝对不能用 direct_answer
+3. 如果 observation 中已经包含搜索结果（如 matched_ids），你要**直接使用这些 ID** 构造写操作工具的参数，不要返回 direct_answer 说"我找不到 ID"
+4. 你只能决定调用哪个工具，不能直接替用户执行修改
+
+【多轮工具调用示例】
+场景：用户说"查找青岛大学有关的网址，并将类别改为青岛大学"
+- 第1轮：{{"thought": "先查找相关网址", "tool": "semantic_search_urls", "params": {{"query": "青岛大学"}}}}
+- 第2轮（基于 observation 中的 matched_ids）：{{"thought": "已找到相关网址 IDs，现在批量修改分类", "tool": "batch_update_urls", "params": {{"target_ids": [101, 102, 103], "updates": {{"category": "青岛大学"}}}}}}
+
+【单轮示例】
+- 用户："查找和青岛大学有关的账号" → {{"thought": "用户要查询", "tool": "semantic_search_accounts", "params": {{"query": "青岛大学"}}}}
+- 用户："将支付类账号改为金融" → {{"thought": "用户要求修改分类", "tool": "batch_update_accounts", "params": {{"items": [{{"target_id": 1, "field": "category", "new_value": "金融"}}]}}}}
+- 用户："删除这些账号" → {{"thought": "用户要求删除", "tool": "batch_delete_accounts", "params": {{"target_ids": [1, 2, 3]}}}}
+- 用户："给这些账号添加备注" → {{"thought": "每个账号需要不同的针对性备注", "tool": "batch_add_remark_accounts", "params": {{"changes": [{{"target_id": 1, "content": "学工系统报到账号"}}, {{"target_id": 2, "content": "财务处缴费系统"}}]}}}}
+- 用户："有哪些金融类账号？" → {{"thought": "用户只是询问", "tool": "direct_answer", "response": "..."}}
+
+【输出格式 - 严格JSON】
+你必须只输出一个JSON对象，不要添加任何其他文字、解释、markdown代码块：
+{{"thought": "你的思考过程", "tool": "工具名称或直接_answer", "params": {{参数}}, "response": "给用户的回复（仅direct_answer时需要）"}}
 
 输出："""
         
         raw = ""
         try:
-            raw = self.generate(prompt, temperature=0.2, num_predict=1200)
+            raw = self.generate(prompt, temperature=0.2)
             text = raw.strip()
             
             # 去除 markdown 代码块
@@ -522,17 +723,103 @@ class OllamaClient:
                 if text.lower().startswith("json"):
                     text = text[4:].strip()
             
-            result = json.loads(text)
+            # 尝试1：直接解析
+            try:
+                result = json.loads(text)
+                print(f"[JSONParse] L1 success")
+                return {
+                    "thought": result.get("thought", ""),
+                    "tool": result.get("tool", "direct_answer"),
+                    "params": result.get("params", {}),
+                    "response": result.get("response", "")
+                }
+            except json.JSONDecodeError as e1:
+                print(f"[JSONParse] L1 fail: {e1} | text_preview={text[:100]!r}")
             
-            # 标准化返回
+            # 尝试2：_fix_json 修复常见错误后解析
+            fixed = self._fix_json(text)
+            try:
+                result = json.loads(fixed)
+                print(f"[JSONParse] L2 success")
+                return {
+                    "thought": result.get("thought", ""),
+                    "tool": result.get("tool", "direct_answer"),
+                    "params": result.get("params", {}),
+                    "response": result.get("response", "")
+                }
+            except json.JSONDecodeError as e2:
+                print(f"[JSONParse] L2 fail: {e2} | fixed_preview={fixed[:100]!r}")
+            
+            # 尝试3：_extract_json_object_robust 提取后再解析
+            extracted = self._extract_json_object_robust(raw)
+            if extracted:
+                try:
+                    result = json.loads(extracted)
+                    print(f"[JSONParse] L3 success")
+                    return {
+                        "thought": result.get("thought", ""),
+                        "tool": result.get("tool", "direct_answer"),
+                        "params": result.get("params", {}),
+                        "response": result.get("response", "")
+                    }
+                except json.JSONDecodeError as e3:
+                    print(f"[JSONParse] L3 fail: {e3} | extracted_preview={extracted[:100]!r}")
+                # 尝试4：提取后 _fix_json 再解析
+                fixed_extracted = self._fix_json(extracted)
+                try:
+                    result = json.loads(fixed_extracted)
+                    print(f"[JSONParse] L4 success")
+                    return {
+                        "thought": result.get("thought", ""),
+                        "tool": result.get("tool", "direct_answer"),
+                        "params": result.get("params", {}),
+                        "response": result.get("response", "")
+                    }
+                except json.JSONDecodeError as e4:
+                    print(f"[JSONParse] L4 fail: {e4} | fixed_extracted_preview={fixed_extracted[:100]!r}")
+            else:
+                print(f"[JSONParse] L3 skipped: _extract_json_object_robust returned None")
+            
+            print(f"[JSONParse] ALL FAILED, raw_preview={raw[:200]!r}")
+            
+            # 最后一道防线：文本中显式 tool 提取
+            # 即使 JSON 结构坏了，只要文本里有 "tool": "xxx" 且不是 direct_answer，就提取出来
+            tool_match = re.search(r'"tool"\s*[:：]\s*"([^"]+)"', raw)
+            if tool_match:
+                extracted_tool = tool_match.group(1).strip()
+                if extracted_tool and extracted_tool != "direct_answer":
+                    # 尝试提取 params
+                    params_match = re.search(r'"params"\s*[:：]\s*(\{[\s\S]*?\})', raw)
+                    extracted_params = {}
+                    if params_match:
+                        try:
+                            extracted_params = json.loads(params_match.group(1))
+                        except Exception:
+                            # params 也坏了，但至少 tool 名是对的，params 可以空着让 validate_params 报错
+                            pass
+                    thought_match = re.search(r'"thought"\s*[:：]\s*"([^"]*)"', raw)
+                    extracted_thought = thought_match.group(1) if thought_match else ""
+                    response_match = re.search(r'"response"\s*[:：]\s*"([^"]*)"', raw)
+                    extracted_response = response_match.group(1) if response_match else ""
+                    print(f"[JSONParse] L5 text-extract success: tool={extracted_tool}")
+                    return {
+                        "thought": extracted_thought,
+                        "tool": extracted_tool,
+                        "params": extracted_params,
+                        "response": extracted_response
+                    }
+            
+            # 兜底：使用 _extract_command 的容错逻辑
+            fallback = self._extract_command(raw)
             return {
-                "thought": result.get("thought", ""),
-                "tool": result.get("tool", "direct_answer"),
-                "params": result.get("params", {}),
-                "response": result.get("response", "")
+                "thought": fallback.get("thinking", f"JSON解析失败，使用兜底逻辑"),
+                "tool": "direct_answer",
+                "params": {},
+                "response": fallback.get("response", "AI处理中遇到问题，请重试")
             }
             
-        except (json.JSONDecodeError, Exception) as e:
+        except Exception as e:
+            print(f"[JSONParse] EXCEPTION: {e}")
             # 兜底：使用 _extract_command 的容错逻辑
             fallback = self._extract_command(raw)
             return {

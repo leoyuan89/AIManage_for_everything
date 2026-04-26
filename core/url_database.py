@@ -378,9 +378,16 @@ class URLDatabaseManager:
         return self.cursor.rowcount
 
     def delete_category(self, category_name: str) -> int:
+        """删除分类：将该分类下所有条目的 category 设为 '其他'，并清理 category_order 表"""
         self.cursor.execute(
             "UPDATE urls SET category = '其他' WHERE category = ?",
             (category_name,)
         )
+        affected = self.cursor.rowcount
+        # 同步清理 category_order 表
+        self.cursor.execute(
+            "DELETE FROM category_order WHERE category = ?",
+            (category_name,)
+        )
         self.conn.commit()
-        return self.cursor.rowcount
+        return affected

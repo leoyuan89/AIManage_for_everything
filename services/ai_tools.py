@@ -184,7 +184,7 @@ def _build_accounts_summary(accounts: List[Any]) -> str:
                 tags_str = ",".join(tag_list) if isinstance(tag_list, list) else str(tag_list)
             except Exception:
                 tags_str = str(tags)
-        lines.append(f"{acc_id} | {app_name} | {category or '未分类'} | {tags_str} | {(remark or '')[:20]}")
+        lines.append(f"{acc_id} | {app_name} | {category or '未分类'} | {tags_str} | {remark or ''}")
     return "\n".join(lines)
 
 
@@ -205,7 +205,7 @@ def _build_urls_summary(urls: List[Any]) -> str:
                 tags_str = ",".join(tag_list) if isinstance(tag_list, list) else str(tag_list)
             except Exception:
                 tags_str = str(tags)
-        lines.append(f"{u_id} | {title} | {url} | {category or '未分类'} | {tags_str} | {(remark or '')[:20]}")
+        lines.append(f"{u_id} | {title} | {url} | {category or '未分类'} | {tags_str} | {remark or ''}")
     return "\n".join(lines)
 
 
@@ -667,23 +667,33 @@ class BatchReorganizeUrlsTool(AITool):
 
 @ToolRegistry.register(
     name="batch_add_remark_accounts",
-    description="批量为账号添加备注",
+    description="批量为账号添加备注。支持为每个账号指定不同的备注内容，changes 数组中每个元素包含 target_id 和 content",
     permission=PermissionLevel.PREVIEW,
     params_schema={
-        "target_ids": {"type": "array", "items": {"type": "integer"}, "description": "目标账号ID列表"},
-        "remark_type": {"type": "string", "enum": ["ai_remark", "remark"], "description": "备注类型"},
-        "remark_content": {"type": "string", "description": "备注内容"}
+        "changes": {
+            "type": "array",
+            "description": "每个账号的备注内容列表，每个元素包含 target_id 和专属的 content",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "target_id": {"type": "integer", "description": "目标账号ID"},
+                    "content": {"type": "string", "description": "该账号的专属备注内容"}
+                }
+            }
+        },
+        "remark_type": {"type": "string", "enum": ["ai_remark", "remark"], "description": "备注类型，默认 ai_remark"}
     }
 )
 class BatchAddRemarkAccountsTool(AITool):
     def execute(self, params: Dict, context: Dict) -> ToolResult:
-        target_ids = params.get("target_ids", [])
+        changes = params.get("changes", [])
         remark_type = params.get("remark_type", "ai_remark")
-        content = params.get("remark_content", "")
         repo = context.get("repo")
         item_map = self._get_item_map(context, "accounts")
         preview_items = []
-        for tid in target_ids:
+        for ch in changes:
+            tid = ch.get("target_id")
+            content = ch.get("content", "")
             item = item_map.get(tid)
             if not item:
                 continue
@@ -706,23 +716,33 @@ class BatchAddRemarkAccountsTool(AITool):
 
 @ToolRegistry.register(
     name="batch_add_remark_urls",
-    description="批量为网址添加备注",
+    description="批量为网址添加备注。支持为每个网址指定不同的备注内容，changes 数组中每个元素包含 target_id 和 content",
     permission=PermissionLevel.PREVIEW,
     params_schema={
-        "target_ids": {"type": "array", "items": {"type": "integer"}, "description": "目标网址ID列表"},
-        "remark_type": {"type": "string", "enum": ["ai_remark", "remark"], "description": "备注类型"},
-        "remark_content": {"type": "string", "description": "备注内容"}
+        "changes": {
+            "type": "array",
+            "description": "每个网址的备注内容列表，每个元素包含 target_id 和专属的 content",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "target_id": {"type": "integer", "description": "目标网址ID"},
+                    "content": {"type": "string", "description": "该网址的专属备注内容"}
+                }
+            }
+        },
+        "remark_type": {"type": "string", "enum": ["ai_remark", "remark"], "description": "备注类型，默认 ai_remark"}
     }
 )
 class BatchAddRemarkUrlsTool(AITool):
     def execute(self, params: Dict, context: Dict) -> ToolResult:
-        target_ids = params.get("target_ids", [])
+        changes = params.get("changes", [])
         remark_type = params.get("remark_type", "ai_remark")
-        content = params.get("remark_content", "")
         repo = context.get("repo")
         item_map = self._get_item_map(context, "urls")
         preview_items = []
-        for tid in target_ids:
+        for ch in changes:
+            tid = ch.get("target_id")
+            content = ch.get("content", "")
             item = item_map.get(tid)
             if not item:
                 continue
@@ -923,118 +943,167 @@ class BatchDeleteUrlsTool(AITool):
 
 @ToolRegistry.register(
     name="smart_classify_accounts",
-    description="智能分类账号",
+    description="智能分类账号（自动获取全部账号，无需传入ID列表）",
     permission=PermissionLevel.PREVIEW,
-    params_schema={
-        "target_ids": {"type": "array", "items": {"type": "integer"}, "description": "目标账号ID列表"}
-    }
+    params_schema={}
 )
 class SmartClassifyAccountsTool(AITool):
     def execute(self, params: Dict, context: Dict) -> ToolResult:
-        target_ids = params.get("target_ids", [])
         accounts = context.get("accounts", [])
-        item_map = {a.id: a for a in accounts if hasattr(a, 'id')}
-        target_items = [item_map.get(tid) for tid in target_ids if tid in item_map]
-        if not target_items:
-            target_items = accounts
+        if not accounts:
+            return ToolResult(success=False, message="没有可分类的账号")
 
-        repo = context.get("repo")
-        existing_categories = []
-        if repo and hasattr(repo, 'get_categories'):
-            try:
-                existing_categories = repo.get_categories()
-            except Exception:
-                pass
+        # 获取用户原始查询作为分类指令
+        user_query = context.get('query', '请对以下账号进行分类')
 
-        from services.ai_classification_service import AIClassificationService
-        service = AIClassificationService()
+        # 构建账号信息（key=value 形式，不暴露内部格式）
+        lines = []
+        for acc in accounts:
+            remark = (acc.remark or '')[:20]
+            lines.append(f"ID={acc.id}, 应用名={acc.app_name}, 分类={acc.category or '未分类'}, 备注={remark}")
+        items_str = '\n'.join(lines)
+
+        prompt = f"""你正在执行用户的分类指令。请仔细阅读所有账号信息，严格按照用户指令进行分类。
+
+用户指令：{user_query}
+
+账号信息：
+{items_str}
+
+分类约束（必须严格遵守，违者重来）：
+1. 每个类别名必须是「一个确定的词」，禁止用斜杠、连字符等拼接多个概念（如"教育/学习"、"工具/系统"是严格禁止的）
+2. 如果某个用途涉及多个概念，请提炼成一个最精准的上位词（如"教育/学习"应改为"学习"或"教育"）
+3. 类别名长度建议2-4个中文字符，必须简洁、明确、无歧义
+
+输出要求（工具强制格式，必须遵守）：
+1. 输出格式必须是严格JSON：{{"类别名": [ID列表], ...}}
+2. 不要在任何值中包含英文双引号"，如需引用请用中文引号「」
+
+输出："""
+
+        # 调用大模型一次完成全部分类
+        import json
+        from ai.ollama_client import OllamaClient
+        from services.ai_service_manager import AIServiceManager
+        ai_manager = AIServiceManager.instance()
+        state = ai_manager.get_state()
+        ollama = OllamaClient(model=state.model_name or "gemma4:4b")
+        raw = ollama.generate(prompt, temperature=0.3)
+
+        # 解析JSON
+        extracted = OllamaClient._extract_json_object_robust(raw) or raw
+        fixed = OllamaClient._fix_json(extracted)
         try:
-            proposals = service.pre_analyze_accounts(target_items, existing_categories)
-            categories = [p.name for p in proposals if p.name]
-            if not categories:
-                categories = existing_categories or ['其他']
-            changes = service.execute_classification(target_items, categories, item_type='account')
+            data = json.loads(fixed)
         except Exception as e:
-            # 降级：启发式分类
-            categories = existing_categories or ['其他']
-            changes = []
-            for item in target_items:
-                change = service._heuristic_classify_item(item, categories, 'account')
-                changes.append(change)
+            print(f"[SmartClassify] JSON parse failed: {e}, raw preview: {raw[:300]!r}")
+            return ToolResult(success=False, message=f"分类结果解析失败: {e}")
 
+        # 生成分类变更预览
+        item_map = {a.id: a for a in accounts if hasattr(a, 'id')}
         preview_items = []
-        for ch in changes:
-            preview_items.append(self._make_preview_item(
-                row_id=str(ch.item_id),
-                display_name=ch.item_name,
-                secondary_name="",
-                fields=[{"field_name": "category", "old_value": ch.old_category, "new_value": ch.new_category}],
-                raw_data={"target_id": ch.item_id, "field": "category", "new_value": ch.new_category, "confidence": ch.confidence}
-            ))
+        categories = []
+        for cat_name, id_list in data.items():
+            if not isinstance(id_list, list):
+                continue
+            categories.append(cat_name)
+            for tid in id_list:
+                item = item_map.get(tid)
+                if item:
+                    preview_items.append(self._make_preview_item(
+                        row_id=str(tid),
+                        display_name=item.app_name,
+                        secondary_name="",
+                        fields=[{"field_name": "category", "old_value": item.category or '未分类', "new_value": cat_name}],
+                        raw_data={"target_id": tid, "field": "category", "new_value": cat_name}
+                    ))
+
         preview = self._make_preview("classify", "account", preview_items)
         return ToolResult(
             success=True,
             preview_data=preview,
-            data={"count": len(changes), "categories": categories},
-            message=f"待智能分类 {len(changes)} 个账号，请确认"
+            data={"count": len(preview_items), "categories": categories},
+            message=f"待智能分类 {len(preview_items)} 个账号，请确认"
         )
 
 
 @ToolRegistry.register(
     name="smart_classify_urls",
-    description="智能分类网址",
+    description="智能分类网址（自动获取全部网址，无需传入ID列表）",
     permission=PermissionLevel.PREVIEW,
-    params_schema={
-        "target_ids": {"type": "array", "items": {"type": "integer"}, "description": "目标网址ID列表"}
-    }
+    params_schema={}
 )
 class SmartClassifyUrlsTool(AITool):
     def execute(self, params: Dict, context: Dict) -> ToolResult:
-        target_ids = params.get("target_ids", [])
         urls = context.get("urls", [])
-        item_map = {u.id: u for u in urls if hasattr(u, 'id')}
-        target_items = [item_map.get(tid) for tid in target_ids if tid in item_map]
-        if not target_items:
-            target_items = urls
+        if not urls:
+            return ToolResult(success=False, message="没有可分类的网址")
 
-        repo = context.get("repo")
-        existing_categories = []
-        if repo and hasattr(repo, 'get_categories'):
-            try:
-                existing_categories = repo.get_categories()
-            except Exception:
-                pass
+        # 获取用户原始查询作为分类指令
+        user_query = context.get('query', '请对以下网址进行分类')
 
-        from services.ai_classification_service import AIClassificationService
-        service = AIClassificationService()
+        # 构建网址信息（key=value 形式）
+        lines = []
+        for u in urls:
+            title = getattr(u, 'title', '')[:20]
+            cat = getattr(u, 'category', '') or '未分类'
+            url_str = getattr(u, 'url', '')[:40]
+            lines.append(f"ID={getattr(u, 'id', 0)}, 标题={title}, 网址={url_str}, 分类={cat}")
+        items_str = '\n'.join(lines)
+
+        prompt = f"""你正在执行用户的分类指令。请仔细阅读所有网址信息，严格按照用户指令进行分类。
+
+用户指令：{user_query}
+
+网址信息：
+{items_str}
+
+输出要求（工具强制格式，必须遵守）：
+1. 输出格式必须是严格JSON：{{"类别名": [ID列表], ...}}
+2. 不要在任何值中包含英文双引号"，如需引用请用中文引号「」
+
+输出："""
+
+        import json
+        from ai.ollama_client import OllamaClient
+        from services.ai_service_manager import AIServiceManager
+        ai_manager = AIServiceManager.instance()
+        state = ai_manager.get_state()
+        ollama = OllamaClient(model=state.model_name or "gemma4:4b")
+        raw = ollama.generate(prompt, temperature=0.3)
+
+        extracted = OllamaClient._extract_json_object_robust(raw) or raw
+        fixed = OllamaClient._fix_json(extracted)
         try:
-            proposals = service.pre_analyze_urls(target_items, existing_categories)
-            categories = [p.name for p in proposals if p.name]
-            if not categories:
-                categories = existing_categories or ['其他']
-            changes = service.execute_classification(target_items, categories, item_type='url')
+            data = json.loads(fixed)
         except Exception as e:
-            categories = existing_categories or ['其他']
-            changes = []
-            for item in target_items:
-                change = service._heuristic_classify_item(item, categories, 'url')
-                changes.append(change)
+            print(f"[SmartClassifyUrls] JSON parse failed: {e}, raw preview: {raw[:300]!r}")
+            return ToolResult(success=False, message=f"分类结果解析失败: {e}")
 
+        item_map = {getattr(u, 'id', 0): u for u in urls if hasattr(u, 'id')}
         preview_items = []
-        for ch in changes:
-            preview_items.append(self._make_preview_item(
-                row_id=str(ch.item_id),
-                display_name=ch.item_name,
-                secondary_name="",
-                fields=[{"field_name": "category", "old_value": ch.old_category, "new_value": ch.new_category}],
-                raw_data={"target_id": ch.item_id, "field": "category", "new_value": ch.new_category, "confidence": ch.confidence}
-            ))
+        categories = []
+        for cat_name, id_list in data.items():
+            if not isinstance(id_list, list):
+                continue
+            categories.append(cat_name)
+            for tid in id_list:
+                item = item_map.get(tid)
+                if item:
+                    preview_items.append(self._make_preview_item(
+                        row_id=str(tid),
+                        display_name=getattr(item, 'title', ''),
+                        secondary_name="",
+                        fields=[{"field_name": "category", "old_value": getattr(item, 'category', '') or '未分类', "new_value": cat_name}],
+                        raw_data={"target_id": tid, "field": "category", "new_value": cat_name}
+                    ))
+
         preview = self._make_preview("classify", "url", preview_items)
         return ToolResult(
             success=True,
             preview_data=preview,
-            data={"count": len(changes), "categories": categories},
-            message=f"待智能分类 {len(changes)} 个网址，请确认"
+            data={"count": len(preview_items), "categories": categories},
+            message=f"待智能分类 {len(preview_items)} 个网址，请确认"
         )
 
 

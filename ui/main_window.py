@@ -541,7 +541,8 @@ class ActionPreviewWidget(QFrame):
         
         # 表格
         self.table = QTableWidget()
-        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.DoubleClicked)
+        self.table.setWordWrap(True)
         self.table.setStyleSheet("""
             QTableWidget {
                 border: 1px solid #FFE0B2;
@@ -554,12 +555,15 @@ class ActionPreviewWidget(QFrame):
                 font-weight: bold;
             }
         """)
+        self.table.verticalHeader().setDefaultSectionSize(36)
+        self.table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         
         # 影响范围（必须先创建，避免 setCheckState 触发 itemChanged 时访问不到）
         self.lbl_scope = QLabel("")
         self.lbl_scope.setStyleSheet("color: #666; font-size: 11px;")
         
         self.table.itemChanged.connect(self._on_item_check_changed)
+        self.table.cellChanged.connect(self._on_cell_edited)
         layout.addWidget(self.table, 1)
         layout.addWidget(self.lbl_scope)
         
@@ -623,6 +627,15 @@ class ActionPreviewWidget(QFrame):
         self.table.setHorizontalHeaderLabels(headers)
         self.table.setRowCount(len(rows))
         
+        # 确定哪一列是可编辑的"新值"列
+        editable_col = -1
+        if operation_type == 'update':
+            editable_col = 5  # 新值列
+        elif operation_type == 'reorganize':
+            editable_col = 4  # 新分类列
+        elif operation_type == 'classify':
+            editable_col = 4  # 建议分类列
+        
         for i, (row_data, raw) in enumerate(zip(rows, raw_data_list)):
             for j, val in enumerate(row_data):
                 cell = QTableWidgetItem(str(val))
@@ -630,6 +643,9 @@ class ActionPreviewWidget(QFrame):
                     cell.setFlags(cell.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                     cell.setCheckState(Qt.CheckState.Checked)
                     cell.setData(Qt.ItemDataRole.UserRole, raw)
+                elif j == editable_col:
+                    # 新值列允许编辑
+                    cell.setFlags(cell.flags() | Qt.ItemFlag.ItemIsEditable)
                 else:
                     cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 
@@ -637,8 +653,7 @@ class ActionPreviewWidget(QFrame):
                     cell.setForeground(QColor("#d32f2f"))
                 
                 text = str(val)
-                if len(text) > 30:
-                    cell.setToolTip(text)
+                cell.setToolTip(text)
                 
                 if self._is_password_column(operation_type, j, headers):
                     actual = text
@@ -699,22 +714,21 @@ class ActionPreviewWidget(QFrame):
             for idx, item in enumerate(items, 1):
                 raw = item.get("raw_data", {}) or {}
                 fields = item.get("fields", [])
-                cat_field = next((f for f in fields if f.get("field_name") == "分类"), None)
+                cat_field = next((f for f in fields if f.get("field_name") in ("分类", "category")), None)
                 old_cat = cat_field.get("old_value", "-") if cat_field else "-"
                 new_cat = cat_field.get("new_value", "") if cat_field else raw.get("category", "")
                 rows.append(['', str(idx), item.get("display_name", ""), old_cat, new_cat])
                 raw_data_list.append(raw)
         
         elif operation_type == 'classify':
-            headers = ['☑', '序号', '名称', '原分类', '建议分类', '理由']
+            headers = ['☑', '序号', '名称', '原分类', '建议分类']
             for idx, item in enumerate(items, 1):
                 raw = item.get("raw_data", {}) or {}
                 fields = item.get("fields", [])
-                cat_field = next((f for f in fields if f.get("field_name") == "分类"), None)
+                cat_field = next((f for f in fields if f.get("field_name") in ("分类", "category")), None)
                 old_cat = cat_field.get("old_value", "-") if cat_field else raw.get("category", "其他")
                 new_cat = cat_field.get("new_value", "") if cat_field else ""
-                reason = item.get("reason", "")
-                rows.append(['', str(idx), item.get("display_name", ""), old_cat, new_cat, reason])
+                rows.append(['', str(idx), item.get("display_name", ""), old_cat, new_cat])
                 raw_data_list.append(raw)
         
         elif operation_type == 'merge':
@@ -858,6 +872,40 @@ class ActionPreviewWidget(QFrame):
         """勾选状态变化时更新影响范围文字"""
         if item.column() == 0:
             self.lbl_scope.setText(self._get_scope_text())
+    
+    def _on_cell_edited(self, row: int, col: int):
+        """用户编辑单元格后，同步更新 raw_data 中的值"""
+        if col == 0:
+            return
+        if row < 0 or row >= self.table.rowCount():
+            return
+        check_item = self.table.item(row, 0)
+        if not check_item:
+            return
+        raw = check_item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(raw, dict):
+            return
+        edited_item = self.table.item(row, col)
+        if not edited_item:
+            return
+        new_val = edited_item.text()
+        updated = False
+        if 'updates' in raw and isinstance(raw['updates'], dict):
+            for field in list(raw['updates'].keys()):
+                raw['updates'][field] = new_val
+                updated = True
+        if 'new_value' in raw:
+            raw['new_value'] = new_val
+            updated = True
+        if 'content' in raw:
+            raw['content'] = new_val
+            updated = True
+        if 'field' in raw and 'new_value' not in raw:
+            raw['new_value'] = new_val
+            updated = True
+        if updated:
+            check_item.setData(Qt.ItemDataRole.UserRole, raw)
+            print(f"[ActionPreviewWidget] Row {row} col {col} edited, raw_data updated: {raw}")
     
     def get_selected_items(self) -> List[Dict]:
         """获取用户勾选的条目（兼容旧代码）"""
@@ -3109,14 +3157,47 @@ class MainWindow(QMainWindow):
                 )
                 if reply == QMessageBox.StandardButton.Yes:
                     result = self.ai_assistant.execute_build_action_with_transaction(
-                        confirmed_items, tool_name, user_query=query, _force=True
+                        action_preview, user_query=query, _force=True
                     )
                 else:
                     result = {'success': False, 'error': '用户取消执行'}
             
             if result.get('success'):
                 item_name = '账号' if self.current_vault == 'accounts' else '网址'
-                result_msg = result.get('result_msg', f"✅ 成功执行操作，共影响 {result.get('affected_count', 0)} 个{item_name}")
+                affected_count = result.get('affected_count', 0)
+                result_msg = f"✅ AI 本次修改完成，共影响 {affected_count} 个{item_name}\n"
+                
+                # 列出每个修改的详细信息
+                for idx, item in enumerate(selected_items, 1):
+                    raw = item if isinstance(item, dict) else {}
+                    target_id = raw.get('target_id', '?')
+                    
+                    # 从缓存中查找显示名
+                    display_name = f"ID:{target_id}"
+                    if self.current_vault == 'accounts':
+                        for acc in self._cached_accounts or []:
+                            if getattr(acc, 'id', None) == target_id:
+                                display_name = getattr(acc, 'app_name', display_name)
+                                break
+                    else:
+                        for url in self._cached_urls or []:
+                            if getattr(url, 'id', None) == target_id:
+                                display_name = getattr(url, 'title', display_name)
+                                break
+                    
+                    # 获取变更详情
+                    if 'updates' in raw and isinstance(raw['updates'], dict):
+                        change_str = '，'.join(f"{k}: {v}" for k, v in raw['updates'].items())
+                    elif 'field' in raw and 'new_value' in raw:
+                        change_str = f"{raw['field']}: {raw['new_value']}"
+                    elif 'content' in raw:
+                        change_str = f"备注: {raw['content']}"
+                    elif 'tags' in raw and 'mode' in raw:
+                        change_str = f"标签({raw['mode']}): {raw['tags']}"
+                    else:
+                        change_str = str(raw)
+                    
+                    result_msg += f"\n{idx}. {display_name} → {change_str}"
             else:
                 error = result.get('error', '未知错误')
                 if error == '用户取消执行':
@@ -3127,6 +3208,17 @@ class MainWindow(QMainWindow):
             # 刷新列表和分类导航（根据当前 vault）
             self.clear_account_highlight()
             self._reload_categories()
+            
+            # 高亮显示受影响的条目（删除操作除外，已移入回收站）
+            if action != 'delete':
+                affected_ids = []
+                for item in selected_items:
+                    if isinstance(item, dict):
+                        tid = item.get('target_id')
+                        if tid:
+                            affected_ids.append(int(tid))
+                if affected_ids:
+                    self.highlight_matched_accounts(affected_ids, query_text="AI本次修改")
         except Exception as e:
             print(f"[MainWindow] _on_action_preview_confirmed exception: {e}")
             traceback.print_exc()
@@ -3214,15 +3306,17 @@ class MainWindow(QMainWindow):
             self._pending_tool = result.get('pending_tool')
             self._react_turns_used = result.get('turns_used', self._react_turns_used + 1)
             
-            preview_data = result.get('preview', {})
+            preview = result.get('preview', {}) or {}
+            preview_data = preview.get('preview_data', {}) if isinstance(preview, dict) else {}
             if preview_data and preview_data.get('items'):
                 self.action_preview_widget.set_preview_data(preview_data)
                 self.action_preview_widget.show()
                 self.ai_action_buttons.hide()
             else:
-                # 没有预览数据，直接结束
-                self._react_state = ReActState.IDLE
-                self._pending_tool = None
+                # 没有预览数据，但仍需用户确认（可能是无需逐条预览的操作）
+                # 显示一个简化的确认提示
+                self.action_preview_widget.hide()
+                self.ai_action_buttons.show()
             
             response = result.get('response', '请确认以下操作')
             self.ai_assistant._history.append(ConversationMessage(
@@ -3315,17 +3409,19 @@ class MainWindow(QMainWindow):
             else:
                 self.load_urls()
             
-            # 高亮显示受影响的账号（取 confirmed_items 中的 id）
-            try:
-                affected_ids = []
-                for item in confirmed_items:
-                    item_id = item.get('id')
-                    if item_id:
-                        affected_ids.append(int(item_id))
-                if affected_ids:
-                    self.highlight_matched_accounts(affected_ids, query_text="执行结果")
-            except Exception as e:
-                print(f"[MainWindow] Highlight affected items error: {e}")
+            # 高亮显示受影响的账号（删除操作除外，已移入回收站）
+            if tool_name not in ('batch_delete_accounts', 'batch_delete_urls'):
+                try:
+                    affected_ids = []
+                    for item in confirmed_items:
+                        if isinstance(item, dict):
+                            item_id = item.get('target_id') or item.get('row_id')
+                            if item_id:
+                                affected_ids.append(int(item_id))
+                    if affected_ids:
+                        self.highlight_matched_accounts(affected_ids, query_text="AI本次修改")
+                except Exception as e:
+                    print(f"[MainWindow] Highlight affected items error: {e}")
         except Exception as e:
             print(f"[MainWindow] ReAct preview confirmed error: {e}")
             traceback.print_exc()
@@ -3474,6 +3570,11 @@ class MainWindow(QMainWindow):
                     self.load_accounts()
                 else:
                     self.load_urls()
+                
+                # 高亮显示新导入的条目
+                new_ids = result.get('affected_ids', [])
+                if new_ids:
+                    self.highlight_matched_accounts(new_ids, query_text="AI本次修改")
             except Exception as e:
                 import traceback
                 traceback.print_exc()
@@ -3516,7 +3617,7 @@ class MainWindow(QMainWindow):
             self._append_ai_system_msg("⚠️ 请先处理当前操作预览（确认或取消）")
             return
         
-        # AI 预热机制（Bug 2 修复）：首次发送前预热 db_summary
+        # AI 预热机制：首次发送前预热 db_summary，预热后继续处理用户查询
         if not self.ai_assistant.conversation_context._db_summary_loaded:
             try:
                 if self.current_vault == 'accounts':
@@ -3530,20 +3631,7 @@ class MainWindow(QMainWindow):
                 self.ai_assistant.conversation_context.set_db_summary(summary, self.current_vault)
             except Exception as e:
                 print(f"[MainWindow] Warmup error: {e}")
-            
-            # 不启动 AIQueryThread，回复预热消息（保留用户输入框内容）
-            from services.ai_assistant_service import ConversationMessage
-            from datetime import datetime
-            self.ai_assistant._history.append(ConversationMessage(
-                role='assistant', content="⚡ 神经连接已建立，请发送您的指令",
-                timestamp=datetime.now().strftime("%H:%M:%S")
-            ))
-            self._ai_interacted = True
-            self._ai_update_chat_display()
-            self.ai_action_buttons.show()
-            self._ai_query_running = False
-            self._update_send_button_style(False)
-            return
+            # 预热完成后继续往下执行，不要 return，直接处理用户的查询
         
         # 防止重复提交（如果已有查询在进行中，忽略）
         if getattr(self, '_ai_query_running', False):
@@ -4142,7 +4230,11 @@ class MainWindow(QMainWindow):
         
         # 横幅显示用户原始查询和匹配数量
         print("[DEBUG-HL] set banner")
-        self.lbl_ai_filter.setText(f"炽阳已找到 {len(matched_items)} 个与「{query_text}」相关的{item_name}")
+        if query_text == "AI本次修改":
+            banner_text = f"🔥 炽阳本次已修改 {len(matched_items)} 个{item_name}"
+        else:
+            banner_text = f"🔍 炽阳已找到 {len(matched_items)} 个与「{query_text}」相关的{item_name}"
+        self.lbl_ai_filter.setText(banner_text)
         self.ai_filter_banner.show()
         
         # 恢复更新，一次性重绘

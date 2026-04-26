@@ -192,12 +192,16 @@ class CategoryService:
         return None
     
     def get_all_categories(self) -> list:
-        """获取所有分类列表（从数据库动态读取，合并默认分类）"""
+        """获取所有分类列表（只从数据库动态读取，不再硬编码默认分类）"""
         db_cats = set()
         try:
             db_cats = set(self.db.get_categories())
         except Exception as e:
             print(f"[CategoryService] Failed to read categories from DB: {e}")
         
-        all_cats = set(self.CATEGORIES) | db_cats
-        return sorted(all_cats)
+        # 只返回数据库中真实存在的分类
+        all_cats = db_cats
+        result = sorted(all_cats - {'其他'})
+        if '其他' in all_cats:
+            result.append('其他')
+        return result

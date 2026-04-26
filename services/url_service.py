@@ -159,17 +159,19 @@ class URLService:
         except Exception:
             pass
         
-        # 合并默认分类和数据库中的分类
-        all_cats = set(self.CATEGORIES) | db_cats
+        # 只显示数据库中真实存在的分类（不再硬编码默认分类）
+        all_cats = db_cats
         
         # 排序：有自定义顺序的按 sort_index 排，没有的按字母排
         def sort_key(cat):
             return (orders.get(cat, 999999), cat.lower())
         
-        # 确保"全部"在第一位
+        # 确保"全部"在第一位，"其他"在最后
         result = ['全部']
-        for cat in sorted(all_cats - {'全部'}, key=sort_key):
+        for cat in sorted(all_cats - {'全部', '其他'}, key=sort_key):
             result.append(cat)
+        if '其他' in all_cats:
+            result.append('其他')
         return result
     
     def get_category_orders(self) -> Dict[str, int]:

@@ -3,7 +3,7 @@
 采用 QTableView + QAbstractTableModel 架构
 支持：勾选、编辑、批量修改分类、智能推断分类、状态预检展示
 """
-from typing import List
+from typing import List, Dict
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
@@ -51,15 +51,18 @@ class BatchItemTableModel(QAbstractTableModel):
         self._items = items or []
         self._vault_type = vault_type
         self._categories = categories or []
+        self._password_visible = False  # 密码默认掩码
 
         if vault_type == 'accounts':
             self._headers = ['☑', '应用', '账号', '密码', '网址', '分类', '备注', '标签', '状态']
             self._editable_cols = {1, 2, 3, 4, 5, 6, 7}
             self._category_col = 5
+            self._password_col = 3
         else:
             self._headers = ['☑', '标题', '网址', '分类', '标签', '备注', '状态']
             self._editable_cols = {1, 2, 3, 4, 5}
             self._category_col = 3
+            self._password_col = -1
 
     def rowCount(self, parent=QModelIndex()):
         return len(self._items)
@@ -94,7 +97,7 @@ class BatchItemTableModel(QAbstractTableModel):
             mapping = {
                 1: item.app,
                 2: item.account,
-                3: item.password,
+                3: item.password if self._password_visible else '***',
                 4: item.url,
                 5: item.category,
                 6: item.remark,
@@ -196,6 +199,18 @@ class BatchItemTableModel(QAbstractTableModel):
         self._items = items
         self.endResetModel()
 
+    def set_password_visible(self, visible: bool):
+        """切换密码显示/掩码"""
+        if self._password_visible == visible:
+            return
+        self._password_visible = visible
+        if self._password_col >= 0 and self._items:
+            self.dataChanged.emit(
+                self.index(0, self._password_col),
+                self.index(self.rowCount() - 1, self._password_col),
+                [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole]
+            )
+
     def get_items(self) -> List[BatchItem]:
         return self._items
 
@@ -283,12 +298,14 @@ class BatchAddPreviewWidget(QWidget):
         self._btn_invert = QPushButton("反选")
         self._btn_batch_category = QPushButton("批量修改分类 ▼")
         self._btn_auto_classify = QPushButton("智能推断分类")
+        self._btn_toggle_password = QPushButton("👁 显示密码")
 
         self._btn_select_all.clicked.connect(self._on_select_all)
         self._btn_select_none.clicked.connect(self._on_select_none)
         self._btn_invert.clicked.connect(self._on_invert)
         self._btn_batch_category.clicked.connect(self._on_batch_category)
         self._btn_auto_classify.clicked.connect(self._on_auto_classify)
+        self._btn_toggle_password.clicked.connect(self._on_toggle_password)
 
         toolbar.addWidget(self._btn_select_all)
         toolbar.addWidget(self._btn_select_none)
@@ -296,6 +313,7 @@ class BatchAddPreviewWidget(QWidget):
         toolbar.addSpacing(16)
         toolbar.addWidget(self._btn_batch_category)
         toolbar.addWidget(self._btn_auto_classify)
+        toolbar.addWidget(self._btn_toggle_password)
         toolbar.addStretch()
 
         layout.addLayout(toolbar)
@@ -425,12 +443,71 @@ class BatchAddPreviewWidget(QWidget):
             self._btn_auto_classify.setEnabled(True)
             self._btn_auto_classify.setText("智能推断分类")
 
+    def set_preview_data(self, preview_data: dict):
+        """接收标准 preview_data，转换为 BatchItem 列表后渲染
+
+        Args:
+            preview_data: 标准 preview_data 字典，包含 operation_type, target_vault, items 等
+        """
+        items = preview_data.get("items", [])
+        target_vault = preview_data.get("target_vault", "account")
+        vault_type = 'urls' if 'url' in str(target_vault).lower() else 'accounts'
+
+        batch_items: List[BatchItem] = []
+        for item in items:
+            raw_data = item.get("raw_data", {}) or {}
+            fields = item.get("fields", [])
+
+            # 从 fields 中提取常用字段
+            field_map = {f.get("field_name", ""): f.get("new_value", "") for f in fields}
+
+            password = field_map.get("密码") or raw_data.get("password", "")
+            url_val = (field_map.get("网址") or field_map.get("URL") or field_map.get("url")
+                       or raw_data.get("url", ""))
+
+            if vault_type == 'accounts':
+                batch_items.append(BatchItem(
+                    app=item.get("display_name", ""),
+                    account=item.get("secondary_name", ""),
+                    password=password,
+                    url=url_val,
+                    category=raw_data.get("category", "其他"),
+                    remark=raw_data.get("remark", ""),
+                    tags=raw_data.get("tags", []),
+                    raw_data=raw_data,
+                    confirmed=True,
+                    status="就绪",
+                ))
+            else:
+                batch_items.append(BatchItem(
+                    title=item.get("display_name", ""),
+                    url=url_val,
+                    category=raw_data.get("category", "其他"),
+                    remark=raw_data.get("remark", ""),
+                    tags=raw_data.get("tags", []),
+                    raw_data=raw_data,
+                    confirmed=True,
+                    status="就绪",
+                ))
+
+        # 使用现有 set_items 渲染
+        categories = list(set(it.category for it in batch_items if it.category)) or ["其他"]
+        self.set_items(batch_items, vault_type, categories)
+
     def get_items(self) -> List[BatchItem]:
         """获取所有条目"""
         if self._model is None:
             return []
         return self._model.get_items()
 
-    def get_confirmed_items(self) -> List[BatchItem]:
-        """获取已勾选的条目"""
-        return [item for item in self.get_items() if item.confirmed]
+    def get_confirmed_items(self) -> List[Dict]:
+        """获取用户勾选的 raw_data 列表（与 ActionPreviewWidget 接口一致）"""
+        return [item.raw_data for item in self.get_items() if item.confirmed]
+
+    def _on_toggle_password(self):
+        """切换密码显示/掩码"""
+        if self._model is None:
+            return
+        visible = not self._model._password_visible
+        self._model.set_password_visible(visible)
+        self._btn_toggle_password.setText("🙈 隐藏密码" if visible else "👁 显示密码")

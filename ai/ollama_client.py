@@ -5,7 +5,7 @@ Ollama API 客户端
 import json
 import re
 import requests
-from typing import List, Optional, Tuple, Generator
+from typing import List, Optional, Tuple, Generator, Dict
 
 
 class OllamaClient:
@@ -308,7 +308,10 @@ class OllamaClient:
     
     def semantic_match(self, query: str, items_summary: str) -> dict:
         """
-        语义匹配：理解用户查询，从条目摘要中返回匹配的 ID 列表与置信度。
+        语义匹配：本地实现，无需调用模型。
+        
+        通过关键词匹配、拼音首字母匹配、同义词扩展等多维度算法，
+        从条目摘要中返回匹配的 ID 列表与置信度。
         
         Args:
             query: 用户搜索词
@@ -321,72 +324,136 @@ class OllamaClient:
                 "confidence_scores": {"ID": 置信度(0-1)}
             }
         """
-        prompt = f"""用户正在密码管理软件中搜索账号，他说："{query}"
-
-软件中存储的账号列表如下（每行格式：ID | 应用名 | 分类 | 标签 | 备注）：
-{items_summary}
-
-请从列表中严格筛选出与用户需求**直接相关**的应用。
-返回 JSON 格式：
-{{
-  "matched_ids": [匹配的ID列表],
-  "reasoning": "你的推理过程（中文）",
-  "confidence_scores": {{"ID": 置信度(0-1)}}
-}}
-
-规则：
-1. 只返回确实相关的 ID，不要为了提高召回率而滥发
-2. 如果没有匹配的，返回空数组 []
-3. confidence > 0.6 才纳入结果
-4. 只输出 JSON，不要其他解释
-5. 示例：用户说"支付类"，应返回支付宝、银行、PayPal 等相关账号，不应返回游戏、社交类账号
-"""
+        import re
+        from difflib import SequenceMatcher
         try:
-            raw = self.generate(prompt, temperature=0.1, num_predict=800)
-            text = raw.strip()
-            print(f"[SemanticMatch] Raw response ({len(text)} chars): {text[:300]}")
+            from core.pinyin import PinyinConverter
+        except Exception:
+            PinyinConverter = None
+        
+        if not query or not items_summary:
+            return {"matched_ids": [], "reasoning": "空查询或空数据", "confidence_scores": {}}
+        
+        query = query.strip().lower()
+        
+        # 同义词/相关词扩展映射
+        synonym_map = {
+            "竞赛": ["比赛", "大赛", "赛事", "美赛", "大创", "创新创业", "挑战杯", "acm", "cpcc", "蓝桥杯"],
+            "论文": ["知网", "arxiv", "ieee", "学术", "文献", "期刊", "会议", "投稿"],
+            "支付": ["支付宝", "微信", "银行", "paypal", "stripe", "收银", "付款", "转账", "充值"],
+            "社交": ["微信", "qq", "微博", "twitter", "x", "facebook", "instagram", "telegram", "钉钉", "飞书"],
+            "游戏": ["steam", "epic", "xbox", "playstation", "nintendo", "原神", "王者", "lol", "联盟", "吃鸡"],
+            "学习": ["学校", "大学", "mooc", "网课", "学堂", "课程", "教育", "考试", "cet", "四六级"],
+            "工作": ["公司", "企业", "办公", "oa", "erp", "crm", "邮箱", "邮件", "招聘", "简历"],
+            "购物": ["淘宝", "京东", "拼多多", "amazon", "购物", "电商", "外卖", "美团", "饿了么"],
+            "视频": ["b站", "bilibili", "youtube", "抖音", "快手", "爱奇艺", "腾讯", "优酷", "netflix"],
+            "开发": ["github", "gitlab", "gitee", "coding", "stackoverflow", "leetcode", "力扣", "vscode"],
+        }
+        
+        # 构建扩展查询词列表
+        search_terms = [query]
+        for key, synonyms in synonym_map.items():
+            if key in query or any(s in query for s in synonyms):
+                search_terms.extend([key] + synonyms)
+        # 去重
+        search_terms = list(set(search_terms))
+        
+        # 解析 items_summary
+        items = []
+        for line in items_summary.strip().split("\n"):
+            line = line.strip()
+            if not line or "|" not in line:
+                continue
+            parts = [p.strip() for p in line.split("|", 4)]
+            if len(parts) < 2:
+                continue
+            try:
+                item_id = int(parts[0])
+            except (ValueError, TypeError):
+                continue
+            app_name = parts[1] if len(parts) > 1 else ""
+            category = parts[2] if len(parts) > 2 else ""
+            tags = parts[3] if len(parts) > 3 else ""
+            remark = parts[4] if len(parts) > 4 else ""
+            items.append({
+                "id": item_id,
+                "app_name": app_name,
+                "category": category,
+                "tags": tags,
+                "remark": remark,
+                "text": f"{app_name} {category} {tags} {remark}".lower()
+            })
+        
+        matched_ids = []
+        confidence_scores = {}
+        matched_details = []
+        
+        for item in items:
+            max_score = 0.0
+            best_match_term = ""
             
-            # 去除可能的 markdown 代码块标记
-            if text.startswith("```"):
-                text = text.strip("`").strip()
-                if text.lower().startswith("json"):
-                    text = text[4:].strip()
-            
-            data = json.loads(text)
-            matched_ids = data.get("matched_ids", [])
-            reasoning = data.get("reasoning", "")
-            confidence_scores = data.get("confidence_scores", {})
-            print(f"[SemanticMatch] Parsed matched_ids: {matched_ids[:20]}{'...' if len(matched_ids) > 20 else ''} (total: {len(matched_ids)})")
-            
-            # 过滤置信度并清洗 ID 类型（统一转为 int）
-            cleaned_ids = []
-            filtered_scores = {}
-            for mid in matched_ids:
-                try:
-                    mid_int = int(mid)
-                except (ValueError, TypeError):
+            for term in search_terms:
+                term = term.lower().strip()
+                if not term:
                     continue
-                sid = str(mid_int)
-                score = confidence_scores.get(sid, confidence_scores.get(mid, 0.8))
-                try:
-                    score = float(score)
-                except (ValueError, TypeError):
-                    score = 0.8
-                if score > 0.6:
-                    cleaned_ids.append(mid_int)
-                    filtered_scores[sid] = score
+                
+                score = 0.0
+                text = item["text"]
+                app = item["app_name"].lower()
+                
+                # 1. 应用名完全匹配（最高权重）
+                if term == app:
+                    score = max(score, 1.0)
+                # 2. 应用名包含匹配
+                elif term in app:
+                    score = max(score, 0.95)
+                # 3. 任意字段包含匹配
+                elif term in text:
+                    score = max(score, 0.85)
+                # 4. 拼音首字母匹配
+                if PinyinConverter and score < 0.85:
+                    try:
+                        app_pinyin = PinyinConverter.get_pinyin_initials(item["app_name"])
+                        if term == app_pinyin.lower():
+                            score = max(score, 0.9)
+                        elif term in app_pinyin.lower():
+                            score = max(score, 0.8)
+                    except Exception:
+                        pass
+                # 5. 模糊匹配（编辑距离）
+                if score < 0.7 and len(term) >= 2 and len(app) >= 2:
+                    try:
+                        ratio = SequenceMatcher(None, term, app).ratio()
+                        if ratio > 0.75:
+                            score = max(score, ratio * 0.85)
+                    except Exception:
+                        pass
+                
+                if score > max_score:
+                    max_score = score
+                    best_match_term = term
             
-            return {
-                "matched_ids": cleaned_ids,
-                "reasoning": reasoning,
-                "confidence_scores": filtered_scores
-            }
-        except Exception as e:
-            return {
-                "matched_ids": [],
-                "reasoning": f"语义匹配解析失败: {e}",
-                "confidence_scores": {}
-            }
+            if max_score >= 0.6:
+                matched_ids.append(item["id"])
+                confidence_scores[str(item["id"])] = round(max_score, 2)
+                matched_details.append(f"{item['app_name']}({max_score:.0%})")
+        
+        # 按置信度排序
+        matched_ids.sort(key=lambda x: confidence_scores.get(str(x), 0), reverse=True)
+        
+        reasoning = f"本地语义匹配：查询词 '{query}'，在 {len(items)} 条记录中命中 {len(matched_ids)} 条"
+        if matched_details:
+            reasoning += "；主要匹配：" + ", ".join(matched_details[:8])
+            if len(matched_details) > 8:
+                reasoning += f" 等共{len(matched_details)}项"
+        
+        print(f"[SemanticMatch] Local match: query='{query}', items={len(items)}, matched={len(matched_ids)}")
+        
+        return {
+            "matched_ids": matched_ids,
+            "reasoning": reasoning,
+            "confidence_scores": confidence_scores
+        }
     
     def chat(self, messages: List[dict], temperature: float = 0.3, num_predict: int = 1200) -> str:
         """
@@ -413,6 +480,67 @@ class OllamaClient:
         prompt = '\n\n'.join(prompt_parts) + "\n\n助手："
         
         return self.generate(prompt, temperature=temperature, num_predict=num_predict)
+    
+    def generate_tool_call(self, query: str, db_summary: str, 
+                           observations: str, tools: List[Dict]) -> Dict:
+        """
+        生成Tool Call决策。
+        
+        Returns:
+            {"thought": str, "tool": str, "params": dict, "response": str}
+        """
+        tools_text = json.dumps(tools, ensure_ascii=False, indent=2)
+        
+        prompt = f"""你是密码管理软件的AI助手。请根据用户请求、数据库信息和可用工具，决定下一步操作。
+
+当前数据库信息：
+{db_summary}
+
+{observations}
+
+用户请求：{query}
+
+可用工具列表：
+{tools_text}
+
+重要规则：
+1. 你必须严格输出JSON格式，不要添加任何其他解释
+2. 如果需要执行工具，输出：{{"thought": "你的思考过程", "tool": "工具名称", "params": {{参数}}}}
+3. 如果任务已完成或无需工具，输出：{{"thought": "任务已完成", "tool": "direct_answer", "response": "给用户的回复"}}
+4. 确保JSON格式正确，字符串使用双引号
+
+输出："""
+        
+        raw = ""
+        try:
+            raw = self.generate(prompt, temperature=0.2, num_predict=1200)
+            text = raw.strip()
+            
+            # 去除 markdown 代码块
+            if text.startswith("```"):
+                text = text.strip("`").strip()
+                if text.lower().startswith("json"):
+                    text = text[4:].strip()
+            
+            result = json.loads(text)
+            
+            # 标准化返回
+            return {
+                "thought": result.get("thought", ""),
+                "tool": result.get("tool", "direct_answer"),
+                "params": result.get("params", {}),
+                "response": result.get("response", "")
+            }
+            
+        except (json.JSONDecodeError, Exception) as e:
+            # 兜底：使用 _extract_command 的容错逻辑
+            fallback = self._extract_command(raw)
+            return {
+                "thought": fallback.get("thinking", f"JSON解析失败，使用兜底逻辑: {e}"),
+                "tool": "direct_answer",
+                "params": {},
+                "response": fallback.get("response", "AI处理中遇到问题，请重试")
+            }
     
     def parse_command(self, query: str, db_summary: str, history: list = None,
                        conversation_history: str = "", scope_hint: str = "") -> dict:

@@ -24,3 +24,11 @@
 - PyQt6 6.11.0
 - Ollama (gemma4:4b) - 仅支持 `/api/generate`，不支持 `/api/embeddings`
 - SQLite + cryptography (密码加密存储)
+
+## 环境配置
+
+**项目专用 Conda 环境**：`D:\Anaconda\envs\Passwordmanage`
+
+- 后续如需运行代码、导入测试或执行任何 Python 脚本，**必须使用该环境**，禁止直接使用系统默认 Python 环境。
+- 激活方式：`conda activate Passwordmanage`
+- 该环境已预装 PyQt6、cryptography、openpyxl、pypinyin、paddleocr、qt-material、requests 等全部依赖。

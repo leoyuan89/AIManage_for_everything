@@ -4,9 +4,10 @@
 """
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Optional, Set, List, Dict
+from typing import Optional, Set, List, Dict, Any
 import time
 import re
+import json
 
 
 @dataclass
@@ -22,6 +23,16 @@ class TurnSnapshot:
     timestamp: float = field(default_factory=time.time)
 
 
+@dataclass
+class Observation:
+    """工具执行观察记录"""
+    turn: int
+    tool: str
+    params: Dict
+    result: Any
+    timestamp: float = field(default_factory=time.time)
+
+
 class ConversationContext:
     """对话上下文管理器，维护多轮对话状态"""
 
@@ -30,12 +41,20 @@ class ConversationContext:
         self.last_active_timestamp = time.time()
         self.idle_timeout = idle_timeout
         self.current_vault_type: Optional[str] = None
+        self.observations: deque[Observation] = deque(maxlen=20)
+        self._db_summary_loaded: bool = False
+        self._db_summary_cache: Optional[str] = None
+        self._db_summary_vault_type: Optional[str] = None
 
     def reset(self):
         """重置对话上下文"""
         self.history.clear()
         self.last_active_timestamp = time.time()
         self.current_vault_type = None
+        self.observations.clear()
+        self._db_summary_loaded = False
+        self._db_summary_cache = None
+        self._db_summary_vault_type = None
 
     def is_expired(self) -> bool:
         """检查上下文是否因空闲超时而过期"""
@@ -112,6 +131,42 @@ class ConversationContext:
             return "\n".join(lines)
 
         return full_serialized
+
+    def add_observation(self, tool: str, params: Dict, result: Any, turn: int):
+        """添加工具执行观察记录"""
+        obs = Observation(turn=turn, tool=tool, params=params, result=result)
+        self.observations.append(obs)
+
+    def get_observations_text(self, max_count: int = 5) -> str:
+        """将观察记录序列化为 Prompt 文本"""
+        if not self.observations:
+            return ""
+        lines = []
+        recent = list(self.observations)[-max_count:]
+        for idx, obs in enumerate(recent, 1):
+            lines.append(f"[观察 {idx}] 工具: {obs.tool}")
+            lines.append(f"  参数: {json.dumps(obs.params, ensure_ascii=False)}")
+            result_str = str(obs.result)[:200] if obs.result else "无结果"
+            lines.append(f"  结果: {result_str}")
+        return "\n".join(lines)
+
+    def set_db_summary(self, summary: str, vault_type: str):
+        """设置数据库摘要缓存"""
+        self._db_summary_cache = summary
+        self._db_summary_vault_type = vault_type
+        self._db_summary_loaded = True
+
+    def get_db_summary(self, vault_type: str) -> Optional[str]:
+        """获取数据库摘要（仅当 vault_type 匹配时返回）"""
+        if not self._db_summary_loaded or self._db_summary_vault_type != vault_type:
+            return None
+        return self._db_summary_cache
+
+    def clear_db_summary(self):
+        """清除数据库摘要缓存"""
+        self._db_summary_loaded = False
+        self._db_summary_cache = None
+        self._db_summary_vault_type = None
 
 
 class ReferenceResolver:

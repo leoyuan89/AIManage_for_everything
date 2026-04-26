@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Dict
+from enum import Enum
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLineEdit, QListWidget, QListWidgetItem,
@@ -90,8 +91,8 @@ class AIQueryThread(QThread):
         
         # 1. 获取完整响应（非流式，更稳定）
         try:
-            result = self.ai_assistant.process_query(
-                self.query, self.accounts, mode=self.mode, record_history=False, vault_type=self.vault_type
+            result = self.ai_assistant.process_react_query(
+                self.query, self.accounts, mode=self.mode, vault_type=self.vault_type
             )
             print(f"[AIThread] process_query done, action={result.get('action')}")
         except Exception as e:
@@ -108,8 +109,10 @@ class AIQueryThread(QThread):
             }
         
         # 2. 将 response 文本分割成段落
+        # ReAct 模式：跳过 result_token 分段发射，避免与 _on_react_result 重复追加回复
+        is_react = 'done' in result or 'awaiting_confirm' in result
         response_text = result.get('response', '')
-        if response_text and not self._cancelled:
+        if response_text and not self._cancelled and not is_react:
             segments = self._split_into_segments(response_text, max_chunk=30)
             print(f"[AIThread] Split into {len(segments)} segments")
             
@@ -482,8 +485,17 @@ class URLListItem(QWidget):
         return text[0].upper()
 
 
+class ReActState(Enum):
+    """ReAct 状态机"""
+    IDLE = "idle"
+    RUNNING = "running"
+    AWAITING_PREVIEW = "awaiting_preview"
+    CONFIRMED = "confirmed"
+    CANCELLED = "cancelled"
+
+
 class ActionPreviewWidget(QFrame):
-    """Build 模式操作预览 Widget"""
+    """Build 模式操作预览 Widget（支持标准 preview_data）"""
     
     confirmed = pyqtSignal()
     cancelled = pyqtSignal()
@@ -494,6 +506,8 @@ class ActionPreviewWidget(QFrame):
         self.params = params or {}
         self.preview_items = []
         self.total_count = 0
+        self._preview_data = None
+        self._is_build_mode = False
         self.setup_ui()
     
     def setup_ui(self):
@@ -518,11 +532,15 @@ class ActionPreviewWidget(QFrame):
         title.setStyleSheet("color: #E65100;")
         layout.addWidget(title)
         
+        # 空数据提示（默认隐藏）
+        self._empty_label = QLabel("⚠️ 未找到符合条件的条目")
+        self._empty_label.setStyleSheet("color: #f44336; font-size: 14px; padding: 20px;")
+        self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_label.hide()
+        layout.addWidget(self._empty_label)
+        
         # 表格
         self.table = QTableWidget()
-        self.table.setColumnCount(4)
-        self.table.setHorizontalHeaderLabels(["目标条目", "字段", "原值", "新值"])
-        self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setStyleSheet("""
             QTableWidget {
@@ -537,15 +555,12 @@ class ActionPreviewWidget(QFrame):
             }
         """)
         
-        # 影响范围（必须先创建，避免 _fill_table 中 setCheckState 触发 itemChanged 时访问不到）
+        # 影响范围（必须先创建，避免 setCheckState 触发 itemChanged 时访问不到）
         self.lbl_scope = QLabel("")
         self.lbl_scope.setStyleSheet("color: #666; font-size: 11px;")
         
         self.table.itemChanged.connect(self._on_item_check_changed)
-        self._fill_table()
         layout.addWidget(self.table, 1)
-        
-        self.lbl_scope.setText(self._get_scope_text())
         layout.addWidget(self.lbl_scope)
         
         # 警告
@@ -583,17 +598,176 @@ class ActionPreviewWidget(QFrame):
         
         layout.addLayout(btn_layout)
     
+    def set_preview_data(self, preview_data: dict):
+        """接收标准化 preview_data，动态构建表格"""
+        self._preview_data = preview_data
+        self._is_build_mode = True
+        operation_type = preview_data.get("operation_type", "add")
+        items = preview_data.get("items", [])
+        total = preview_data.get("total_items", len(items))
+        self.total_count = total
+        
+        # 空数据降级
+        if total == 0 or not items:
+            self.table.hide()
+            self._empty_label.show()
+            self.lbl_scope.setText("共影响 0 条，已勾选 0 条")
+            return
+        
+        self._empty_label.hide()
+        self.table.show()
+        
+        headers, rows, raw_data_list = self._build_rows(operation_type, items)
+        
+        self.table.setColumnCount(len(headers))
+        self.table.setHorizontalHeaderLabels(headers)
+        self.table.setRowCount(len(rows))
+        
+        for i, (row_data, raw) in enumerate(zip(rows, raw_data_list)):
+            for j, val in enumerate(row_data):
+                cell = QTableWidgetItem(str(val))
+                if j == 0:
+                    cell.setFlags(cell.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                    cell.setCheckState(Qt.CheckState.Checked)
+                    cell.setData(Qt.ItemDataRole.UserRole, raw)
+                else:
+                    cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                
+                if operation_type == 'delete':
+                    cell.setForeground(QColor("#d32f2f"))
+                
+                text = str(val)
+                if len(text) > 30:
+                    cell.setToolTip(text)
+                
+                if self._is_password_column(operation_type, j, headers):
+                    actual = text
+                    cell.setText("***")
+                    cell.setToolTip(actual)
+                
+                self.table.setItem(i, j, cell)
+        
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.resizeColumnsToContents()
+        self.lbl_scope.setText(self._get_scope_text())
+    
+    def _build_rows(self, operation_type: str, items: list):
+        """根据 operation_type 构建行数据"""
+        headers = []
+        rows = []
+        raw_data_list = []
+        
+        if operation_type == 'add':
+            headers = ['☑', '序号', '应用名/标题', '用户名/URL', '密码', '分类', '备注']
+            for idx, item in enumerate(items, 1):
+                raw = item.get("raw_data", {}) or {}
+                fields = {f.get("field_name", ""): f.get("new_value", "") for f in item.get("fields", [])}
+                rows.append([
+                    '', str(idx), item.get("display_name", ""),
+                    item.get("secondary_name", ""),
+                    fields.get("密码", raw.get("password", "")),
+                    raw.get("category", "其他"),
+                    raw.get("remark", ""),
+                ])
+                raw_data_list.append(raw)
+        
+        elif operation_type == 'update':
+            headers = ['☑', '序号', '名称', '变更字段', '原值', '新值']
+            for idx, item in enumerate(items, 1):
+                raw = item.get("raw_data", {}) or {}
+                fields = item.get("fields", [])
+                changed = [f for f in fields if f.get("old_value") != f.get("new_value")]
+                if changed:
+                    field_names = ', '.join(f.get("field_name", "") for f in changed)
+                    old_vals = ', '.join(str(f.get("old_value", "-")) for f in changed)
+                    new_vals = ', '.join(str(f.get("new_value", "")) for f in changed)
+                else:
+                    field_names = old_vals = new_vals = '-'
+                rows.append(['', str(idx), item.get("display_name", ""), field_names, old_vals, new_vals])
+                raw_data_list.append(raw)
+        
+        elif operation_type == 'delete':
+            headers = ['☑', '序号', '名称', '分类', '操作', '状态']
+            for idx, item in enumerate(items, 1):
+                raw = item.get("raw_data", {}) or {}
+                rows.append(['', str(idx), item.get("display_name", ""),
+                             raw.get("category", "其他"), '移入回收站(30天)', '待删除'])
+                raw_data_list.append(raw)
+        
+        elif operation_type == 'reorganize':
+            headers = ['☑', '序号', '名称', '原分类', '新分类']
+            for idx, item in enumerate(items, 1):
+                raw = item.get("raw_data", {}) or {}
+                fields = item.get("fields", [])
+                cat_field = next((f for f in fields if f.get("field_name") == "分类"), None)
+                old_cat = cat_field.get("old_value", "-") if cat_field else "-"
+                new_cat = cat_field.get("new_value", "") if cat_field else raw.get("category", "")
+                rows.append(['', str(idx), item.get("display_name", ""), old_cat, new_cat])
+                raw_data_list.append(raw)
+        
+        elif operation_type == 'classify':
+            headers = ['☑', '序号', '名称', '原分类', '建议分类', '理由']
+            for idx, item in enumerate(items, 1):
+                raw = item.get("raw_data", {}) or {}
+                fields = item.get("fields", [])
+                cat_field = next((f for f in fields if f.get("field_name") == "分类"), None)
+                old_cat = cat_field.get("old_value", "-") if cat_field else raw.get("category", "其他")
+                new_cat = cat_field.get("new_value", "") if cat_field else ""
+                reason = item.get("reason", "")
+                rows.append(['', str(idx), item.get("display_name", ""), old_cat, new_cat, reason])
+                raw_data_list.append(raw)
+        
+        elif operation_type == 'merge':
+            headers = ['☑', '序号', '名称', '主条目', '被合并条目', '合并后字段']
+            for idx, item in enumerate(items, 1):
+                raw = item.get("raw_data", {}) or {}
+                rows.append(['', str(idx), item.get("display_name", ""),
+                             item.get("primary_name", ""), item.get("merged_name", ""),
+                             item.get("merged_fields", "")])
+                raw_data_list.append(raw)
+        
+        else:
+            headers = ['☑', '序号', '内容']
+            for idx, item in enumerate(items, 1):
+                raw = item.get("raw_data", {}) or {}
+                rows.append(['', str(idx), str(item)])
+                raw_data_list.append(raw)
+        
+        return headers, rows, raw_data_list
+    
+    def _is_password_column(self, operation_type: str, col: int, headers: list) -> bool:
+        if operation_type == 'add' and 0 <= col < len(headers):
+            return headers[col] == '密码'
+        return False
+    
+    def get_confirmed_items(self) -> List[Dict]:
+        """返回用户勾选确认的 raw_data 列表"""
+        confirmed = []
+        for i in range(self.table.rowCount()):
+            item = self.table.item(i, 0)
+            if item and item.checkState() == Qt.CheckState.Checked:
+                raw = item.data(Qt.ItemDataRole.UserRole)
+                if raw is not None:
+                    confirmed.append(raw)
+        return confirmed
+    
+    # ---- 兼容旧接口 ----
+    
     def update_action(self, action: str, params: dict, preview_items: list = None):
-        """更新操作内容"""
+        """更新操作内容（兼容旧代码）"""
         self.action = action
         self.params = params
         self.preview_items = preview_items or []
         self.total_count = len(preview_items) if preview_items else 0
+        self._is_build_mode = False
+        self._preview_data = None
+        self._empty_label.hide()
+        self.table.show()
         self._fill_table()
         self.lbl_scope.setText(self._get_scope_text())
     
     def _fill_table(self):
-        """根据 action 和 params 填充预览表格（优先使用 preview_items，支持勾选）"""
+        """根据 action 和 params 填充预览表格（兼容旧代码）"""
         rows = []
         delete_mode = self.action == 'delete'
         source = self.preview_items if self.preview_items else None
@@ -667,13 +841,14 @@ class ActionPreviewWidget(QFrame):
         else:
             rows.append([str(self.action), "-", "-", str(self.params)[:100]])
         
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(["目标条目", "字段", "原值", "新值"])
         self.table.setRowCount(len(rows))
         for i, row in enumerate(rows):
             for j, val in enumerate(row):
                 cell = QTableWidgetItem(str(val))
                 if delete_mode:
                     cell.setForeground(QColor("#d32f2f"))
-                # 第一列添加勾选框（默认勾选）
                 if j == 0:
                     cell.setFlags(cell.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                     cell.setCheckState(Qt.CheckState.Checked)
@@ -685,7 +860,7 @@ class ActionPreviewWidget(QFrame):
             self.lbl_scope.setText(self._get_scope_text())
     
     def get_selected_items(self) -> List[Dict]:
-        """获取用户勾选的条目（未显示条目默认勾选）"""
+        """获取用户勾选的条目（兼容旧代码）"""
         if not self.preview_items:
             return []
         selected = []
@@ -695,13 +870,22 @@ class ActionPreviewWidget(QFrame):
                 if table_item and table_item.checkState() == Qt.CheckState.Checked:
                     selected.append(item)
             else:
-                selected.append(item)  # 未显示条目默认勾选
+                selected.append(item)
         return selected
     
     def _get_scope_text(self) -> str:
+        selected_count = 0
+        total_count = self.total_count if self.total_count else self.table.rowCount()
+        
+        if self._is_build_mode and self._preview_data:
+            confirmed = self.get_confirmed_items()
+            selected_count = len(confirmed)
+            op_type = self._preview_data.get("operation_type", "update")
+            return f"共影响 {total_count} 条，已勾选 {selected_count} 条 | 操作类型：{op_type}"
+        
         selected = self.get_selected_items()
         selected_count = len(selected)
-        total_count = self.total_count if hasattr(self, 'total_count') and self.total_count else self.table.rowCount()
+        
         if self.action == 'delete':
             return f"影响范围：{selected_count}/{total_count} 条记录 | 操作类型：删除（移入回收站）"
         elif self.action == 'add':
@@ -742,6 +926,13 @@ class MainWindow(QMainWindow):
         self._ai_query_start_time = None  # 查询开始时间
         self._ai_last_elapsed = 0.0    # 上次回答用时（秒）
         self._ai_query_cancelled = False  # 用户是否取消了本次查询
+        
+        # ReAct 状态机
+        self._react_state = ReActState.IDLE
+        self._pending_tool = None
+        self._current_preview_widget = None
+        self._react_turns_used = 0
+        self._react_max_turns = 5
         
         self.current_category = '全部'
         self.selected_account: Optional[Account] = None
@@ -787,6 +978,7 @@ class MainWindow(QMainWindow):
         url_db_path = data_dir / 'vault_urls.db'
         self._url_db = URLDatabaseManager(str(url_db_path))
         self._url_service = URLService(self._url_db)
+        self.ai_assistant.url_db = self._url_db
         
         # 统一注册 RepositoryFactory（确保 URLRepository 有 main_db 引用用于回收站备份）
         from core.repositories import RepositoryFactory, AccountRepository, URLRepository
@@ -1676,8 +1868,7 @@ class MainWindow(QMainWindow):
         accounts.sort(key=_account_sort_key)
         
         for idx, account in enumerate(accounts):
-            if idx % 20 == 0:
-                            item = QListWidgetItem()
+            item = QListWidgetItem()
             item.setSizeHint(QSize(self.account_list.width() - 20, 56))
             item.setData(Qt.ItemDataRole.UserRole, account)
             self.account_list.addItem(item)
@@ -2436,7 +2627,7 @@ class MainWindow(QMainWindow):
             
             for result in exact_results[:30]:
                 item = QListWidgetItem()
-                item.setSizeHint(QSize(self.account_list.width() - 20, 56))
+                item.setSizeHint(QSize(max(self.account_list.width() - 20, 50), 56))
                 item.setData(Qt.ItemDataRole.UserRole, result.account)
                 self.account_list.addItem(item)
                 
@@ -2743,29 +2934,15 @@ class MainWindow(QMainWindow):
             welcome_text = (
                 "🦁🔥 密码库模式\n\n"
                 "炽阳 已觉醒\n\n"
-                "你好，狮子座的主人。\n"
-                "我是你的守护 AI，诞生于火焰与光芒之中。\n"
-                "为你的密码王国扫清迷雾。\n\n"
-                "🎯 试试这样问：\n"
-                "- 找出所有支付类账号\n"
-                "- 哪些账号还没分类？\n"
-                "- 帮我重新整理分类\n"
-                "- 给银行卡加上备注\n\n"
-                "♌ 炽阳只读取元数据，绝不触碰密码"
+                "你好，狮子座的主人。\n\n"
+                "⚡ 首次同步：请发送任意消息完成神经连接预热，预热完成后即可执行操作。"
             )
         else:
             welcome_text = (
                 "🦁🔥 网址库模式\n\n"
                 "炽阳 已觉醒\n\n"
-                "你好，狮子座的主人。\n"
-                "我是你的守护 AI，诞生于火焰与光芒之中。\n"
-                "为你的网址王国扫清迷雾。\n\n"
-                "🎯 试试这样问：\n"
-                "- 找出和青岛大学有关的网址\n"
-                "- 把开发工具类的网址列出来\n"
-                "- 帮我整理网址分类\n"
-                "- 给这个网址加上备注\n\n"
-                "♌ 炽阳只读取元数据，绝不触碰密码"
+                "你好，狮子座的主人。\n\n"
+                "⚡ 首次同步：请发送任意消息完成神经连接预热，预热完成后即可执行操作。"
             )
         self.result_area.setPlainText(welcome_text)
     
@@ -2886,6 +3063,12 @@ class MainWindow(QMainWindow):
         import traceback
         print("[MainWindow] _on_action_preview_confirmed called")
         self.action_preview_widget.hide()
+        
+        # ReAct 模式：走新流程
+        if self._react_state == ReActState.AWAITING_PREVIEW:
+            self._on_react_preview_confirmed()
+            return
+        
         if not self._pending_action:
             print("[MainWindow] No pending action, returning")
             return
@@ -2925,9 +3108,8 @@ class MainWindow(QMainWindow):
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
                 )
                 if reply == QMessageBox.StandardButton.Yes:
-                    action_preview['_force'] = True
                     result = self.ai_assistant.execute_build_action_with_transaction(
-                        action_preview, user_query=query
+                        confirmed_items, tool_name, user_query=query, _force=True
                     )
                 else:
                     result = {'success': False, 'error': '用户取消执行'}
@@ -2965,6 +3147,12 @@ class MainWindow(QMainWindow):
     def _on_action_preview_cancelled(self):
         """Build 模式：用户取消操作预览"""
         self.action_preview_widget.hide()
+        
+        # ReAct 模式：走新流程
+        if self._react_state == ReActState.AWAITING_PREVIEW:
+            self._on_react_preview_cancelled()
+            return
+        
         self._pending_action = None
         
         from services.ai_assistant_service import ConversationMessage
@@ -2975,6 +3163,258 @@ class MainWindow(QMainWindow):
         ))
         self._ai_update_chat_display()
         self.ai_action_buttons.show()
+    
+    def _on_react_result(self, result_json: str):
+        """ReAct 结果回调：解析 result_json，处理 awaiting_confirm / done 状态"""
+        import json
+        from services.ai_assistant_service import ConversationMessage
+        
+        print("[DEBUG] _on_react_result: step 1 - mark running=false")
+        self._ai_query_running = False
+        print("[DEBUG] _on_react_result: step 2 - update button")
+        self._update_send_button_style(False)
+        
+        print("[DEBUG] _on_react_result: step 3 - disconnect thread signals")
+        # 断开流式信号，使用 deleteLater 安全销毁，避免在信号处理中直接回收 C++ 对象
+        if self._ai_thread is not None:
+            try:
+                self._ai_thread.thinking_token.disconnect(self._on_thinking_token)
+            except Exception:
+                pass
+            try:
+                self._ai_thread.result_token.disconnect(self._on_result_token)
+            except Exception:
+                pass
+            self._ai_thread.deleteLater()
+            self._ai_thread = None
+        
+        print("[DEBUG] _on_react_result: step 4 - parse json")
+        try:
+            result = json.loads(result_json)
+        except json.JSONDecodeError:
+            result = {"success": False, "response": "ReAct 返回数据解析失败", "done": True}
+        
+        print("[DEBUG] _on_react_result: step 5 - get time")
+        now_str = datetime.now().strftime("%H:%M:%S")
+        
+        print("[DEBUG] _on_react_result: step 6 - clear result_area")
+        # 安全清理 UI
+        self.result_area.clear()
+        print("[DEBUG] _on_react_result: step 7 - clear thinking_area")
+        self.thinking_area.clear()
+        print("[DEBUG] _on_react_result: step 8 - hide thinking_area")
+        self.thinking_area.hide()
+        print("[DEBUG] _on_react_result: step 9 - update chat display")
+        self._ai_update_chat_display()
+        
+        print("[DEBUG] _on_react_result: step 10 - check result state")
+        if result.get('awaiting_confirm'):
+            # 暂停循环，展示预览组件
+            self._react_state = ReActState.AWAITING_PREVIEW
+            self._pending_tool = result.get('pending_tool')
+            self._react_turns_used = result.get('turns_used', self._react_turns_used + 1)
+            
+            preview_data = result.get('preview', {})
+            if preview_data and preview_data.get('items'):
+                self.action_preview_widget.set_preview_data(preview_data)
+                self.action_preview_widget.show()
+                self.ai_action_buttons.hide()
+            else:
+                # 没有预览数据，直接结束
+                self._react_state = ReActState.IDLE
+                self._pending_tool = None
+            
+            response = result.get('response', '请确认以下操作')
+            self.ai_assistant._history.append(ConversationMessage(
+                role='assistant', content=response, timestamp=now_str
+            ))
+            self._ai_update_chat_display()
+        elif result.get('done'):
+            print("[DEBUG] _on_react_result: step 11a - done branch")
+            self._react_state = ReActState.IDLE
+            self._pending_tool = None
+            self._react_turns_used = result.get('turns_used', self._react_turns_used)
+            
+            response = result.get('response', '操作完成')
+            print(f"[DEBUG] _on_react_result: step 11b - response len={len(response)}")
+            self.ai_assistant._history.append(ConversationMessage(
+                role='assistant', content=response, timestamp=now_str
+            ))
+            print("[DEBUG] _on_react_result: step 11c - update chat display")
+            self._ai_update_chat_display()
+            print("[DEBUG] _on_react_result: step 11d - show action buttons")
+            self.ai_action_buttons.show()
+            
+            # ReAct 模式：如果返回了匹配ID，高亮左侧列表
+            matched_ids = result.get('matched_ids', [])
+            print(f"[DEBUG] _on_react_result: step 11e - matched_ids={matched_ids}")
+            if matched_ids:
+                print("[DEBUG] _on_react_result: step 11f-1 - get method")
+                method = self.highlight_matched_accounts
+                print("[DEBUG] _on_react_result: step 11f-2 - get query")
+                q = getattr(self, '_current_ai_query', '')
+                print("[DEBUG] _on_react_result: step 11f-3 - call method")
+                self.highlight_matched_accounts(matched_ids, query_text=q)
+                print("[DEBUG] _on_react_result: step 11g - highlight done")
+        else:
+            # 中间状态，继续循环
+            self._react_turns_used = result.get('turns_used', self._react_turns_used)
+    
+    def _on_react_preview_confirmed(self):
+        """ReAct 模式：用户确认预览后执行事务并写入 Observation"""
+        import traceback
+        from datetime import datetime
+        from services.ai_assistant_service import ConversationMessage
+        
+        tool_info = self._pending_tool
+        tool_name = tool_info.get('tool') if isinstance(tool_info, dict) else tool_info
+        query = getattr(self, '_current_ai_query', '')
+        confirmed_items = self.action_preview_widget.get_confirmed_items()
+        
+        try:
+            result = self.ai_assistant.execute_build_action_with_transaction(
+                confirmed_items, tool_name, user_query=query
+            )
+            
+            # 处理超量删除的二次确认
+            if result.get('needs_confirmation'):
+                reply = QMessageBox.question(
+                    self, "二次确认",
+                    result.get('message', '即将删除大量记录，是否确认执行？'),
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                )
+                if reply == QMessageBox.StandardButton.Yes:
+                    result = self.ai_assistant.execute_build_action_with_transaction(
+                        confirmed_items, tool_name, user_query=query, _force=True
+                    )
+                else:
+                    result = {'success': False, 'error': '用户取消执行'}
+            
+            if result.get('success'):
+                item_name = '账号' if self.current_vault == 'accounts' else '网址'
+                result_msg = result.get('result_msg', f"✅ 成功执行操作，共影响 {result.get('affected_count', 0)} 个{item_name}")
+            else:
+                error = result.get('error', '未知错误')
+                result_msg = "⏹️ 已取消执行" if error == '用户取消执行' else f"❌ 执行失败：{error}"
+            
+            # 写入 Observation
+            self.ai_assistant.conversation_context.add_observation(
+                tool=tool_name or 'unknown',
+                params={"confirmed_count": len(confirmed_items)},
+                result=result,
+                turn=self._react_turns_used
+            )
+            
+            # 刷新列表和缓存
+            self.clear_account_highlight()
+            self._cache_dirty = True
+            self._url_cache_dirty = True
+            self._reload_categories()
+            if self.current_vault == 'accounts':
+                self.load_accounts()
+            else:
+                self.load_urls()
+            
+            # 高亮显示受影响的账号（取 confirmed_items 中的 id）
+            try:
+                affected_ids = []
+                for item in confirmed_items:
+                    item_id = item.get('id')
+                    if item_id:
+                        affected_ids.append(int(item_id))
+                if affected_ids:
+                    self.highlight_matched_accounts(affected_ids, query_text="执行结果")
+            except Exception as e:
+                print(f"[MainWindow] Highlight affected items error: {e}")
+        except Exception as e:
+            print(f"[MainWindow] ReAct preview confirmed error: {e}")
+            traceback.print_exc()
+            result_msg = f"❌ 执行失败：{str(e)}"
+        
+        now_str = datetime.now().strftime("%H:%M:%S")
+        self.ai_assistant._history.append(ConversationMessage(
+            role='assistant', content=result_msg, timestamp=now_str
+        ))
+        self._ai_update_chat_display()
+        self.ai_action_buttons.show()
+        
+        # 恢复 ReAct 循环：将执行结果通知 AI，继续下一轮
+        self._continue_react_loop()
+    
+    def _on_react_preview_cancelled(self):
+        """ReAct 模式：用户取消预览，记录 Observation 并恢复 IDLE"""
+        from datetime import datetime
+        from services.ai_assistant_service import ConversationMessage
+        
+        tool_info = self._pending_tool
+        tool_name = tool_info.get('tool') if isinstance(tool_info, dict) else tool_info
+        now_str = datetime.now().strftime("%H:%M:%S")
+        
+        self.ai_assistant.conversation_context.add_observation(
+            tool=tool_name or 'unknown',
+            params={"cancelled": True},
+            result={"status": "cancelled_by_user"},
+            turn=self._react_turns_used
+        )
+        
+        self.ai_assistant._history.append(ConversationMessage(
+            role='assistant', content="❌ 操作已取消。",
+            timestamp=now_str
+        ))
+        self._ai_update_chat_display()
+        self.ai_action_buttons.show()
+        self._react_state = ReActState.IDLE
+        self._pending_tool = None
+        self._current_preview_widget = None
+    
+    def _continue_react_loop(self):
+        """恢复 ReAct 循环：基于已有的 Observation 继续执行"""
+        if self._react_turns_used >= self._react_max_turns:
+            self._react_state = ReActState.IDLE
+            return
+        
+        # 获取当前上下文
+        if self.current_vault == 'accounts':
+            if self._cache_dirty or not self._cached_accounts:
+                self._cached_accounts = self.account_service.get_all_accounts()
+                self._cache_dirty = False
+            context = self._cached_accounts
+            vault_type = 'accounts'
+        else:
+            if self._url_cache_dirty or not self._cached_urls:
+                self._cached_urls = self._url_service.get_all_urls()
+                self._url_cache_dirty = False
+            context = self._cached_urls
+            vault_type = 'urls'
+        
+        # 构造更丰富的上下文查询，让 AI 能精准继续
+        original_query = getattr(self, '_current_ai_query', '')
+        last_obs = None
+        try:
+            obs_list = list(self.ai_assistant.conversation_context.observations)
+            if obs_list:
+                last_obs = obs_list[-1]
+        except Exception:
+            pass
+        
+        if last_obs and original_query:
+            cont_query = (
+                f"上一步操作（{last_obs.tool}）已执行完毕。"
+                f"请基于执行结果，继续回答用户的原始问题：「{original_query}」"
+            )
+        elif original_query:
+            cont_query = f"上一步操作已完成。请继续处理用户的原始问题：「{original_query}」"
+        else:
+            cont_query = "上一步操作已完成。请继续处理。"
+        
+        self._react_state = ReActState.RUNNING
+        self._ai_thread = AIQueryThread(
+            self.ai_assistant, cont_query, context, self._ai_mode, vault_type
+        )
+        self._ai_thread.result_ready.connect(self._on_ai_query_finished)
+        self._ai_thread.thinking_token.connect(self._on_thinking_token)
+        self._ai_thread.result_token.connect(self._on_result_token)
+        self._ai_thread.start()
     
     def _show_batch_add_dialog(self, batch_items, vault_type, query, action_preview):
         """显示批量导入预览对话框"""
@@ -3071,6 +3511,40 @@ class MainWindow(QMainWindow):
         if not query:
             return
         
+        # ReAct 状态检查：如果正在等待预览确认，禁止发送新消息
+        if self._react_state == ReActState.AWAITING_PREVIEW:
+            self._append_ai_system_msg("⚠️ 请先处理当前操作预览（确认或取消）")
+            return
+        
+        # AI 预热机制（Bug 2 修复）：首次发送前预热 db_summary
+        if not self.ai_assistant.conversation_context._db_summary_loaded:
+            try:
+                if self.current_vault == 'accounts':
+                    accounts = (self._cached_accounts if self._cached_accounts and not self._cache_dirty
+                                else self.account_service.get_all_accounts())
+                    summary = self.ai_assistant.build_db_summary(accounts, vault_type='accounts')
+                else:
+                    urls = (self._cached_urls if self._cached_urls and not self._url_cache_dirty
+                            else self._url_service.get_all_urls())
+                    summary = self.ai_assistant.build_db_summary(urls=urls, vault_type='urls')
+                self.ai_assistant.conversation_context.set_db_summary(summary, self.current_vault)
+            except Exception as e:
+                print(f"[MainWindow] Warmup error: {e}")
+            
+            # 不启动 AIQueryThread，回复预热消息（保留用户输入框内容）
+            from services.ai_assistant_service import ConversationMessage
+            from datetime import datetime
+            self.ai_assistant._history.append(ConversationMessage(
+                role='assistant', content="⚡ 神经连接已建立，请发送您的指令",
+                timestamp=datetime.now().strftime("%H:%M:%S")
+            ))
+            self._ai_interacted = True
+            self._ai_update_chat_display()
+            self.ai_action_buttons.show()
+            self._ai_query_running = False
+            self._update_send_button_style(False)
+            return
+        
         # 防止重复提交（如果已有查询在进行中，忽略）
         if getattr(self, '_ai_query_running', False):
             return
@@ -3100,19 +3574,13 @@ class MainWindow(QMainWindow):
         # 发送新 query 时清除左侧筛选
         self.clear_account_highlight()
         
-        # 添加到对话历史：用户消息 + 空的 assistant 占位消息（用于分段输出追加）
+        # 添加到对话历史：用户消息
         from services.ai_assistant_service import ConversationMessage
         from datetime import datetime
         now_str = datetime.now().strftime("%H:%M:%S")
         self.ai_assistant._history.append(ConversationMessage(
             role='user', content=query,
             timestamp=now_str
-        ))
-        self.ai_assistant._history.append(ConversationMessage(
-            role='assistant', content="",
-            timestamp=now_str,
-            thinking="",
-            action="explain"
         ))
         
         # 标记为已交互（下次不再显示欢迎语）
@@ -3136,6 +3604,7 @@ class MainWindow(QMainWindow):
             vault_type = 'urls'
         
         # 启动后台线程执行 AI 查询（避免 GPU 满载阻塞主线程）
+        self._react_state = ReActState.RUNNING
         self._ai_thread = AIQueryThread(self.ai_assistant, query, context, self._ai_mode, vault_type)
         self._ai_thread.result_ready.connect(self._on_ai_query_finished)
         self._ai_thread.thinking_token.connect(self._on_thinking_token)
@@ -3161,7 +3630,12 @@ class MainWindow(QMainWindow):
         # 标记查询已结束，延迟 token 将被 _on_thinking_token/_on_result_token 丢弃
         self._ai_query_running = False
         
-        # 断开流式信号连接，防止任何后续 token 触发 slot
+        # ReAct 模式：线程清理交给 _on_react_result，避免在信号处理中销毁 sender
+        if self._react_state != ReActState.IDLE:
+            self._on_react_result(result_json)
+            return
+        
+        # 旧路径：断开流式信号连接，防止任何后续 token 触发 slot
         if self._ai_thread is not None:
             try:
                 self._ai_thread.thinking_token.disconnect(self._on_thinking_token)
@@ -3470,26 +3944,16 @@ class MainWindow(QMainWindow):
         if self.current_vault == 'accounts':
             return (
                 "🦁🔥 **密码库模式**\n\n"
-                "**炽阳 已觉醒**\n\n"
-                "你好，狮子座的主人。\n"
-                "我是你的守护 AI，诞生于火焰与光芒之中。\n\n"
-                "**🎯 试试这样问：**\n"
-                "- 找出所有支付类账号\n"
-                "- 哪些账号还没分类？\n"
-                "- 帮我重新整理分类\n\n"
-                "*♌ 只读取元数据，绝不触碰密码*"
+                "炽阳 已觉醒\n\n"
+                "你好，狮子座的主人。\n\n"
+                "⚡ **首次同步**：请发送任意消息完成神经连接预热，预热完成后即可执行操作。"
             )
         else:
             return (
                 "🦁🔥 **网址库模式**\n\n"
-                "**炽阳 已觉醒**\n\n"
-                "你好，狮子座的主人。\n"
-                "我是你的守护 AI，诞生于火焰与光芒之中。\n\n"
-                "**🎯 试试这样问：**\n"
-                "- 找出和青岛大学有关的网址\n"
-                "- 把开发工具类的网址列出来\n"
-                "- 帮我整理网址分类\n\n"
-                "*♌ 只读取元数据，绝不触碰密码*"
+                "炽阳 已觉醒\n\n"
+                "你好，狮子座的主人。\n\n"
+                "⚡ **首次同步**：请发送任意消息完成神经连接预热，预热完成后即可执行操作。"
             )
     
     def _render_user_md(self, text: str) -> str:
@@ -3560,14 +4024,21 @@ class MainWindow(QMainWindow):
     
     def highlight_matched_accounts(self, matched_ids: list, query_text: str = ""):
         """Plan 模式：高亮左侧列表中的匹配条目（支持密码库和网址库）"""
+        print(f"[DEBUG-HL] start, matched_ids={matched_ids}")
         if not matched_ids:
+            print("[DEBUG-HL] empty matched_ids, return")
             return
         
         self._highlight_matched_ids = set(matched_ids)
         
+        # 禁用更新避免大量 paint/layout 事件阻塞事件循环
+        print("[DEBUG-HL] setUpdatesEnabled(False)")
+        self.account_list.setUpdatesEnabled(False)
+        print("[DEBUG-HL] clear list")
         self.account_list.clear()
         
         # 根据当前 vault 选择数据源和 Widget 类型
+        print("[DEBUG-HL] get all_items")
         if self.current_vault == 'accounts':
             all_items = self._cached_accounts if self._cached_accounts else self.account_service.get_all_accounts()
             item_name = "账号"
@@ -3579,14 +4050,18 @@ class MainWindow(QMainWindow):
             ItemWidget = URLListItem
             use_badges = False
         
+        print(f"[DEBUG-HL] all_items={len(all_items)}")
         matched_items = [item for item in all_items if getattr(item, 'id', None) in matched_ids]
         unmatched_items = [item for item in all_items if getattr(item, 'id', None) not in matched_ids]
+        print(f"[DEBUG-HL] matched={len(matched_items)}, unmatched={len(unmatched_items)}")
         
         # 隐藏列表标题（筛选信息已在横幅中显示）
+        print("[DEBUG-HL] hide title")
         self.lbl_list_title.hide()
         
         # 显示匹配项（置顶，蓝色边框）
         if matched_items:
+            print("[DEBUG-HL] build matched header")
             header = QListWidgetItem(f"  匹配{item_name}")
             header.setFlags(Qt.ItemFlag.NoItemFlags)
             font = QFont()
@@ -3597,14 +4072,19 @@ class MainWindow(QMainWindow):
             header.setForeground(QColor("#1565C0"))
             self.account_list.addItem(header)
             
-            for item_obj in matched_items:
+            print("[DEBUG-HL] loop matched_items")
+            for idx, item_obj in enumerate(matched_items):
+                print(f"[DEBUG-HL] matched item {idx}/{len(matched_items)} id={getattr(item_obj, 'id', None)}")
                 item = QListWidgetItem()
-                item.setSizeHint(QSize(self.account_list.width() - 20, 56))
+                w = max(self.account_list.width() - 20, 50)
+                print(f"[DEBUG-HL]   setSizeHint width={w}")
+                item.setSizeHint(QSize(w, 56))
                 item.setData(Qt.ItemDataRole.UserRole, item_obj)
                 item.setBackground(QColor("#E3F2FD"))
                 self.account_list.addItem(item)
                 
                 badges = [("匹配", "#2196F3")]
+                print(f"[DEBUG-HL]   create ItemWidget")
                 if use_badges:
                     widget = ItemWidget(item_obj, badges=badges, selection_mode=self._selection_mode)
                 else:
@@ -3620,10 +4100,12 @@ class MainWindow(QMainWindow):
                         'border: 2px solid #2196F3;'
                     )
                     widget.setStyleSheet(enhanced_style)
+                print(f"[DEBUG-HL]   setItemWidget")
                 self.account_list.setItemWidget(item, widget)
         
         # 显示未匹配项（灰色）
         if unmatched_items:
+            print(f"[DEBUG-HL] build unmatched header")
             header = QListWidgetItem(f"  其他{item_name}")
             header.setFlags(Qt.ItemFlag.NoItemFlags)
             font = QFont()
@@ -3634,13 +4116,17 @@ class MainWindow(QMainWindow):
             header.setForeground(QColor("#999"))
             self.account_list.addItem(header)
             
-            for item_obj in unmatched_items:
+            print(f"[DEBUG-HL] loop unmatched_items")
+            for idx, item_obj in enumerate(unmatched_items):
+                print(f"[DEBUG-HL] unmatched item {idx}/{len(unmatched_items)} id={getattr(item_obj, 'id', None)}")
                 item = QListWidgetItem()
-                item.setSizeHint(QSize(self.account_list.width() - 20, 56))
+                w = max(self.account_list.width() - 20, 50)
+                item.setSizeHint(QSize(w, 56))
                 item.setData(Qt.ItemDataRole.UserRole, item_obj)
                 item.setForeground(QColor(150, 150, 150))
                 self.account_list.addItem(item)
                 
+                print(f"[DEBUG-HL]   create ItemWidget")
                 widget = ItemWidget(item_obj, selection_mode=self._selection_mode)
                 
                 if self._selection_mode and getattr(item_obj, 'id', None) in self._selected_ids:
@@ -3651,11 +4137,20 @@ class MainWindow(QMainWindow):
                     widget.setStyleSheet(widget.styleSheet() + """
                         QLabel { color: #aaa; }
                     """)
+                print(f"[DEBUG-HL]   setItemWidget")
                 self.account_list.setItemWidget(item, widget)
         
         # 横幅显示用户原始查询和匹配数量
+        print("[DEBUG-HL] set banner")
         self.lbl_ai_filter.setText(f"炽阳已找到 {len(matched_items)} 个与「{query_text}」相关的{item_name}")
         self.ai_filter_banner.show()
+        
+        # 恢复更新，一次性重绘
+        print("[DEBUG-HL] setUpdatesEnabled(True)")
+        self.account_list.setUpdatesEnabled(True)
+        print("[DEBUG-HL] viewport update")
+        self.account_list.viewport().update()
+        print("[DEBUG-HL] DONE")
     
     def clear_account_highlight(self):
         """清除左侧列表的高亮筛选"""

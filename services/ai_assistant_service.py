@@ -10,7 +10,9 @@ from datetime import datetime
 
 from core.database import DatabaseManager
 from models.account import Account
+from models.url_item import URLItem
 from core.repositories import RepositoryFactory
+from services.ai_tools import ToolRegistry, AITool, ToolResult, PermissionLevel
 
 
 @dataclass
@@ -565,6 +567,244 @@ class AIAssistantService:
                 "error": error_msg
             }
     
+    def process_react_query(self, query: str, context_items: List = None,
+                            mode: str = 'plan', vault_type: str = 'accounts',
+                            max_turns: int = 5) -> Dict:
+        """
+        ReAct Tool Calling Agent 主循环。
+
+        最多执行 max_turns 轮单步 ReAct 循环，每轮：
+        1. 组装 ReAct Prompt（Observation 历史 + Tool Schema）
+        2. 调用 Ollama generate_tool_call 获取决策
+        3. 执行工具或返回结果
+
+        Returns:
+            {
+                "success": bool,
+                "done": bool,
+                "turns_used": int,
+                "response": str,
+                "preview": Dict or None,
+                "awaiting_confirm": bool,
+                "pending_tool": Dict or None,
+                "observations": List,
+                "error": str
+            }
+        """
+        if not self.is_available():
+            return {
+                "success": False,
+                "done": True,
+                "turns_used": 0,
+                "response": "AI 服务未连接。请确保 Ollama 已启动并加载了 gemma4:4b 模型。",
+                "preview": None,
+                "awaiting_confirm": False,
+                "pending_tool": None,
+                "observations": [],
+                "error": "Ollama not available"
+            }
+
+        # 1. 检查并缓存 db_summary
+        db_summary = self.conversation_context.get_db_summary(vault_type)
+        if db_summary is None:
+            if vault_type == 'accounts':
+                db_summary = self.build_db_summary(context_items, vault_type=vault_type, max_items=500)
+            else:
+                db_summary = self.build_db_summary(urls=context_items, vault_type=vault_type, max_items=500)
+            self.conversation_context.set_db_summary(db_summary, vault_type)
+
+        # 2. 指代消解
+        from services.conversation_context import ReferenceResolver
+        enhanced_query, inherited_ids = ReferenceResolver.resolve(query, self.conversation_context)
+
+        # 3. 准备 tool_context
+        tool_context = {
+            "accounts": context_items if vault_type == 'accounts' else None,
+            "urls": context_items if vault_type == 'urls' else None,
+            "vault_type": vault_type,
+            "inherited_ids": inherited_ids,
+            "db": self.db,
+            "url_db": self.url_db,
+            "repo": RepositoryFactory.get_repository(vault_type)
+        }
+
+        observations = []
+
+        # 4. ReAct 循环
+        from ai.ollama_client import OllamaClient
+        from services.ai_service_manager import AIServiceManager
+
+        ai_manager = AIServiceManager.instance()
+        ollama = OllamaClient(model=ai_manager.get_state().model_name or "gemma4:4b")
+
+        for turn in range(max_turns):
+            observations_text = self.conversation_context.get_observations_text(max_count=5)
+
+            tools = []
+            for tool in ToolRegistry.list():
+                tools.append({
+                    "name": tool.name,
+                    "description": tool.description,
+                    "params_schema": tool.params_schema
+                })
+
+            try:
+                decision = ollama.generate_tool_call(enhanced_query, db_summary, observations_text, tools)
+            except Exception as e:
+                return {
+                    "success": False,
+                    "done": True,
+                    "turns_used": turn + 1,
+                    "response": f"AI 决策调用失败: {e}",
+                    "preview": None,
+                    "awaiting_confirm": False,
+                    "pending_tool": None,
+                    "observations": observations,
+                    "error": str(e)
+                }
+
+            tool_name = decision.get("tool", "direct_answer")
+            thought = decision.get("thought", "")
+            params = decision.get("params", {})
+            direct_response = decision.get("response", "")
+
+            # direct_answer -> 完成
+            if tool_name == "direct_answer":
+                return {
+                    "success": True,
+                    "done": True,
+                    "turns_used": turn + 1,
+                    "response": direct_response or thought,
+                    "preview": None,
+                    "awaiting_confirm": False,
+                    "pending_tool": None,
+                    "observations": observations,
+                    "error": ""
+                }
+
+            # 获取 Tool 实例
+            tool = ToolRegistry.get(tool_name)
+            if tool is None:
+                obs_msg = f"工具 {tool_name} 不存在"
+                observations.append({"turn": turn + 1, "tool": tool_name, "observation": obs_msg})
+                self.conversation_context.add_observation(tool_name, params, obs_msg, turn + 1)
+                continue
+
+            # Plan 模式拦截非只读工具
+            if mode == 'plan' and tool.permission != PermissionLevel.READONLY:
+                return {
+                    "success": True,
+                    "done": True,
+                    "turns_used": turn + 1,
+                    "response": f"【Plan 模式保护】当前模式仅支持查询操作。如需执行「{tool_name}」，请切换到 Build 模式并经你确认后可执行。",
+                    "preview": None,
+                    "awaiting_confirm": False,
+                    "pending_tool": None,
+                    "observations": observations,
+                    "error": ""
+                }
+
+            # 验证参数
+            valid, err = tool.validate_params(params)
+            if not valid:
+                obs_msg = f"参数验证失败: {err}"
+                observations.append({"turn": turn + 1, "tool": tool_name, "observation": obs_msg})
+                self.conversation_context.add_observation(tool_name, params, obs_msg, turn + 1)
+                continue
+
+            # 执行工具
+            try:
+                tool_result = tool.execute(params, tool_context)
+            except Exception as e:
+                obs_msg = f"工具执行异常: {e}"
+                observations.append({"turn": turn + 1, "tool": tool_name, "observation": obs_msg})
+                self.conversation_context.add_observation(tool_name, params, obs_msg, turn + 1)
+                continue
+
+            # PREVIEW/CONFIRM 权限 + build 模式 -> 暂停等待确认
+            if tool.permission in (PermissionLevel.PREVIEW, PermissionLevel.CONFIRM) and mode == 'build':
+                preview = self.build_action_preview_from_tool_result(tool_result, tool) if tool_result.preview_data else None
+                return {
+                    "success": True,
+                    "done": False,
+                    "turns_used": turn + 1,
+                    "response": tool_result.message or f"需要确认执行 {tool_name}",
+                    "preview": preview,
+                    "awaiting_confirm": True,
+                    "pending_tool": {
+                        "tool": tool_name,
+                        "params": params,
+                        "thought": thought
+                    },
+                    "observations": observations,
+                    "error": ""
+                }
+
+            # READONLY 工具：执行后直接返回结果，不再进行第二轮模型调用
+            if tool.permission == PermissionLevel.READONLY:
+                # 构造格式化回复
+                response = tool_result.message or "查询完成"
+                matched_ids = []
+                if tool_result.data:
+                    data = tool_result.data
+                    matched_count = data.get("matched_count", 0)
+                    matched_ids = data.get("matched_ids", [])
+                    if matched_count > 0 and matched_ids:
+                        # 反查匹配项名称，生成更友好的回复
+                        items = tool_context.get("accounts") or tool_context.get("urls") or []
+                        id_to_name = {}
+                        for item in items:
+                            item_id = getattr(item, 'id', None)
+                            if item_id is not None:
+                                name = getattr(item, 'app_name', None) or getattr(item, 'title', None) or str(item_id)
+                                id_to_name[str(item_id)] = name
+                        
+                        names = []
+                        for mid in matched_ids[:10]:
+                            names.append(id_to_name.get(str(mid), f"ID:{mid}"))
+                        name_list = "、".join(names)
+                        suffix = f"等共 {matched_count} 个" if matched_count > len(names) else f"共 {matched_count} 个"
+                        response = f"找到 {matched_count} 个相关结果：{name_list}（{suffix}）"
+                return {
+                    "success": True,
+                    "done": True,
+                    "turns_used": turn + 1,
+                    "response": response,
+                    "preview": None,
+                    "awaiting_confirm": False,
+                    "pending_tool": None,
+                    "observations": observations,
+                    "error": "",
+                    "matched_ids": matched_ids
+                }
+
+            # 记录 observation 并继续（非 READONLY 工具）
+            obs_record = {
+                "turn": turn + 1,
+                "tool": tool_name,
+                "params": params,
+                "result": {
+                    "success": tool_result.success,
+                    "message": tool_result.message,
+                    "data_summary": str(tool_result.data)[:200] if tool_result.data else ""
+                }
+            }
+            observations.append(obs_record)
+            self.conversation_context.add_observation(tool_name, params, tool_result.message, turn + 1)
+
+        # 达到 max_turns，防循环保护
+        return {
+            "success": False,
+            "done": True,
+            "turns_used": max_turns,
+            "response": "AI 思考轮数已达到上限，未能完成操作。请简化您的指令或分步执行。",
+            "preview": None,
+            "awaiting_confirm": False,
+            "pending_tool": None,
+            "observations": observations,
+            "error": "Max turns reached"
+        }
+
     def _heuristic_reorganize(self, context_items: List[Any], repo) -> List[Dict]:
         """本地启发式分类（模型未返回结构化 changes 时的兜底）"""
         category_keywords = {
@@ -759,6 +999,49 @@ class AIAssistantService:
             "message": f"操作预览：将影响 {affected_count} 个{item_type_name}，请确认后执行。"
         }
     
+    def build_action_preview_from_tool_result(self, tool_result: ToolResult, tool: AITool) -> Dict:
+        """
+        将 Tool 返回的 preview_data 封装为 UI 可用的预览结构。
+
+        做格式校验和默认值填充。
+        """
+        preview_data = tool_result.preview_data or {}
+
+        # 校验必填字段
+        if "operation_type" not in preview_data:
+            preview_data["operation_type"] = "unknown"
+        if "target_vault" not in preview_data:
+            preview_data["target_vault"] = "unknown"
+        if "total_items" not in preview_data:
+            preview_data["total_items"] = 0
+        if "items" not in preview_data or not isinstance(preview_data["items"], list):
+            preview_data["items"] = []
+
+        validated_items = []
+        for item in preview_data["items"]:
+            if not isinstance(item, dict):
+                continue
+            validated_item = {
+                "row_id": str(item.get("row_id", "")),
+                "display_name": item.get("display_name", "未命名"),
+                "secondary_name": item.get("secondary_name", ""),
+                "fields": item.get("fields", []) if isinstance(item.get("fields"), list) else [],
+                "raw_data": item.get("raw_data", {}) if isinstance(item.get("raw_data"), dict) else {}
+            }
+            validated_items.append(validated_item)
+
+        preview_data["items"] = validated_items
+        preview_data["total_items"] = len(validated_items)
+
+        return {
+            "preview_data": preview_data,
+            "tool_name": tool.name,
+            "tool_description": tool.description,
+            "permission": tool.permission.value if hasattr(tool.permission, 'value') else str(tool.permission),
+            "message": tool_result.message or f"{tool.name} 操作预览",
+            "success": tool_result.success
+        }
+    
     def execute_action(self, action: str, params: dict,
                         context_items: List[Any] = None,
                         vault_type: str = 'accounts',
@@ -896,28 +1179,185 @@ class AIAssistantService:
         
         return result
     
-    def execute_build_action_with_transaction(self, action_preview: dict, user_query: str = "") -> Dict:
+    def execute_build_action_with_transaction(self, confirmed_items=None, tool_name=None, user_query="", _force=False):
         """
         Build 模式：在 SQLite 事务中批量执行写操作，并写入审计日志。
-        
-        Args:
-            action_preview: build_action_preview 返回的预览结构
-            user_query: 原始用户查询（用于审计日志）
-            
-        Returns:
-            {
-                "success": bool,
-                "affected_count": int,
-                "affected_ids": list,
-                "transaction_id": str,
-                "error": str
+
+        兼容两种调用方式：
+        1. 新签名：execute_build_action_with_transaction(confirmed_items, tool_name, user_query, _force)
+        2. 旧签名：execute_build_action_with_transaction(action_preview: dict, user_query: str = "")
+        """
+        # 兼容旧签名
+        if isinstance(confirmed_items, dict) and tool_name is None:
+            return self._execute_build_action_with_transaction_legacy(confirmed_items, user_query)
+
+        # 新签名逻辑
+        if not confirmed_items:
+            return {
+                "success": False,
+                "affected_count": 0,
+                "affected_ids": [],
+                "transaction_id": "",
+                "error": "没有可执行的操作项"
             }
+
+        transaction_id = str(uuid.uuid4())[:8]
+        affected_ids = []
+        error_msg = None
+        fail_ids = []
+        success = True
+        result_msg = ""
+
+        print(f"[AIAssistant] execute_build_action_with_transaction starting, items={len(confirmed_items)}, tool={tool_name}")
+
+        if tool_name in ('batch_add_accounts', 'batch_add_urls'):
+            vault_type = 'accounts' if tool_name == 'batch_add_accounts' else 'urls'
+            repo = RepositoryFactory.get_repository(vault_type)
+            for item in confirmed_items:
+                try:
+                    if vault_type == 'accounts':
+                        account = Account(**item)
+                        new_id = repo.insert(account.to_dict())
+                    else:
+                        url_item = URLItem(**item)
+                        new_id = repo.insert(url_item.to_dict())
+                    affected_ids.append(new_id)
+                except Exception as e:
+                    import traceback
+                    traceback.print_exc()
+                    fail_ids.append((item, str(e)))
+            success = len(fail_ids) == 0
+            result_msg = f"批量导入完成：成功 {len(affected_ids)} 条" + (f"，失败 {len(fail_ids)} 条" if fail_ids else "")
+            print(f"[AIAssistant] Batch add completed, success={len(affected_ids)}")
+
+        elif tool_name in ('batch_update_accounts', 'batch_update_urls',
+                           'batch_reorganize_accounts', 'batch_reorganize_urls',
+                           'batch_add_remark_accounts', 'batch_add_remark_urls',
+                           'batch_add_tags_accounts', 'batch_add_tags_urls'):
+            vault_type = 'accounts' if tool_name.endswith('_accounts') else 'urls'
+            repo = RepositoryFactory.get_repository(vault_type)
+            for item in confirmed_items:
+                try:
+                    if 'updates' in item:
+                        target_id = item.get('target_id')
+                        for field, value in item['updates'].items():
+                            repo.update_field(target_id, field, value)
+                        affected_ids.append(target_id)
+                    elif 'field' in item and 'new_value' in item:
+                        target_id = item.get('target_id')
+                        repo.update_field(target_id, item['field'], item['new_value'])
+                        affected_ids.append(target_id)
+                    elif 'remark_type' in item and 'content' in item:
+                        target_id = item.get('target_id')
+                        repo.update_field(target_id, item['remark_type'], item['content'])
+                        affected_ids.append(target_id)
+                    elif 'tags' in item and 'mode' in item:
+                        target_id = item.get('target_id')
+                        existing = repo.get_by_id(target_id)
+                        if existing:
+                            old_tags = repo.get_field_value(existing, 'tags') or []
+                            if not isinstance(old_tags, list):
+                                try:
+                                    old_tags = json.loads(old_tags) if old_tags else []
+                                except:
+                                    old_tags = []
+                            if item['mode'] == 'append':
+                                new_tags = list(set(old_tags + item['tags']))
+                            else:
+                                new_tags = item['tags']
+                            repo.update_field(target_id, 'tags', new_tags)
+                        affected_ids.append(target_id)
+                    else:
+                        # 通用 raw_data 处理
+                        target_id = item.get('target_id')
+                        if target_id:
+                            for field in ['category', 'remark', 'ai_remark', 'tags']:
+                                if field in item:
+                                    repo.update_field(target_id, field, item[field])
+                            affected_ids.append(target_id)
+                except Exception as e:
+                    import traceback
+                    traceback.print_exc()
+                    fail_ids.append((item, str(e)))
+            success = len(fail_ids) == 0
+            result_msg = f"批量更新完成：成功 {len(affected_ids)} 条" + (f"，失败 {len(fail_ids)} 条" if fail_ids else "")
+            print(f"[AIAssistant] Batch update completed, success={len(affected_ids)}")
+
+        elif tool_name in ('batch_delete_accounts', 'batch_delete_urls'):
+            if len(confirmed_items) > 50 and not _force:
+                return {
+                    "success": False,
+                    "needs_confirmation": True,
+                    "affected_count": len(confirmed_items),
+                    "message": f"即将删除 {len(confirmed_items)} 条记录，数量较多，请确认",
+                    "preview": {"items": confirmed_items}
+                }
+
+            for item in confirmed_items:
+                try:
+                    target_id = item.get('target_id')
+                    if tool_name == 'batch_delete_accounts':
+                        original = self.db.get_account_by_id(target_id)
+                        if original:
+                            self.db.soft_delete_account(target_id, original)
+                    else:
+                        original = self.db.get_url_by_id(target_id)
+                        if original:
+                            self.db.soft_delete_url(target_id, original)
+                            if self.url_db:
+                                self.url_db.delete_url(target_id)
+                    affected_ids.append(target_id)
+                except Exception as e:
+                    import traceback
+                    traceback.print_exc()
+                    fail_ids.append((item, str(e)))
+            success = len(fail_ids) == 0
+            result_msg = f"删除完成：成功 {len(affected_ids)} 条" + (f"，失败 {len(fail_ids)} 条" if fail_ids else "")
+            print(f"[AIAssistant] Delete completed, success={len(affected_ids)}")
+
+        else:
+            return {
+                "success": False,
+                "affected_count": 0,
+                "affected_ids": [],
+                "transaction_id": "",
+                "error": f"不支持的 tool_name: {tool_name}"
+            }
+
+        # 写入审计日志
+        try:
+            self.db.insert_audit_log(
+                mode='build',
+                user_query=user_query,
+                parsed_action=tool_name,
+                parsed_params={"tool_name": tool_name, "count": len(confirmed_items)},
+                affected_count=len(affected_ids),
+                affected_ids=affected_ids,
+                result=result_msg,
+                error_message=error_msg,
+                transaction_id=transaction_id
+            )
+        except Exception as e:
+            print(f"[Audit] 写入审计日志失败: {e}")
+
+        return {
+            "success": success,
+            "affected_count": len(affected_ids),
+            "affected_ids": affected_ids,
+            "transaction_id": transaction_id,
+            "result_msg": result_msg,
+            "error": error_msg or "",
+            "fail_ids": fail_ids
+        }
+
+    def _execute_build_action_with_transaction_legacy(self, action_preview: dict, user_query: str = "") -> Dict:
+        """
+        旧版 execute_build_action_with_transaction 实现（兼容保留）。
         """
         preview_items = action_preview.get('preview_items', [])
         action_type = action_preview.get('action_type', '')
         vault_type = action_preview.get('vault_type', 'accounts')
-        
-        # 根据 action_type 确定可执行项的过滤条件和执行逻辑
+
         if action_type in ('reorganize', 'add_remark'):
             executable_items = [item for item in preview_items if 'target_id' in item and 'field' in item]
         elif action_type == 'delete':
@@ -928,7 +1368,7 @@ class AIAssistantService:
             executable_items = [item for item in preview_items if item.get('type') == 'batch_add']
         else:
             executable_items = []
-        
+
         if not executable_items:
             return {
                 "success": False,
@@ -937,19 +1377,18 @@ class AIAssistantService:
                 "transaction_id": "",
                 "error": "没有可执行的操作项"
             }
-        
+
         transaction_id = str(uuid.uuid4())[:8]
         affected_ids = []
         error_msg = None
         fail_ids = []
-        
+
         print(f"[AIAssistant] execute_build_action_with_transaction starting, items={len(executable_items)}, vault={vault_type}")
-        
-        # 删除操作：50条警告 + 逐条独立执行（非事务化）
+
         if action_type == 'delete':
             if not action_preview.get('_force'):
                 target_ids = [item['target_id'] for item in executable_items]
-                
+
                 if len(target_ids) > 50:
                     return {
                         "success": False,
@@ -958,7 +1397,7 @@ class AIAssistantService:
                         "message": f"即将删除 {len(target_ids)} 条记录，数量较多，请确认",
                         "preview": action_preview
                     }
-            
+
             for item in executable_items:
                 target_id = item['target_id']
                 item_vault_type = 'urls' if item.get('item_type') == 'url' else 'accounts'
@@ -968,7 +1407,7 @@ class AIAssistantService:
                     affected_ids.append(target_id)
                 except Exception as e:
                     fail_ids.append((target_id, str(e)))
-            
+
             success = len(fail_ids) == 0
             result_msg = f"删除完成：成功 {len(affected_ids)} 条" + (f"，失败 {len(fail_ids)} 条" if fail_ids else "")
             print(f"[AIAssistant] Delete completed, success={len(affected_ids)}, fail={len(fail_ids)}")
@@ -984,8 +1423,7 @@ class AIAssistantService:
         else:
             repo = RepositoryFactory.get_repository(vault_type)
             item_type_name = repo.get_item_type_name()
-            
-            # 逐条执行（底层 DAO 已自动 commit，无法统一事务控制）
+
             for item in executable_items:
                 try:
                     if action_type in ('reorganize', 'add_remark'):
@@ -995,25 +1433,25 @@ class AIAssistantService:
                         print(f"[AIAssistant] UPDATE id={target_id}, field={field}, new_value={new_value}")
                         repo.update_field(target_id, field, new_value)
                         affected_ids.append(target_id)
-                    
+
                     elif action_type == 'add':
                         fields = item['fields']
                         new_id = repo.insert(fields)
                         affected_ids.append(new_id)
-                
+
                 except Exception as e:
                     import traceback
                     tid = item.get('target_id', item.get('fields', {}).get('app_name', 'unknown'))
                     print(f"[AIAssistant] Item execution failed: {tid}, error={e}")
                     traceback.print_exc()
                     fail_ids.append((tid, str(e)))
-            
+
             success = len(fail_ids) == 0
             result_msg = f"成功执行 {action_type}，共影响 {len(affected_ids)} 个{item_type_name}"
             if fail_ids:
                 result_msg += f"，失败 {len(fail_ids)} 条"
             print(f"[AIAssistant] Execution completed, success={len(affected_ids)}, fail={len(fail_ids)}")
-        
+
         # 写入审计日志
         try:
             self.db.insert_audit_log(
@@ -1029,7 +1467,7 @@ class AIAssistantService:
             )
         except Exception as e:
             print(f"[Audit] 写入审计日志失败: {e}")
-        
+
         return {
             "success": success,
             "affected_count": len(affected_ids),

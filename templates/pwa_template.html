@@ -2,648 +2,1039 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="theme-color" content="#2196F3">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="密码保险箱">
+<meta name="theme-color" content="#F2F2F7">
 <title>密码保险箱</title>
 <style>
-  :root {
-    --primary: #2196F3;
-    --primary-dark: #1976D2;
-    --bg: #f5f5f5;
-    --surface: #ffffff;
-    --text: #333333;
-    --text-secondary: #666666;
-    --error: #f44336;
-    --success: #4CAF50;
-    --border: #e0e0e0;
-    --shadow: 0 2px 8px rgba(0,0,0,0.1);
-  }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-    background: var(--bg);
-    color: var(--text);
-    line-height: 1.5;
-    min-height: 100vh;
-  }
-  .app-header {
-    background: var(--primary);
-    color: white;
-    padding: 16px;
-    position: sticky;
-    top: 0;
-    z-index: 100;
-    box-shadow: var(--shadow);
-  }
-  .app-header h1 {
-    font-size: 18px;
-    font-weight: 600;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .app-header .subtitle {
-    font-size: 12px;
-    opacity: 0.9;
-    margin-top: 2px;
-  }
-  .container {
-    max-width: 600px;
-    margin: 0 auto;
-    padding: 16px;
-  }
-  /* 解锁页 */
-  #unlock-page {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    min-height: calc(100vh - 100px);
-    padding: 24px;
-  }
-  .lock-icon {
-    font-size: 64px;
-    margin-bottom: 16px;
-  }
-  .unlock-title {
-    font-size: 20px;
-    font-weight: 600;
-    margin-bottom: 8px;
-    color: var(--text);
-  }
-  .unlock-desc {
-    font-size: 14px;
-    color: var(--text-secondary);
-    margin-bottom: 24px;
-    text-align: center;
-  }
-  .input-group {
-    width: 100%;
-    max-width: 320px;
-    margin-bottom: 16px;
-  }
-  .input-group label {
-    display: block;
-    font-size: 13px;
-    color: var(--text-secondary);
-    margin-bottom: 6px;
-  }
-  .input-group input {
-    width: 100%;
-    padding: 12px 14px;
-    font-size: 16px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--surface);
-    outline: none;
-    transition: border-color 0.2s;
-  }
-  .input-group input:focus {
-    border-color: var(--primary);
-  }
-  .btn {
-    width: 100%;
-    max-width: 320px;
-    padding: 12px;
-    font-size: 16px;
-    font-weight: 600;
-    color: white;
-    background: var(--primary);
-    border: none;
-    border-radius: 8px;
-    cursor: pointer;
-    transition: background 0.2s;
-  }
-  .btn:active {
-    background: var(--primary-dark);
-  }
-  .btn:disabled {
-    background: #b0b0b0;
-    cursor: not-allowed;
-  }
-  .error-msg {
-    color: var(--error);
-    font-size: 13px;
-    margin-top: 12px;
-    text-align: center;
-    min-height: 20px;
-  }
-  .info-msg {
-    color: var(--text-secondary);
-    font-size: 12px;
-    margin-top: 16px;
-    text-align: center;
-    line-height: 1.6;
-  }
-  /* 主内容页 */
-  #vault-page {
-    display: none;
-  }
-  .toolbar {
-    display: flex;
-    gap: 8px;
-    margin-bottom: 12px;
-    flex-wrap: wrap;
-  }
-  .search-box {
-    flex: 1;
-    min-width: 200px;
-    padding: 10px 12px;
-    font-size: 14px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--surface);
-    outline: none;
-  }
-  .search-box:focus {
-    border-color: var(--primary);
-  }
-  .category-tabs {
-    display: flex;
-    gap: 6px;
-    overflow-x: auto;
-    padding-bottom: 4px;
-    margin-bottom: 12px;
-    -webkit-overflow-scrolling: touch;
-  }
-  .category-tabs::-webkit-scrollbar { display: none; }
-  .tab {
-    padding: 6px 14px;
-    font-size: 13px;
-    border-radius: 16px;
-    border: 1px solid var(--border);
-    background: var(--surface);
-    color: var(--text-secondary);
-    cursor: pointer;
-    white-space: nowrap;
-    transition: all 0.2s;
-  }
-  .tab.active {
-    background: var(--primary);
-    color: white;
-    border-color: var(--primary);
-  }
-  .account-card {
-    background: var(--surface);
-    border-radius: 12px;
-    padding: 14px 16px;
-    margin-bottom: 10px;
-    box-shadow: var(--shadow);
-    border: 1px solid var(--border);
-  }
-  .account-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 8px;
-  }
-  .account-name {
-    font-size: 16px;
-    font-weight: 600;
-    color: var(--text);
-  }
-  .account-category {
-    font-size: 11px;
-    padding: 2px 8px;
-    border-radius: 10px;
-    background: #e3f2fd;
-    color: var(--primary-dark);
-  }
-  .account-field {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 6px 0;
-    border-top: 1px solid #f0f0f0;
-  }
-  .account-field:first-of-type {
-    border-top: none;
-  }
-  .field-label {
-    font-size: 12px;
-    color: var(--text-secondary);
-    min-width: 50px;
-  }
-  .field-value {
-    font-size: 14px;
-    color: var(--text);
-    font-family: "Courier New", monospace;
-    word-break: break-all;
-    flex: 1;
-    text-align: right;
-    margin-left: 8px;
-  }
-  .copy-btn {
-    padding: 4px 10px;
-    font-size: 12px;
-    color: var(--primary);
-    background: #e3f2fd;
-    border: none;
-    border-radius: 4px;
-    cursor: pointer;
-    margin-left: 8px;
-  }
-  .copy-btn:active {
-    background: #bbdefb;
-  }
-  .tags {
-    display: flex;
-    gap: 6px;
-    flex-wrap: wrap;
-    margin-top: 6px;
-  }
-  .tag {
-    font-size: 11px;
-    padding: 2px 8px;
-    border-radius: 10px;
-    background: #f5f5f5;
-    color: var(--text-secondary);
-  }
-  .empty-state {
-    text-align: center;
-    padding: 60px 20px;
-    color: var(--text-secondary);
-  }
-  .empty-state .icon {
-    font-size: 48px;
-    margin-bottom: 12px;
-  }
-  .stats-bar {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    font-size: 12px;
-    color: var(--text-secondary);
-    margin-bottom: 12px;
-  }
-  .lock-btn {
-    padding: 6px 12px;
-    font-size: 12px;
-    color: var(--error);
-    background: #ffebee;
-    border: none;
-    border-radius: 6px;
-    cursor: pointer;
-  }
-  /* 加载动画 */
-  .spinner {
-    width: 24px;
-    height: 24px;
-    border: 2px solid #e0e0e0;
-    border-top-color: var(--primary);
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-    margin: 12px auto;
-    display: none;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  /* Toast */
-  .toast {
-    position: fixed;
-    bottom: 40px;
-    left: 50%;
-    transform: translateX(-50%);
-    background: rgba(0,0,0,0.8);
-    color: white;
-    padding: 10px 20px;
-    border-radius: 20px;
-    font-size: 13px;
-    z-index: 200;
-    opacity: 0;
-    transition: opacity 0.3s;
-    pointer-events: none;
-  }
-  .toast.show { opacity: 1; }
+/* ===== CSS Reset & Design Tokens ===== */
+*, *::before, *::after { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+:root {
+  --ios-blue: #007AFF; --ios-blue-dark: #0056D6;
+  --ios-green: #34C759; --ios-red: #FF3B30; --ios-orange: #FF9500;
+  --ios-gray: #8E8E93; --ios-gray2: #AEAEB2; --ios-gray3: #C7C7CC; --ios-gray4: #D1D1D6; --ios-gray5: #E5E5EA; --ios-gray6: #F2F2F7;
+  --ios-bg: #F2F2F7; --ios-card: #FFFFFF; --ios-label: #000000; --ios-sec-label: #8E8E93;
+  --safe-top: env(safe-area-inset-top, 0px); --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "SF Mono", "Courier New", monospace;
+}
+html, body { width:100%; height:100%; overflow:hidden; background:var(--ios-bg); font-family:var(--font); color:var(--ios-label); -webkit-font-smoothing:antialiased; }
+#app { width:100%; height:100%; position:relative; overflow:hidden; }
+
+/* ===== Animations ===== */
+@keyframes fadeIn { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
+@keyframes fadeInUp { from { opacity:0; transform:translateY(20px); } to { opacity:1; transform:translateY(0); } }
+@keyframes slideInRight { from { opacity:0; transform:translateX(100%); } to { opacity:1; transform:translateX(0); } }
+@keyframes slideOutRight { from { opacity:1; transform:translateX(0); } to { opacity:1; transform:translateX(100%); } }
+@keyframes shake { 0%,100%{transform:translateX(0);} 20%{transform:translateX(-8px);} 40%{transform:translateX(8px);} 60%{transform:translateX(-4px);} 80%{transform:translateX(4px);} }
+@keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.6;} }
+@keyframes spin { to { transform:rotate(360deg); } }
+@keyframes toastIn { from { opacity:0; transform:translate(-50%,20px); } to { opacity:1; transform:translate(-50%,0); } }
+@keyframes toastOut { from { opacity:1; transform:translate(-50%,0); } to { opacity:0; transform:translate(-50%,20px); } }
+.anim-fade { animation:fadeIn .35s cubic-bezier(.32,.72,.6,1); }
+.anim-slide-in { animation:slideInRight .3s cubic-bezier(.32,.72,.6,1); }
+
+/* ===== Screen Container ===== */
+.screen { position:absolute; inset:0; display:flex; flex-direction:column; overflow:hidden; }
+.screen.hidden { display:none; }
+.screen-content { flex:1; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:touch; }
+
+/* ===== Navigation Bar ===== */
+.nav-bar { flex-shrink:0; display:flex; align-items:center; justify-content:center; height:44px; padding:0 16px; position:relative; background:var(--ios-card); border-bottom:0.5px solid var(--ios-gray4); z-index:10; }
+.nav-bar.translucent { background:rgba(255,255,255,.85); backdrop-filter:saturate(180%) blur(20px); -webkit-backdrop-filter:saturate(180%) blur(20px); }
+.nav-bar .nav-back { position:absolute; left:8px; top:50%; transform:translateY(-50%); display:flex; align-items:center; color:var(--ios-blue); font-size:17px; font-weight:400; cursor:pointer; background:none; border:none; padding:4px 8px; font-family:inherit; }
+.nav-bar .nav-back::before { content:""; display:inline-block; width:10px; height:10px; border-left:2.5px solid var(--ios-blue); border-bottom:2.5px solid var(--ios-blue); transform:rotate(45deg); margin-right:2px; }
+.nav-bar .nav-title { font-size:17px; font-weight:600; text-align:center; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:60%; }
+.nav-bar .nav-action { position:absolute; right:16px; top:50%; transform:translateY(-50%); color:var(--ios-blue); font-size:17px; background:none; border:none; font-family:inherit; cursor:pointer; }
+
+/* ===== Search Bar ===== */
+.search-bar { flex-shrink:0; padding:8px 16px; background:var(--ios-card); border-bottom:0.5px solid var(--ios-gray4); }
+.search-bar .search-wrap { display:flex; align-items:center; background:var(--ios-gray6); border-radius:10px; padding:7px 10px; }
+.search-bar .search-wrap svg { width:16px; height:16px; color:var(--ios-gray); flex-shrink:0; margin-right:6px; }
+.search-bar input { flex:1; border:none; background:transparent; font-size:17px; font-family:inherit; outline:none; color:var(--ios-label); }
+.search-bar input::placeholder { color:var(--ios-gray); }
+.search-bar .search-clear { width:18px; height:18px; border-radius:50%; background:var(--ios-gray3); color:#fff; border:none; display:flex; align-items:center; justify-content:center; font-size:12px; cursor:pointer; flex-shrink:0; margin-left:6px; }
+
+/* ===== Bottom Tab Bar ===== */
+.tab-bar { flex-shrink:0; display:flex; align-items:center; justify-content:space-around; height:calc(56px + var(--safe-bottom)); padding-bottom:var(--safe-bottom); background:rgba(255,255,255,.9); backdrop-filter:saturate(180%) blur(20px); -webkit-backdrop-filter:saturate(180%) blur(20px); border-top:0.5px solid var(--ios-gray4); z-index:20; }
+.tab-item { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; height:56px; cursor:pointer; background:none; border:none; font-family:inherit; }
+.tab-item svg { width:24px; height:24px; color:var(--ios-gray); transition:color .2s; }
+.tab-item span { font-size:10px; color:var(--ios-gray); font-weight:500; transition:color .2s; }
+.tab-item.active svg, .tab-item.active span { color:var(--ios-ios-blue); }
+
+/* ===== Lock Screen ===== */
+.lock-screen { background:linear-gradient(160deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); justify-content:center; align-items:center; z-index:100; }
+.lock-screen .lock-content { width:100%; max-width:320px; padding:24px; text-align:center; }
+.lock-screen .lock-icon { width:72px; height:72px; margin:0 auto 24px; background:linear-gradient(135deg, var(--ios-blue) 0%, #5856D6 100%); border-radius:20px; display:flex; align-items:center; justify-content:center; box-shadow:0 8px 32px rgba(0,122,255,.3); }
+.lock-screen .lock-icon svg { width:36px; height:36px; color:#fff; }
+.lock-screen .lock-title { font-size:28px; font-weight:700; color:#fff; margin-bottom:8px; letter-spacing:-0.5px; }
+.lock-screen .lock-subtitle { font-size:15px; color:rgba(255,255,255,.6); margin-bottom:32px; }
+.lock-screen .lock-input-wrap { position:relative; margin-bottom:16px; }
+.lock-screen input[type="password"] { width:100%; height:52px; padding:0 16px; border-radius:12px; border:1px solid rgba(255,255,255,.15); background:rgba(255,255,255,.1); color:#fff; font-size:17px; font-family:inherit; outline:none; transition:border-color .2s; -webkit-appearance:none; }
+.lock-screen input[type="password"]::placeholder { color:rgba(255,255,255,.35); }
+.lock-screen input[type="password"]:focus { border-color:var(--ios-blue); }
+.lock-screen .lock-toggle { position:absolute; right:12px; top:50%; transform:translateY(-50%); background:none; border:none; color:rgba(255,255,255,.5); cursor:pointer; padding:4px; }
+.lock-screen .lock-btn { width:100%; height:52px; border-radius:12px; border:none; background:var(--ios-blue); color:#fff; font-size:17px; font-weight:600; cursor:pointer; font-family:inherit; transition:all .2s; display:flex; align-items:center; justify-content:center; gap:8px; }
+.lock-screen .lock-btn:active { transform:scale(0.97); opacity:0.9; }
+.lock-screen .lock-btn:disabled { opacity:0.5; cursor:not-allowed; }
+.lock-screen .lock-btn .spinner { width:20px; height:20px; border:2px solid rgba(255,255,255,.3); border-top-color:#fff; border-radius:50%; animation:spin .6s linear infinite; display:none; }
+.lock-screen .lock-btn.loading .spinner { display:block; }
+.lock-screen .lock-btn.loading .btn-text { display:none; }
+.lock-screen .lock-info { margin-top:20px; font-size:13px; color:rgba(255,255,255,.35); line-height:1.6; }
+.lock-screen .lock-error { color:var(--ios-red); font-size:14px; margin-top:12px; min-height:20px; animation:shake .4s; }
+.lock-screen .lock-hint { margin-top:24px; padding:16px; background:rgba(255,255,255,.06); border-radius:12px; border:1px solid rgba(255,255,255,.08); }
+.lock-screen .lock-hint-title { font-size:13px; font-weight:600; color:rgba(255,255,255,.5); margin-bottom:8px; display:flex; align-items:center; gap:6px; }
+.lock-screen .lock-hint-title svg { width:14px; height:14px; }
+.lock-screen .lock-hint ul { list-style:none; text-align:left; }
+.lock-screen .lock-hint li { font-size:12px; color:rgba(255,255,255,.35); padding:3px 0; padding-left:16px; position:relative; }
+.lock-screen .lock-hint li::before { content:"•"; position:absolute; left:4px; color:var(--ios-blue); }
+
+/* ===== Category Grid ===== */
+.category-header { padding:16px 16px 8px; }
+.category-header h1 { font-size:28px; font-weight:700; letter-spacing:-0.5px; }
+.category-header .category-count { font-size:15px; color:var(--ios-gray); margin-top:4px; }
+.cat-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; padding:8px 16px 16px; }
+.cat-card { background:var(--ios-card); border-radius:14px; padding:14px; cursor:pointer; transition:all .15s; box-shadow:0 1px 2px rgba(0,0,0,.04); display:flex; flex-direction:column; gap:4px; position:relative; overflow:hidden; }
+.cat-card::after { content:""; position:absolute; top:0; right:0; width:60px; height:60px; background:linear-gradient(135deg, transparent 50%, rgba(0,122,255,.06) 100%); border-radius:0 14px 0 50%; }
+.cat-card:active { transform:scale(0.97); }
+.cat-card .cat-icon { width:40px; height:40px; border-radius:12px; display:flex; align-items:center; justify-content:center; font-size:20px; margin-bottom:4px; }
+.cat-card .cat-name { font-size:15px; font-weight:600; color:var(--ios-label); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.cat-card .cat-count { font-size:13px; color:var(--ios-gray); }
+.cat-card.cat-all .cat-icon { background:linear-gradient(135deg, var(--ios-blue), #5856D6); color:#fff; }
+
+/* ===== Item List ===== */
+.item-list { padding:0 0 16px; }
+.item-group { margin-bottom:16px; }
+.item-group-header { position:sticky; top:0; z-index:5; background:var(--ios-bg); padding:6px 16px; font-size:13px; font-weight:600; color:var(--ios-gray); text-transform:uppercase; letter-spacing:0.5px; backdrop-filter:blur(10px); }
+.item-group-header span { display:inline-block; background:var(--ios-bg); padding:2px 8px; border-radius:6px; }
+.item-cell { display:flex; align-items:center; gap:12px; padding:12px 16px; background:var(--ios-card); border-bottom:0.5px solid var(--ios-gray5); cursor:pointer; transition:background .1s; }
+.item-cell:first-child { border-top:0.5px solid var(--ios-gray4); }
+.item-cell:last-child { border-bottom:0.5px solid var(--ios-gray4); }
+.item-cell:active { background:var(--ios-gray6); }
+.item-cell .item-icon { width:40px; height:40px; border-radius:10px; display:flex; align-items:center; justify-content:center; font-size:17px; font-weight:700; color:#fff; flex-shrink:0; }
+.item-cell .item-info { flex:1; min-width:0; }
+.item-cell .item-title { font-size:16px; font-weight:500; color:var(--ios-label); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.item-cell .item-subtitle { font-size:13px; color:var(--ios-gray); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.item-cell .item-meta { display:flex; align-items:center; gap:6px; flex-shrink:0; }
+.item-cell .item-badge { font-size:10px; font-weight:700; padding:2px 7px; border-radius:20px; }
+.item-cell .item-chevron { color:var(--ios-gray3); font-size:18px; margin-left:2px; }
+
+/* ===== Detail Screen ===== */
+.detail-header { padding:8px 16px 16px; background:var(--ios-card); border-bottom:0.5px solid var(--ios-gray4); }
+.detail-icon { width:64px; height:64px; border-radius:16px; display:flex; align-items:center; justify-content:center; font-size:28px; font-weight:700; color:#fff; margin:0 auto 12px; box-shadow:0 4px 16px rgba(0,0,0,.1); }
+.detail-name { font-size:22px; font-weight:700; text-align:center; }
+.detail-cat { font-size:14px; color:var(--ios-gray); text-align:center; margin-top:4px; }
+
+.detail-section { margin:16px; background:var(--ios-card); border-radius:12px; overflow:hidden; }
+.detail-row { display:flex; align-items:center; padding:12px 16px; border-bottom:0.5px solid var(--ios-gray5); gap:12px; }
+.detail-row:last-child { border-bottom:none; }
+.detail-row .row-icon { width:32px; height:32px; border-radius:8px; background:var(--ios-gray6); display:flex; align-items:center; justify-content:center; color:var(--ios-blue); flex-shrink:0; }
+.detail-row .row-icon svg { width:16px; height:16px; }
+.detail-row .row-content { flex:1; min-width:0; }
+.detail-row .row-label { font-size:12px; color:var(--ios-gray); margin-bottom:1px; }
+.detail-row .row-value { font-size:16px; color:var(--ios-label); word-break:break-all; font-family:var(--font-mono); }
+.detail-row .row-value.password-mask { -webkit-text-security:disc; }
+.detail-row .row-action { flex-shrink:0; background:none; border:none; color:var(--ios-blue); padding:6px; cursor:pointer; border-radius:8px; display:flex; align-items:center; }
+.detail-row .row-action:active { background:var(--ios-gray6); }
+.detail-row .row-action svg { width:20px; height:20px; }
+
+.detail-note { margin:0 16px 16px; padding:12px 16px; background:var(--ios-card); border-radius:12px; }
+.detail-note-label { font-size:12px; color:var(--ios-gray); margin-bottom:4px; }
+.detail-note-text { font-size:15px; color:var(--ios-label); line-height:1.5; white-space:pre-wrap; word-break:break-word; }
+
+/* ===== Empty State ===== */
+.empty-state { display:flex; flex-direction:column; align-items:center; justify-content:center; padding:60px 24px; text-align:center; }
+.empty-state svg { width:56px; height:56px; color:var(--ios-gray3); margin-bottom:16px; }
+.empty-state .empty-title { font-size:17px; font-weight:600; color:var(--ios-gray); }
+.empty-state .empty-desc { font-size:14px; color:var(--ios-gray2); margin-top:6px; }
+
+/* ===== Toast ===== */
+.toast { position:fixed; bottom:80px; left:50%; transform:translateX(-50%); background:rgba(0,0,0,.82); color:#fff; padding:10px 20px; border-radius:20px; font-size:15px; font-weight:500; z-index:9999; pointer-events:none; animation:toastIn .3s ease; backdrop-filter:blur(10px); }
+.toast.out { animation:toastOut .3s ease forwards; }
+
+/* ===== Sub-category Grid ===== */
+.subcat-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; padding:16px; }
+.subcat-card { background:var(--ios-card); border-radius:14px; padding:14px; cursor:pointer; transition:all .15s; box-shadow:0 1px 2px rgba(0,0,0,.04); display:flex; flex-direction:column; gap:4px; position:relative; overflow:hidden; }
+.subcat-card:active { transform:scale(0.97); }
+.subcat-card .subcat-icon { width:36px; height:36px; border-radius:10px; background:var(--ios-gray6); display:flex; align-items:center; justify-content:center; font-size:18px; margin-bottom:4px; }
+.subcat-card .subcat-name { font-size:15px; font-weight:600; color:var(--ios-label); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.subcat-card .subcat-count { font-size:13px; color:var(--ios-gray); }
+
+/* ===== Search Results ===== */
+.search-tabs { display:flex; gap:8px; padding:8px 16px; background:var(--ios-card); border-bottom:0.5px solid var(--ios-gray4); }
+.search-tab { padding:6px 14px; border-radius:8px; font-size:14px; font-weight:500; border:none; background:var(--ios-gray6); color:var(--ios-gray); cursor:pointer; font-family:inherit; }
+.search-tab.active { background:var(--ios-blue); color:#fff; }
+
+/* ===== Scrollbar hide ===== */
+.screen-content::-webkit-scrollbar { display:none; }
+
+/* ===== Responsive ===== */
+@media(min-width:430px){ .cat-grid, .subcat-grid { grid-template-columns:repeat(3,1fr); } }
 </style>
 </head>
 <body>
+<div id="app">
 
-<header class="app-header">
-  <h1>🔐 密码保险箱</h1>
-  <div class="subtitle">离线密包 · 本地解密</div>
-</header>
-
-<div class="container">
-  <!-- 解锁页面 -->
-  <div id="unlock-page">
-    <div class="lock-icon">🔒</div>
-    <div class="unlock-title">密包已加密</div>
-    <div class="unlock-desc">请输入您的主密码以解密查看账号数据</div>
-    <div class="input-group">
-      <label for="master-password">主密码</label>
-      <input type="password" id="master-password" placeholder="输入主密码" autocomplete="off">
+<!-- ===== LOCK SCREEN ===== -->
+<div id="lockScreen" class="screen lock-screen">
+  <div class="lock-content anim-fade">
+    <div class="lock-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
     </div>
-    <button class="btn" id="btn-unlock" onclick="doUnlock()">解密查看</button>
-    <div class="spinner" id="spinner"></div>
-    <div class="error-msg" id="error-msg"></div>
-    <div class="info-msg">
-      💡 此文件完全离线运行，不连接任何服务器<br>
-      所有解密操作均在您的设备本地完成
+    <div class="lock-title">密码保险箱</div>
+    <div class="lock-subtitle">输入主密码以解锁</div>
+    <div class="lock-input-wrap">
+      <input type="password" id="lockInput" placeholder="主密码" autocomplete="off" />
+      <button class="lock-toggle" id="togglePwd" title="显示/隐藏">
+        <svg id="eyeIcon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+      </button>
     </div>
-  </div>
-
-  <!-- 主内容页面 -->
-  <div id="vault-page">
-    <div class="stats-bar">
-      <span id="stats-text">共 0 条</span>
-      <button class="lock-btn" onclick="doLock()">🔒 锁定</button>
+    <button class="lock-btn" id="unlockBtn">
+      <div class="spinner"></div>
+      <span class="btn-text">解锁</span>
+    </button>
+    <div class="lock-error" id="lockError"></div>
+    <div class="lock-info" id="lockInfo"></div>
+    <div class="lock-hint">
+      <div class="lock-hint-title">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+        安全提示
+      </div>
+      <ul>
+        <li>解密过程完全在本地进行</li>
+        <li>密码不会上传到任何服务器</li>
+        <li>关闭页面后数据自动清除</li>
+        <li>请妥善保管您的主密码</li>
+      </ul>
     </div>
-    <div class="toolbar">
-      <input type="text" class="search-box" id="search-input" placeholder="搜索应用名、账号、备注..." oninput="onSearch()">
-    </div>
-    <div class="category-tabs" id="category-tabs">
-      <div class="tab active" data-cat="全部" onclick="filterCategory('全部')">全部</div>
-    </div>
-    <div id="account-list"></div>
   </div>
 </div>
 
-<div class="toast" id="toast"></div>
+<!-- ===== MAIN SCREEN (Categories) ===== -->
+<div id="mainScreen" class="screen hidden">
+  <div class="nav-bar translucent">
+    <span class="nav-title" id="mainTitle">密码库</span>
+  </div>
+  <div class="search-bar">
+    <div class="search-wrap">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+      <input type="text" id="searchInput" placeholder="搜索" readonly />
+    </div>
+  </div>
+  <div class="screen-content" id="mainContent">
+    <div class="category-header">
+      <h1 id="catHeaderTitle">密码库</h1>
+      <div class="category-count" id="catHeaderCount">0 个条目</div>
+    </div>
+    <div class="cat-grid" id="catGrid"></div>
+  </div>
+  <div class="tab-bar">
+    <button class="tab-item active" data-tab="accounts">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+      <span>密码库</span>
+    </button>
+    <button class="tab-item" data-tab="urls">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>
+      <span>网址库</span>
+    </button>
+  </div>
+</div>
+
+<!-- ===== ITEMS LIST SCREEN ===== -->
+<div id="itemsScreen" class="screen hidden">
+  <div class="nav-bar">
+    <button class="nav-back" id="itemsBack">返回</button>
+    <span class="nav-title" id="itemsTitle">条目</span>
+    <span class="nav-action" id="itemsCount"></span>
+  </div>
+  <div class="search-bar" id="itemsSearchBar" style="display:none;">
+    <div class="search-wrap">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+      <input type="text" id="itemsFilterInput" placeholder="搜索当前分类..." />
+      <button class="search-clear" id="itemsFilterClear">&times;</button>
+    </div>
+  </div>
+  <div class="screen-content" id="itemsContent"></div>
+</div>
+
+<!-- ===== SUB-CATEGORY SCREEN ===== -->
+<div id="subcatScreen" class="screen hidden">
+  <div class="nav-bar">
+    <button class="nav-back" id="subcatBack">返回</button>
+    <span class="nav-title" id="subcatTitle">子分类</span>
+  </div>
+  <div class="screen-content" id="subcatContent"></div>
+</div>
+
+<!-- ===== DETAIL SCREEN ===== -->
+<div id="detailScreen" class="screen hidden">
+  <div class="nav-bar">
+    <button class="nav-back" id="detailBack">返回</button>
+    <span class="nav-title">详情</span>
+  </div>
+  <div class="screen-content" id="detailContent"></div>
+</div>
+
+<!-- ===== SEARCH SCREEN ===== -->
+<div id="searchScreen" class="screen hidden">
+  <div class="nav-bar">
+    <button class="nav-back" id="searchBack">取消</button>
+    <span class="nav-title">搜索</span>
+  </div>
+  <div class="search-bar" style="border-bottom:none;">
+    <div class="search-wrap">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+      <input type="text" id="searchRealInput" placeholder="搜索应用名、用户名、网址..." autofocus />
+      <button class="search-clear" id="searchClear">&times;</button>
+    </div>
+  </div>
+  <div class="search-tabs" id="searchTabs">
+    <button class="search-tab active" data-scope="all">全部</button>
+    <button class="search-tab" data-scope="accounts">密码</button>
+    <button class="search-tab" data-scope="urls">网址</button>
+  </div>
+  <div class="screen-content" id="searchContent"></div>
+</div>
+
+</div>
 
 <script>
-  // ==================== 配置数据（由 Python 注入） ====================
-  const ENCRYPTED_DATA = "{{ENCRYPTED_DATA}}";
-  const SALT_BASE64 = "{{SALT_BASE64}}";
-  const GENERATED_AT = "{{GENERATED_AT}}";
-  const ACCOUNT_COUNT = parseInt("{{ACCOUNT_COUNT}}" || "0", 10);
+// ===== TEMPLATE INJECTION (replaced by sync_service.py) =====
+const ENCRYPTED_DATA = "{{ENCRYPTED_DATA}}";
+const SALT_BASE64 = "{{SALT_BASE64}}";
+const GENERATED_AT = "{{GENERATED_AT}}";
+const ACCOUNT_COUNT = parseInt("{{ACCOUNT_COUNT}}", 10) || 0;
+const URL_COUNT = parseInt("{{URL_COUNT}}", 10) || 0;
 
-  // ==================== 全局状态 ====================
-  let accounts = [];
-  let currentCategory = '全部';
-  let searchKeyword = '';
-  let derivedKey = null;
+// ===== STATE =====
+let vault = { accounts: [], urls: [], decrypted: false };
+let currentVault = 'accounts';
+let navStack = [];
+let searchScope = 'all';
 
-  // ==================== WebCrypto 解密 ====================
-  async function deriveKey(password, saltBytes) {
-    const encoder = new TextEncoder();
-    const keyMaterial = await crypto.subtle.importKey(
-      'raw', encoder.encode(password), 'PBKDF2', false, ['deriveKey']
-    );
-    return crypto.subtle.deriveKey(
-      { name: 'PBKDF2', salt: saltBytes, iterations: 100000, hash: 'SHA-256' },
-      keyMaterial,
-      { name: 'AES-GCM', length: 256 },
-      false,
-      ['decrypt']
-    );
+// ===== CRYPTO: PBKDF2 + AES-GCM =====
+async function deriveKey(password, salt) {
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({ name:'PBKDF2', salt, iterations:100000, hash:'SHA-256' }, keyMaterial, { name:'AES-GCM', length:256 }, false, ['decrypt']);
+}
+
+async function decryptData(password, encryptedBase64, saltBase64) {
+  try {
+    const salt = Uint8Array.from(atob(saltBase64), c => c.charCodeAt(0));
+    const combined = Uint8Array.from(atob(encryptedBase64), c => c.charCodeAt(0));
+    // Format: [12-byte nonce | ciphertext | 16-byte tag]
+    const nonce = combined.slice(0, 12);
+    const ciphertext = combined.slice(12);
+    const key = await deriveKey(password, salt);
+    const decrypted = await crypto.subtle.decrypt({ name:'AES-GCM', iv:nonce }, key, ciphertext);
+    const decoder = new TextDecoder();
+    return decoder.decode(decrypted);
+  } catch (e) {
+    throw new Error('密码错误或数据损坏');
   }
+}
 
-  async function decryptData(key, encryptedBase64) {
-    const data = base64ToUint8Array(encryptedBase64);
-    // 格式: nonce (12 bytes) + tag (16 bytes) + ciphertext
-    if (data.length < 28) throw new Error('密文格式无效');
-    const nonce = data.slice(0, 12);
-    const ciphertext = data.slice(12);
-    const decrypted = await crypto.subtle.decrypt(
-      { name: 'AES-GCM', iv: nonce },
-      key,
-      ciphertext
-    );
-    return new TextDecoder().decode(decrypted);
-  }
+// ===== UTILS =====
+function $(s){ return document.querySelector(s); }
+function $all(s){ return document.querySelectorAll(s); }
+function show(id){ $('#'+id).classList.remove('hidden'); }
+function hide(id){ $('#'+id).classList.add('hidden'); }
 
-  function base64ToUint8Array(base64) {
-    const binary = atob(base64);
-    const len = binary.length;
-    const bytes = new Uint8Array(len);
-    for (let i = 0; i < len; i++) {
-      bytes[i] = binary.charCodeAt(i);
+function toast(msg) {
+  const existing = document.querySelector('.toast');
+  if(existing) existing.remove();
+  const t = document.createElement('div');
+  t.className = 'toast'; t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => { t.classList.add('out'); setTimeout(()=>t.remove(), 300); }, 2000);
+}
+
+function generateIconColor(text) {
+  const colors = ['#E57373','#F06292','#BA68C8','#9575CD','#7986CB','#64B5F6','#4FC3F7','#4DD0E1','#4DB6AC','#81C784','#AED581','#FFD54F','#FFB74D','#FF8A65','#A1887F'];
+  let hash = 0;
+  for(let i=0;i<text.length;i++) hash = ((hash<<5)-hash) + text.charCodeAt(i);
+  return colors[Math.abs(hash) % colors.length];
+}
+
+function getInitial(text) {
+  if(!text) return '?';
+  const c = text.charAt(0);
+  return ('\u4e00' <= c && c <= '\u9fff') ? c : c.toUpperCase();
+}
+
+/**
+ * 获取分类图标 — 三层匹配策略
+ * 1. 精确匹配：直接命中分类名称
+ * 2. 关键词匹配：分类名包含关键词
+ * 3. 默认回退：📁
+ */
+function getCategoryIcon(cat) {
+  if (!cat) return '📁';
+  const c = cat.trim();
+
+  // ===== 第1层：精确匹配（覆盖用户已有的全部分类） =====
+  const exactMap = {
+    // 基础
+    '全部': '🔍', '其他': '📦', '一般与其他': '📎',
+
+    // 学术 & 教育（用户图片中的主要分类）
+    '学术考试与学习资料': '📖',
+    '教育与学习': '🎓', '教育': '🎓', '学习': '📚',
+    '学术与研究': '🔬', '研究': '🔬',
+    '考试应试': '📝', '考试': '📝',
+    '在线课程': '🖥️', '课程': '🖥️',
+    '学术技能': '✏️',
+    '校园信息': '🏫',
+
+    // 编程 & 技术（用户图片中的核心分类）
+    '编程学习与工具': '💻', '编程': '💻',
+    '专业与开发': '⚙️',
+    '人工智能与机器学习': '🤖', '人工智能': '🤖', '机器学习': '🧠', 'AI': '🤖',
+    '学术与竞赛资料': '🏆', '竞赛': '🏆',
+    '开发环境与工具': '🛠️', '开发': '🛠️',
+    '算法与数据结构': '📐', '算法': '📐',
+    '系统网络': '🌐', '网络': '🌐', '系统': '⚙️',
+    '语言参考与基础学习': '📘', '语言': '📘',
+    '计算机科学与人工智能': '🧮', '计算机': '🧮',
+
+    // 通用 & 生活
+    '通用信息与生活服务': '🏪', '生活服务': '🏪', '信息': 'ℹ️',
+    '青岛大学': '🏛️', '大学': '🏛️', '学校': '🏫', '校园': '🏫',
+
+    // 政府 & 官方
+    '政府与官方': '🏛️', '政府': '🏛️', '官方': '✅',
+
+    // 工具 & 系统
+    '工具与系统': '🧰', '工具': '🧰', '系统': '⚙️',
+
+    // 通信 & 社交
+    '通信与社交': '📡', '通信': '📡', '社交': '💬',
+
+    // 金融 & 支付
+    '金融与支付': '💳', '金融': '💰', '支付': '💳', '银行': '🏦',
+
+    // 常见互联网分类
+    '即时通讯': '💬', '聊天': '💬', '微信': '💬',
+    '电商': '🛒', '购物': '🛍️', '淘宝': '🛒', '京东': '🛒',
+    '邮箱': '📧', '邮件': '📧', '电子邮件': '📧',
+    '音乐': '🎵', '听歌': '🎵', '音频': '🎵',
+    '视频': '🎬', '影视': '🎬', '电影': '🎬', '短视频': '📱',
+    '游戏': '🎮', '手游': '🎮', '网游': '🎮',
+    '云盘': '☁️', '网盘': '☁️', '存储': '💾',
+    '论坛': '📋', '社区': '👥', '贴吧': '📋',
+    '资讯': '📰', '新闻': '📰', '博客': '✍️',
+    '外卖': '🍜', '美食': '🍔', '餐饮': '🍽️',
+    '旅行': '✈️', '旅游': '🗺️', '出行': '🚗',
+    '健康': '❤️', '医疗': '🏥', '运动': '⚽',
+    '安全': '🔒', '密码': '🔐', '加密': '🔐',
+    '设计': '🎨', '图片': '🖼️', '摄影': '📷',
+    '阅读': '📖', '读书': '📖', '小说': '📚',
+    '地图': '🗺️', '导航': '🧭',
+
+    // 开发细分
+    '代码托管': '📦', 'Git': '📦', 'GitHub': '🐙',
+    '前端': '🌐', '后端': '⚙️', '数据库': '🗄️',
+    '运维': '🖥️', '服务器': '🖥️', '云计算': '☁️',
+    '移动端': '📱', '小程序': '💚', 'iOS': '🍎', '安卓': '🤖',
+
+    // 职业 & 工作
+    '工作': '💼', '办公': '📎', '协作': '🤝',
+    '招聘': '📋', '求职': '💼', '简历': '📄',
+    '法律': '⚖️', '合同': '📜',
+
+    // 其他常用
+    '房产': '🏠', '租房': '🏠', '家居': '🛋️',
+    '汽车': '🚗', '交通': '🚇', '物流': '📦',
+    '宠物': '🐱', '植物': '🌿',
+    '公益': '💚', '志愿': '🤲',
+    '宗教': '⛪', '哲学': '🤔',
+  };
+  if (exactMap[c]) return exactMap[c];
+
+  // ===== 第2层：关键词匹配（处理用户自定义或变体名称） =====
+  const keywordMap = [
+    // 学术 & 教育
+    { keys: ['学术', '考试', '资料', '文献'], icon: '📖' },
+    { keys: ['教育', '学习', '课程', '教学', '培训'], icon: '🎓' },
+    { keys: ['考试', '应试', '考级', '证书'], icon: '📝' },
+    { keys: ['校园', '大学', '高校', '学院', '学校'], icon: '🏫' },
+    { keys: ['研究', '科研', '实验室'], icon: '🔬' },
+    { keys: ['技能', '能力', '素质'], icon: '✏️' },
+
+    // 编程 & 技术
+    { keys: ['编程', '代码', '程序', '软件', '开发', '技术', '工程'], icon: '💻' },
+    { keys: ['人工智能', 'AI', '机器学习', '深度学习', '神经网络', '大模型', 'LLM'], icon: '🤖' },
+    { keys: ['算法', '数据结构', '数学', '计算'], icon: '📐' },
+    { keys: ['网络', '系统', '安全', '黑客'], icon: '🌐' },
+    { keys: ['语言', 'Python', 'Java', 'C++', 'JavaScript', 'Rust', 'Go'], icon: '📘' },
+    { keys: ['计算机', '科学', 'CS'], icon: '🧮' },
+    { keys: ['竞赛', '比赛', '赛'], icon: '🏆' },
+    { keys: ['环境', 'IDE', '编辑器', '工具链', '配置'], icon: '🛠️' },
+
+    // 通用 & 生活
+    { keys: ['通用', '生活', '日常', '服务', '信息'], icon: '🏪' },
+    { keys: ['青岛'], icon: '🏛️' },
+
+    // 政府 & 官方
+    { keys: ['政府', '官方', '国家', '政务', '公共'], icon: '🏛️' },
+
+    // 工具 & 系统
+    { keys: ['工具', '实用', '效率', '辅助'], icon: '🧰' },
+    { keys: ['系统', '平台', '框架', '库'], icon: '⚙️' },
+
+    // 通信 & 社交
+    { keys: ['通信', '通讯', '电信', '运营商', '手机'], icon: '📡' },
+    { keys: ['社交', '聊天', '即时', '消息', '微博'], icon: '💬' },
+
+    // 金融 & 支付
+    { keys: ['金融', '银行', '理财', '投资', '基金', '股票', '保险'], icon: '💰' },
+    { keys: ['支付', '钱包', '收银', '转账'], icon: '💳' },
+
+    // 互联网服务
+    { keys: ['购物', '电商', '买', '卖', '零售', '超市'], icon: '🛒' },
+    { keys: ['邮箱', '邮件', 'Email', 'Gmail'], icon: '📧' },
+    { keys: ['音乐', '歌曲', '音频', '播客'], icon: '🎵' },
+    { keys: ['视频', '影视', '电影', '电视剧', '直播', '短视频', '抖音'], icon: '🎬' },
+    { keys: ['游戏', '手游', '网游', 'Steam', 'PlayStation', 'Switch'], icon: '🎮' },
+    { keys: ['云盘', '网盘', '存储', '备份', '云'], icon: '☁️' },
+    { keys: ['论坛', '社区', '贴吧', '豆瓣', 'Reddit'], icon: '📋' },
+    { keys: ['资讯', '新闻', '媒体', '报社', '广播'], icon: '📰' },
+    { keys: ['博客', '写作', '文章', '专栏', '笔记'], icon: '✍️' },
+    { keys: ['外卖', '美食', '餐饮', '菜谱', '食品'], icon: '🍜' },
+    { keys: ['旅行', '旅游', '酒店', '机票', '景点', '地图'], icon: '✈️' },
+    { keys: ['健康', '医疗', '医院', '药品', '健身', '运动'], icon: '❤️' },
+    { keys: ['安全', '密码', '加密', '认证', '验证', '保护'], icon: '🔒' },
+    { keys: ['设计', '美术', '画', '图', '摄影', '创意', 'Figma'], icon: '🎨' },
+    { keys: ['阅读', '读书', '小说', '文学', '电子书'], icon: '📖' },
+    { keys: ['法律', '法规', '律师', '合同', '知识产权'], icon: '⚖️' },
+    { keys: ['房产', '租房', '买房', '家居', '装修'], icon: '🏠' },
+    { keys: ['汽车', '交通', '出行', '地铁', '公交', '打车'], icon: '🚗' },
+    { keys: ['招聘', '求职', '简历', '工作', '职业', '办公'], icon: '💼' },
+    { keys: ['公益', '慈善', '志愿', '环保'], icon: '💚' },
+    { keys: ['其他', '杂项', '未分类', '一般'], icon: '📎' },
+  ];
+
+  for (const rule of keywordMap) {
+    for (const kw of rule.keys) {
+      if (c.includes(kw)) return rule.icon;
     }
-    return bytes;
   }
 
-  // ==================== UI 交互 ====================
-  async function doUnlock() {
-    const passwordInput = document.getElementById('master-password');
-    const btn = document.getElementById('btn-unlock');
-    const spinner = document.getElementById('spinner');
-    const errorEl = document.getElementById('error-msg');
-    const password = passwordInput.value.trim();
+  // ===== 第3层：按首字推测 =====
+  const firstCharMap = {
+    '学': '📖', '教': '🎓', '考': '📝', '校': '🏫',
+    '编': '💻', '程': '💻', '码': '💻', '计': '🧮',
+    '金': '💰', '银': '🏦', '钱': '💰', '财': '💰',
+    '社': '💬', '聊': '💬', '通': '📡', '信': '📡',
+    '购': '🛒', '商': '🛍️', '买': '🛒', '卖': '🛒',
+    '工': '🧰', '具': '🧰',
+    '游': '🎮', '戏': '🎮', '玩': '🎮',
+    '音': '🎵', '乐': '🎵', '歌': '🎵',
+    '影': '🎬', '视': '🎬', '剧': '🎬',
+    '新': '📰', '闻': '📰', '资': '📰',
+    '邮': '📧', '箱': '📧',
+    '美': '🍔', '食': '🍜', '餐': '🍽️',
+    '旅': '✈️', '行': '✈️', '游': '✈️',
+    '医': '🏥', '健': '❤️', '药': '💊',
+    '读': '📖', '书': '📖',
+    '政': '🏛️', '法': '⚖️',
+    '艺': '🎨', '画': '🎨', '设': '🎨',
+    '公': '💚', '善': '💚',
+  };
+  const firstChar = c.charAt(0);
+  if (firstCharMap[firstChar]) return firstCharMap[firstChar];
 
-    if (!password) {
-      showError('请输入主密码');
-      return;
+  // ===== 最终回退 =====
+  return '📁';
+}
+
+function parseCategory(catStr) {
+  if(!catStr) return { level1:'其他', level2:'' };
+  const parts = catStr.split('>');
+  return { level1: parts[0].trim()||'其他', level2: parts[1]?.trim()||'' };
+}
+
+function buildCategoryTree(items) {
+  const tree = { '全部': { count: items.length, icon: '🔍', subs: {} } };
+  items.forEach(item => {
+    const cat = parseCategory(item.category);
+    if(!tree[cat.level1]) tree[cat.level1] = { count:0, icon:getCategoryIcon(cat.level1), subs:{} };
+    tree[cat.level1].count++;
+    if(cat.level2) {
+      if(!tree[cat.level1].subs[cat.level2]) tree[cat.level1].subs[cat.level2] = { count:0, icon:getCategoryIcon(cat.level2) };
+      tree[cat.level1].subs[cat.level2].count++;
     }
+  });
+  return tree;
+}
 
-    btn.disabled = true;
-    spinner.style.display = 'block';
-    errorEl.textContent = '';
+// ===== SCREEN NAVIGATION =====
+function pushScreen(screenId, builder) {
+  navStack.push({ screen: screenId, scroll: $('.screen:not(.hidden) .screen-content')?.scrollTop||0 });
+  $all('.screen').forEach(s => s.classList.add('hidden'));
+  show(screenId);
+  if(builder) builder();
+  const sc = $(`#${screenId} .screen-content`);
+  if(sc) sc.scrollTop = 0;
+}
 
-    try {
-      const saltBytes = base64ToUint8Array(SALT_BASE64);
-      derivedKey = await deriveKey(password, saltBytes);
-      const jsonText = await decryptData(derivedKey, ENCRYPTED_DATA);
-      accounts = JSON.parse(jsonText);
-      showVault();
-    } catch (e) {
-      console.error(e);
-      showError('密码错误或解密失败，请确认主密码是否正确');
-      derivedKey = null;
-    } finally {
-      btn.disabled = false;
-      spinner.style.display = 'none';
-    }
+function popScreen() {
+  const prev = navStack.pop();
+  $all('.screen').forEach(s => s.classList.add('hidden'));
+  if(prev) {
+    show(prev.screen);
+    setTimeout(() => { const sc = $(`#${prev.screen} .screen-content`); if(sc) sc.scrollTop = prev.scroll; }, 10);
+  } else {
+    show('mainScreen');
   }
+}
 
-  function showError(msg) {
-    document.getElementById('error-msg').textContent = msg;
+// ===== RENDER: Lock Screen =====
+function initLockScreen() {
+  $('#lockInfo').textContent = `生成时间：${GENERATED_AT}  |  ${ACCOUNT_COUNT} 条账号 + ${URL_COUNT} 条网址`;
+  $('#lockInput').addEventListener('keydown', e => { if(e.key==='Enter') doUnlock(); });
+  $('#unlockBtn').addEventListener('click', doUnlock);
+  $('#togglePwd').addEventListener('click', () => {
+    const inp = $('#lockInput');
+    const isPwd = inp.type === 'password';
+    inp.type = isPwd ? 'text' : 'password';
+  });
+}
+
+async function doUnlock() {
+  const pwd = $('#lockInput').value.trim();
+  const btn = $('#unlockBtn');
+  const err = $('#lockError');
+  if(!pwd) { err.textContent = '请输入主密码'; return; }
+  btn.classList.add('loading'); btn.disabled = true; err.textContent = '';
+  try {
+    const jsonStr = await decryptData(pwd, ENCRYPTED_DATA, SALT_BASE64);
+    const payload = JSON.parse(jsonStr);
+    vault.accounts = payload.accounts || [];
+    vault.urls = payload.urls || [];
+    vault.decrypted = true;
+    $('#lockInput').value = '';
+    hide('lockScreen');
+    show('mainScreen');
+    renderMainScreen();
+  } catch(e) {
+    err.textContent = e.message || '密码错误，请重试';
+    $('#lockInput').value = '';
+    $('#lockInput').focus();
+  } finally {
+    btn.classList.remove('loading'); btn.disabled = false;
   }
+}
 
-  function showVault() {
-    document.getElementById('unlock-page').style.display = 'none';
-    document.getElementById('vault-page').style.display = 'block';
-    document.title = '密码保险箱 - 已解锁';
-    renderCategories();
-    renderAccounts();
-    updateStats();
-  }
+// ===== RENDER: Main Screen (Category Grid) =====
+function renderMainScreen() {
+  const items = currentVault === 'accounts' ? vault.accounts : vault.urls;
+  const tree = buildCategoryTree(items);
 
-  function doLock() {
-    accounts = [];
-    derivedKey = null;
-    currentCategory = '全部';
-    searchKeyword = '';
-    document.getElementById('vault-page').style.display = 'none';
-    document.getElementById('unlock-page').style.display = 'flex';
-    document.getElementById('master-password').value = '';
-    document.getElementById('error-msg').textContent = '';
-    document.title = '密码保险箱';
-  }
+  $('#mainTitle').textContent = currentVault === 'accounts' ? '密码库' : '网址库';
+  $('#catHeaderTitle').textContent = currentVault === 'accounts' ? '密码库' : '网址库';
+  $('#catHeaderCount').textContent = `${items.length} 个${currentVault === 'accounts' ? '账号' : '网址'}`;
 
-  function showToast(msg) {
-    const toast = document.getElementById('toast');
-    toast.textContent = msg;
-    toast.classList.add('show');
-    setTimeout(() => toast.classList.remove('show'), 2000);
-  }
+  // Update tab bar
+  $all('.tab-item').forEach(t => t.classList.toggle('active', t.dataset.tab === currentVault));
 
-  // ==================== 账号列表渲染 ====================
-  function renderCategories() {
-    const tabs = document.getElementById('category-tabs');
-    const categories = new Set(['全部']);
-    accounts.forEach(a => { if (a.category) categories.add(a.category); });
-    const catArray = Array.from(categories);
-    // 保持顺序：全部优先
-    catArray.sort((a, b) => {
-      if (a === '全部') return -1;
-      if (b === '全部') return 1;
-      return a.localeCompare(b, 'zh-CN');
+  const grid = $('#catGrid');
+  grid.innerHTML = '';
+
+  // "All" card
+  const allCard = document.createElement('div');
+  allCard.className = 'cat-card cat-all';
+  allCard.innerHTML = `<div class="cat-icon">${getCategoryIcon('全部')}</div><div class="cat-name">全部</div><div class="cat-count">${items.length} 个</div>`;
+  allCard.addEventListener('click', () => openItemsList('全部', items));
+  grid.appendChild(allCard);
+
+  // Level-1 categories (sort by zh-CN pinyin)
+  Object.keys(tree).filter(k => k !== '全部').sort((a, b) => a.localeCompare(b, 'zh-CN')).forEach(cat => {
+    const info = tree[cat];
+    const hasSubs = Object.keys(info.subs).length > 0;
+    const card = document.createElement('div');
+    card.className = 'cat-card';
+    card.style.setProperty('--cat-accent', generateIconColor(cat));
+    card.innerHTML = `<div class="cat-icon" style="background:${generateIconColor(cat)}20;color:${generateIconColor(cat)};">${info.icon}</div><div class="cat-name">${cat}</div><div class="cat-count">${info.count} 个</div>`;
+    card.addEventListener('click', () => {
+      if(hasSubs) {
+        openSubCategories(cat, info.subs, items);
+      } else {
+        openItemsList(cat, items.filter(i => parseCategory(i.category).level1 === cat));
+      }
     });
-    tabs.innerHTML = catArray.map(cat =>
-      `<div class="tab ${cat === currentCategory ? 'active' : ''}" data-cat="${escapeHtml(cat)}" onclick="filterCategory('${escapeHtml(cat)}')">${escapeHtml(cat)}</div>`
-    ).join('');
+    grid.appendChild(card);
+  });
+}
+
+// ===== RENDER: Sub-Category Screen =====
+function openSubCategories(parentCat, subs, allItems) {
+  pushScreen('subcatScreen', () => {
+    $('#subcatTitle').textContent = parentCat;
+    const content = $('#subcatContent');
+    content.innerHTML = '';
+
+    const grid = document.createElement('div');
+    grid.className = 'subcat-grid anim-fade';
+
+    // "All in this category" card
+    const allCard = document.createElement('div');
+    allCard.className = 'subcat-card';
+    const parentCount = allItems.filter(i => parseCategory(i.category).level1 === parentCat).length;
+    allCard.innerHTML = `<div class="subcat-icon" style="background:${generateIconColor(parentCat)}20;color:${generateIconColor(parentCat)};">${getCategoryIcon(parentCat)}</div><div class="subcat-name">全部</div><div class="subcat-count">${parentCount} 个</div>`;
+    allCard.addEventListener('click', () => openItemsList(parentCat, allItems.filter(i => parseCategory(i.category).level1 === parentCat)));
+    grid.appendChild(allCard);
+
+    Object.keys(subs).sort((a, b) => a.localeCompare(b, 'zh-CN')).forEach(sub => {
+      const info = subs[sub];
+      const card = document.createElement('div');
+      card.className = 'subcat-card';
+      card.innerHTML = `<div class="subcat-icon" style="background:${generateIconColor(sub)}20;color:${generateIconColor(sub)};">${info.icon}</div><div class="subcat-name">${sub}</div><div class="subcat-count">${info.count} 个</div>`;
+      card.addEventListener('click', () => {
+        const subItems = allItems.filter(i => {
+          const c = parseCategory(i.category);
+          return c.level1 === parentCat && c.level2 === sub;
+        });
+        openItemsList(`${parentCat} > ${sub}`, subItems);
+      });
+      grid.appendChild(card);
+    });
+
+    content.appendChild(grid);
+  });
+}
+
+// ===== RENDER: Items List Screen =====
+function openItemsList(title, items) {
+  pushScreen('itemsScreen', () => {
+    $('#itemsTitle').textContent = title;
+    $('#itemsCount').textContent = `${items.length} 个`;
+    $('#itemsSearchBar').style.display = '';
+    renderItemsList(items);
+  });
+}
+
+function renderItemsList(items, containerId = 'itemsContent') {
+  const container = $(`#${containerId}`);
+  container.innerHTML = '';
+
+  if(items.length === 0) {
+    container.innerHTML = `<div class="empty-state"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg><div class="empty-title">暂无数据</div><div class="empty-desc">该分类下没有条目</div></div>`;
+    return;
   }
 
-  function filterCategory(cat) {
-    currentCategory = cat;
-    renderCategories();
-    renderAccounts();
-    updateStats();
+  const isAccount = currentVault === 'accounts' || (items.length > 0 && items[0].app_name !== undefined);
+
+  // Sort using precomputed _alpha_key / _sort_key (same logic as main_window.py)
+  const sorted = [...items].sort((a, b) => {
+    const ga = (a._alpha_key || '#') === '#' ? 1 : 0;
+    const gb = (b._alpha_key || '#') === '#' ? 1 : 0;
+    if (ga !== gb) return ga - gb;
+    const sa = (a._sort_key || '').toLowerCase();
+    const sb = (b._sort_key || '').toLowerCase();
+    return sa.localeCompare(sb, 'zh-CN');
+  });
+
+  // Group by _alpha_key
+  const groups = {};
+  sorted.forEach(item => {
+    const key = item._alpha_key || '#';
+    if(!groups[key]) groups[key] = [];
+    groups[key].push(item);
+  });
+
+  // Sort keys: A-Z first, # last
+  const sortedKeys = Object.keys(groups).sort((a, b) => {
+    if (a === '#') return 1;
+    if (b === '#') return -1;
+    return a.localeCompare(b);
+  });
+
+  sortedKeys.forEach(letter => {
+    const header = document.createElement('div');
+    header.className = 'item-group-header';
+    header.innerHTML = `<span>${letter}</span>`;
+    container.appendChild(header);
+
+    const group = document.createElement('div');
+    group.className = 'item-group';
+    groups[letter].forEach(item => {
+      const cell = createItemCell(item, isAccount);
+      group.appendChild(cell);
+    });
+    container.appendChild(group);
+  });
+}
+
+function createItemCell(item, isAccount) {
+  const cell = document.createElement('div');
+  cell.className = 'item-cell';
+  const name = isAccount ? (item.app_name || '未命名') : (item.title || '未命名');
+  const subtitle = isAccount ? maskUsername(item.username || '') : (item.url || '');
+  const color = generateIconColor(name);
+  const initial = getInitial(name);
+  const cat = item.category || '其他';
+  const catShort = cat.split('>').pop().trim();
+
+  let badges = '';
+  if(item.security_level) {
+    const colors = { '弱':'#FF3B30','中':'#FF9500','强':'#34C759','极强':'#007AFF' };
+    const c = colors[item.security_level] || '#8E8E93';
+    badges += `<span class="item-badge" style="background:${c}18;color:${c};">${item.security_level}</span>`;
   }
 
-  function onSearch() {
-    searchKeyword = document.getElementById('search-input').value.trim().toLowerCase();
-    renderAccounts();
-    updateStats();
-  }
+  cell.innerHTML = `
+    <div class="item-icon" style="background:${color};">${initial}</div>
+    <div class="item-info">
+      <div class="item-title">${name}</div>
+      <div class="item-subtitle">${subtitle}</div>
+    </div>
+    <div class="item-meta">
+      <span class="item-badge" style="background:var(--ios-gray6);color:var(--ios-gray);">${catShort}</span>
+      ${badges}
+      <span class="item-chevron">›</span>
+    </div>
+  `;
+  cell.addEventListener('click', () => openDetail(item, isAccount));
+  return cell;
+}
 
-  function getFilteredAccounts() {
-    let list = accounts;
-    if (currentCategory !== '全部') {
-      list = list.filter(a => a.category === currentCategory);
-    }
-    if (searchKeyword) {
-      const kw = searchKeyword;
-      list = list.filter(a =>
-        (a.app_name && a.app_name.toLowerCase().includes(kw)) ||
-        (a.username && a.username.toLowerCase().includes(kw)) ||
-        (a.remark && a.remark.toLowerCase().includes(kw)) ||
-        (a.url && a.url.toLowerCase().includes(kw))
-      );
-    }
-    return list;
-  }
+function maskUsername(username) {
+  if(!username) return '';
+  if(username.length <= 4) return username.charAt(0) + '***';
+  return username.substring(0, 2) + '***' + username.substring(username.length - 2);
+}
 
-  function renderAccounts() {
-    const container = document.getElementById('account-list');
-    const list = getFilteredAccounts();
-    if (list.length === 0) {
-      container.innerHTML = `
-        <div class="empty-state">
-          <div class="icon">📭</div>
-          <div>暂无账号</div>
-        </div>`;
-      return;
-    }
-    container.innerHTML = list.map(acc => renderAccountCard(acc)).join('');
-  }
+// ===== RENDER: Detail Screen =====
+function openDetail(item, isAccount) {
+  pushScreen('detailScreen', () => {
+    const container = $('#detailContent');
+    const name = isAccount ? (item.app_name || '未命名') : (item.title || '未命名');
+    const color = generateIconColor(name);
+    const initial = getInitial(name);
+    const cat = item.category || '其他';
 
-  function renderAccountCard(acc) {
-    const tags = parseTags(acc.tags);
-    const tagsHtml = tags.length
-      ? `<div class="tags">${tags.map(t => `<span class="tag">${escapeHtml(t)}</span>`).join('')}</div>`
-      : '';
+    let rows = '';
+    if(isAccount) {
+      rows += makeDetailRow('user', '用户名', item.username || '-', true);
+      rows += makeDetailRow('key', '密码', item.password || '-', true, true);
+    }
+    if(item.url) rows += makeDetailRow('link', '网址', item.url, true);
+    rows += makeDetailRow('tag', '分类', cat, false);
+    if(item.tags) rows += makeDetailRow('hash', '标签', typeof item.tags === 'string' ? item.tags : JSON.stringify(item.tags), false);
 
-    let fields = '';
-    if (acc.username) {
-      fields += makeField('账号', acc.username, `copyText('${escapeJs(acc.username)}', '账号')`);
-    }
-    if (acc.password) {
-      fields += makeField('密码', maskText(acc.password), `copyText('${escapeJs(acc.password)}', '密码')`, true);
-    }
-    if (acc.url) {
-      fields += makeField('网址', acc.url, `copyText('${escapeJs(acc.url)}', '网址')`);
-    }
-    if (acc.remark) {
-      fields += `<div class="account-field"><span class="field-label">备注</span><span class="field-value" style="font-family:inherit;">${escapeHtml(acc.remark)}</span></div>`;
+    let securityBadge = '';
+    if(item.security_level) {
+      const sc = { '弱':'#FF3B30','中':'#FF9500','强':'#34C759','极强':'#007AFF' };
+      const c = sc[item.security_level] || '#8E8E93';
+      securityBadge = `<span class="item-badge" style="background:${c}18;color:${c};font-size:13px;padding:4px 12px;">安全等级：${item.security_level}</span>`;
     }
 
-    return `
-      <div class="account-card">
-        <div class="account-header">
-          <div class="account-name">${escapeHtml(acc.app_name || '未命名')}</div>
-          <div class="account-category">${escapeHtml(acc.category || '其他')}</div>
-        </div>
-        ${fields}
-        ${tagsHtml}
+    let noteSection = '';
+    if(item.remark) {
+      noteSection = `<div class="detail-note"><div class="detail-note-label">备注</div><div class="detail-note-text">${escapeHtml(item.remark)}</div></div>`;
+    }
+
+    container.innerHTML = `
+      <div class="detail-header">
+        <div class="detail-icon" style="background:${color};">${initial}</div>
+        <div class="detail-name">${name}</div>
+        <div class="detail-cat">${cat}</div>
+        ${securityBadge ? `<div style="text-align:center;margin-top:8px;">${securityBadge}</div>` : ''}
       </div>
+      <div class="detail-section">${rows}</div>
+      ${noteSection}
+      <div style="height:32px;"></div>
     `;
-  }
+  });
+}
 
-  function makeField(label, value, copyAction, isPassword = false) {
-    const display = isPassword ? maskText(value) : escapeHtml(value);
-    return `
-      <div class="account-field">
-        <span class="field-label">${escapeHtml(label)}</span>
-        <span class="field-value">${display}</span>
-        <button class="copy-btn" onclick="${copyAction}">复制</button>
-      </div>
-    `;
-  }
+function makeDetailRow(icon, label, value, copyable, isPassword) {
+  const icons = {
+    user:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+    key:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.778 7.778 5.5 5.5 0 017.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>',
+    link:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>',
+    tag:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>',
+    hash:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/></svg>'
+  };
+  const valueClass = isPassword ? 'row-value password-mask' : 'row-value';
+  const copyBtn = copyable
+    ? `<button class="row-action" onclick="copyText(this, '${escapeJs(value)}')" title="复制"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg></button>`
+    : '';
+  const toggleBtn = isPassword
+    ? `<button class="row-action" onclick="togglePassword(this)" title="显示/隐藏"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>`
+    : '';
+  return `<div class="detail-row">
+    <div class="row-icon">${icons[icon]||icons.tag}</div>
+    <div class="row-content">
+      <div class="row-label">${label}</div>
+      <div class="${valueClass}" data-value="${escapeHtml(value)}">${escapeHtml(value)}</div>
+    </div>
+    ${toggleBtn}${copyBtn}
+  </div>`;
+}
 
-  function maskText(text) {
-    if (!text) return '';
-    if (text.length <= 4) return '•'.repeat(text.length);
-    return text.slice(0, 2) + '•'.repeat(text.length - 4) + text.slice(-2);
-  }
+function escapeHtml(t){ const d=document.createElement('div'); d.textContent=t; return d.innerHTML; }
+function escapeJs(t){ return (t||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/\n/g,'\\n').replace(/\r/g,''); }
 
-  function parseTags(tags) {
-    if (!tags) return [];
-    if (Array.isArray(tags)) return tags;
-    try {
-      const parsed = JSON.parse(tags);
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
-    }
-  }
+function copyText(btn, text) {
+  navigator.clipboard?.writeText(text).then(() => toast('已复制'))
+    .catch(() => { const ta=document.createElement('textarea'); ta.value=text; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); toast('已复制'); });
+}
 
-  function updateStats() {
-    const filtered = getFilteredAccounts();
-    const total = accounts.length;
-    const text = currentCategory === '全部' && !searchKeyword
-      ? `共 ${total} 条`
-      : `显示 ${filtered.length} / ${total} 条`;
-    document.getElementById('stats-text').textContent = text;
-  }
+function togglePassword(btn) {
+  const valEl = btn.parentElement.querySelector('.row-value');
+  valEl.classList.toggle('password-mask');
+  btn.style.color = valEl.classList.contains('password-mask') ? 'var(--ios-blue)' : 'var(--ios-green)';
+}
 
-  async function copyText(text, label) {
-    try {
-      await navigator.clipboard.writeText(text);
-      showToast(`已复制${label}`);
-    } catch (e) {
-      // 降级方案
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      ta.style.position = 'fixed';
-      ta.style.opacity = '0';
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand('copy');
-      document.body.removeChild(ta);
-      showToast(`已复制${label}`);
-    }
-  }
-
-  function escapeHtml(text) {
-    if (text === null || text === undefined) return '';
-    const div = document.createElement('div');
-    div.textContent = String(text);
-    return div.innerHTML;
-  }
-
-  function escapeJs(str) {
-    if (!str) return '';
-    return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
-  }
-
-  // ==================== 初始化 ====================
-  document.addEventListener('DOMContentLoaded', () => {
-    // 回车解锁
-    document.getElementById('master-password').addEventListener('keypress', (e) => {
-      if (e.key === 'Enter') doUnlock();
+// ===== SEARCH =====
+function initSearch() {
+  // Main screen search tap -> open search screen
+  $('#searchInput').addEventListener('focus', () => {
+    $('#searchInput').blur();
+    pushScreen('searchScreen', () => {
+      $('#searchRealInput').value = '';
+      setTimeout(() => $('#searchRealInput').focus(), 100);
+      renderSearchResults('');
     });
   });
+
+  // Real-time search
+  let searchDebounce;
+  $('#searchRealInput').addEventListener('input', e => {
+    clearTimeout(searchDebounce);
+    searchDebounce = setTimeout(() => renderSearchResults(e.target.value.trim()), 150);
+  });
+
+  // Search tabs
+  $all('#searchTabs .search-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      $all('#searchTabs .search-tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      searchScope = tab.dataset.scope;
+      renderSearchResults($('#searchRealInput').value.trim());
+    });
+  });
+
+  $('#searchClear').addEventListener('click', () => { $('#searchRealInput').value=''; renderSearchResults(''); $('#searchRealInput').focus(); });
+  $('#searchBack').addEventListener('click', () => { popScreen(); });
+}
+
+function renderSearchResults(query) {
+  const container = $('#searchContent');
+  container.innerHTML = '';
+
+  let items = [];
+  if(searchScope === 'all' || searchScope === 'accounts') items = items.concat(vault.accounts.map(i => ({...i, _type:'account'})));
+  if(searchScope === 'all' || searchScope === 'urls') items = items.concat(vault.urls.map(i => ({...i, _type:'url'})));
+
+  if(!query) {
+    container.innerHTML = `<div class="empty-state" style="padding-top:80px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg><div class="empty-title">输入关键词搜索</div><div class="empty-desc">搜索应用名、用户名、网址等</div></div>`;
+    return;
+  }
+
+  const q = query.toLowerCase();
+  const filtered = items.filter(i => {
+    const name = (i.app_name || i.title || '').toLowerCase();
+    const user = (i.username || '').toLowerCase();
+    const url = (i.url || '').toLowerCase();
+    const cat = (i.category || '').toLowerCase();
+    return name.includes(q) || user.includes(q) || url.includes(q) || cat.includes(q);
+  });
+
+  if(filtered.length === 0) {
+    container.innerHTML = `<div class="empty-state" style="padding-top:60px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M8 8l8 8"/><path d="M16 8l-8 8"/></svg><div class="empty-title">未找到结果</div><div class="empty-desc">换个关键词试试</div></div>`;
+    return;
+  }
+
+  // Sort search results using _alpha_key / _sort_key
+  filtered.sort((a, b) => {
+    const ga = (a._alpha_key || '#') === '#' ? 1 : 0;
+    const gb = (b._alpha_key || '#') === '#' ? 1 : 0;
+    if (ga !== gb) return ga - gb;
+    const sa = (a._sort_key || '').toLowerCase();
+    const sb = (b._sort_key || '').toLowerCase();
+    return sa.localeCompare(sb, 'zh-CN');
+  });
+
+  const list = document.createElement('div');
+  list.className = 'item-list';
+  filtered.forEach(item => {
+    const isAccount = item._type === 'account';
+    const cell = createItemCell(item, isAccount);
+    list.appendChild(cell);
+  });
+  container.appendChild(list);
+}
+
+// ===== ITEMS FILTER =====
+function initItemsFilter() {
+  let debounce;
+  $('#itemsFilterInput').addEventListener('input', e => {
+    clearTimeout(debounce);
+    debounce = setTimeout(() => {
+      const q = e.target.value.trim().toLowerCase();
+      const itemsScreen = $('#itemsScreen');
+      const currentItems = itemsScreen._currentItems || [];
+      if(!q) {
+        renderItemsList(currentItems);
+        return;
+      }
+      const filtered = currentItems.filter(i => {
+        const name = ((i.app_name || i.title || '')).toLowerCase();
+        const user = ((i.username || '')).toLowerCase();
+        return name.includes(q) || user.includes(q);
+      });
+      renderItemsList(filtered);
+    }, 150);
+  });
+  $('#itemsFilterClear').addEventListener('click', () => { $('#itemsFilterInput').value=''; $('#itemsFilterInput').dispatchEvent(new Event('input')); });
+}
+
+// ===== NAVIGATION BINDINGS =====
+function initNav() {
+  // Tab switching
+  $all('.tab-item').forEach(tab => {
+    tab.addEventListener('click', () => {
+      currentVault = tab.dataset.tab;
+      renderMainScreen();
+      navStack = [];
+    });
+  });
+
+  // Back buttons
+  $('#itemsBack').addEventListener('click', popScreen);
+  $('#subcatBack').addEventListener('click', popScreen);
+  $('#detailBack').addEventListener('click', popScreen);
+
+  // Override items list render to store current items for filtering
+  const origOpenItems = openItemsList;
+  openItemsList = function(title, items) {
+    pushScreen('itemsScreen', () => {
+      $('#itemsTitle').textContent = title;
+      $('#itemsCount').textContent = `${items.length} 个`;
+      $('#itemsSearchBar').style.display = '';
+      $('#itemsScreen')._currentItems = items;
+      $('#itemsFilterInput').value = '';
+      renderItemsList(items);
+    });
+  };
+}
+
+// ===== INITIALIZATION =====
+function init() {
+  initLockScreen();
+  initSearch();
+  initItemsFilter();
+  initNav();
+}
+
+// Wait for fonts and DOM
+document.addEventListener('DOMContentLoaded', init);
 </script>
 </body>
 </html>

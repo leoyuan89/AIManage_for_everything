@@ -628,14 +628,18 @@ class ActionPreviewWidget(QFrame):
         self.table.setHorizontalHeaderLabels(headers)
         self.table.setRowCount(len(rows))
         
-        # 确定哪一列是可编辑的"新值"列
-        editable_col = -1
-        if operation_type == 'update':
-            editable_col = 5  # 新值列
+        # 确定可编辑列
+        # add 类型：所有数据列都可编辑（除勾选框和序号）
+        # 其他类型：按 editable_col 单列编辑
+        editable_cols = set()
+        if operation_type == 'add':
+            editable_cols = {2, 3, 4, 5, 6, 7}  # 应用名、用户名、密码、网址、分类、备注
+        elif operation_type == 'update':
+            editable_cols = {5}  # 新值列
         elif operation_type == 'reorganize':
-            editable_col = 4  # 新分类列
+            editable_cols = {4}  # 新分类列
         elif operation_type == 'classify':
-            editable_col = 4  # 建议分类列
+            editable_cols = {4}  # 建议分类列
         
         for i, (row_data, raw) in enumerate(zip(rows, raw_data_list)):
             for j, val in enumerate(row_data):
@@ -644,8 +648,7 @@ class ActionPreviewWidget(QFrame):
                     cell.setFlags(cell.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                     cell.setCheckState(Qt.CheckState.Checked)
                     cell.setData(Qt.ItemDataRole.UserRole, raw)
-                elif j == editable_col:
-                    # 新值列允许编辑
+                elif j in editable_cols:
                     cell.setFlags(cell.flags() | Qt.ItemFlag.ItemIsEditable)
                 else:
                     cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -674,16 +677,17 @@ class ActionPreviewWidget(QFrame):
         raw_data_list = []
         
         if operation_type == 'add':
-            headers = ['☑', '序号', '应用名/标题', '用户名/URL', '密码', '分类', '备注']
+            headers = ['☑', '序号', '应用名', '用户名', '密码', '网址', '分类', '备注']
             for idx, item in enumerate(items, 1):
                 raw = item.get("raw_data", {}) or {}
                 fields = {f.get("field_name", ""): f.get("new_value", "") for f in item.get("fields", [])}
                 rows.append([
                     '', str(idx), item.get("display_name", ""),
-                    item.get("secondary_name", ""),
-                    fields.get("密码", raw.get("password", "")),
-                    raw.get("category", "其他"),
-                    raw.get("remark", ""),
+                    raw.get("username", fields.get("用户名", "")),
+                    raw.get("password", fields.get("密码", "")),
+                    raw.get("url", fields.get("网址", "")),
+                    raw.get("category", fields.get("分类", "其他")),
+                    raw.get("remark", fields.get("备注", "")),
                 ])
                 raw_data_list.append(raw)
         
@@ -751,8 +755,7 @@ class ActionPreviewWidget(QFrame):
         return headers, rows, raw_data_list
     
     def _is_password_column(self, operation_type: str, col: int, headers: list) -> bool:
-        if operation_type == 'add' and 0 <= col < len(headers):
-            return headers[col] == '密码'
+        # 预览时密码显示明文，方便用户确认
         return False
     
     def get_confirmed_items(self) -> List[Dict]:
@@ -891,8 +894,18 @@ class ActionPreviewWidget(QFrame):
             return
         new_val = edited_item.text()
         updated = False
-
-        if (self._is_build_mode and self._preview_data
+        
+        op_type = self._preview_data.get("operation_type") if self._preview_data else None
+        
+        if op_type == 'add':
+            # add 类型：按列映射到字段名
+            col_to_field = {2: 'app_name', 3: 'username', 4: 'password',
+                            5: 'url', 6: 'category', 7: 'remark'}
+            field = col_to_field.get(col)
+            if field:
+                raw[field] = new_val
+                updated = True
+        elif (self._is_build_mode and self._preview_data
                 and self._preview_data.get("operation_type") == "classify"):
             raw['new_value'] = new_val
             updated = True
@@ -946,6 +959,209 @@ class ActionPreviewWidget(QFrame):
         elif self.action == 'add':
             return f"影响范围：新增 {selected_count} 条记录 | 操作类型：创建"
         return f"影响范围：{selected_count}/{total_count} 条记录 | 操作类型：批量更新 ({self.action})"
+
+
+class CategoryTreeWidget(QTreeWidget):
+    """支持受限制拖拽排序的分类树
+    
+    - 一级分类：只能在顶层之间移动
+    - 二级分类：只能在同一父节点下移动，禁止跨父节点
+    """
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._dragging_item = None
+        self._edit_mode = False
+        self._normal_style = ""
+    
+    def set_normal_style(self, style: str):
+        """保存正常模式下的样式表，用于退出编辑模式时恢复"""
+        self._normal_style = style
+        if not self._edit_mode:
+            self.setStyleSheet(style)
+    
+    def set_edit_mode(self, enabled: bool):
+        self._edit_mode = enabled
+        if enabled:
+            self.setDragEnabled(True)
+            self.setAcceptDrops(True)
+            self.viewport().setAcceptDrops(True)
+            self.setDragDropMode(QTreeWidget.DragDropMode.InternalMove)
+            self.setDefaultDropAction(Qt.DropAction.MoveAction)
+            # 编辑模式样式：拖拽指示器更明显
+            self.setStyleSheet("""
+                QTreeWidget {
+                    background-color: #f5f5f5;
+                    border: none;
+                    outline: none;
+                }
+                QTreeWidget::item {
+                    height: 38px;
+                    padding-left: 12px;
+                    border-radius: 6px;
+                    margin: 2px 6px;
+                    border: 1px dashed transparent;
+                }
+                QTreeWidget::item:selected {
+                    background-color: #e3f2fd;
+                    color: #1976D2;
+                    border: 1px dashed #90CAF9;
+                }
+                QTreeWidget::item:hover {
+                    background-color: #eeeeee;
+                }
+            """)
+        else:
+            self.setDragEnabled(False)
+            self.setAcceptDrops(False)
+            self.viewport().setAcceptDrops(False)
+            self.setDragDropMode(QTreeWidget.DragDropMode.NoDragDrop)
+            self.setDefaultDropAction(Qt.DropAction.IgnoreAction)
+            # 恢复正常样式
+            self.setStyleSheet(self._normal_style)
+    
+    def startDrag(self, supportedActions):
+        self._dragging_item = self.currentItem()
+        super().startDrag(supportedActions)
+    
+    def dragMoveEvent(self, event):
+        if not self._edit_mode or not self._dragging_item:
+            event.ignore()
+            return
+
+        source_item = self._dragging_item
+        source_parent = source_item.parent()
+
+        pos = event.position().toPoint()
+        target_item = self.itemAt(pos)
+        drop_indicator = self.dropIndicatorPosition()
+
+        # 先计算原始 target_parent
+        if target_item:
+            if drop_indicator == QTreeWidget.DropIndicatorPosition.OnItem:
+                target_parent = target_item
+            elif drop_indicator in (QTreeWidget.DropIndicatorPosition.AboveItem,
+                                    QTreeWidget.DropIndicatorPosition.BelowItem):
+                target_parent = target_item.parent() or self.invisibleRootItem()
+            else:
+                target_parent = self.invisibleRootItem()
+        else:
+            target_parent = self.invisibleRootItem()
+
+        # 修正 OnItem：同级排序时 target_parent 应视为父容器
+        if source_parent is None:                       # 一级分类
+            if (target_item and target_item.parent() is None and
+                    drop_indicator == QTreeWidget.DropIndicatorPosition.OnItem):
+                target_parent = self.invisibleRootItem()
+        else:                                           # 二级分类
+            if (target_item and target_item.parent() == source_parent and
+                    drop_indicator == QTreeWidget.DropIndicatorPosition.OnItem):
+                target_parent = source_parent
+
+        # 规则检查
+        if source_parent is None:
+            if target_parent != self.invisibleRootItem():
+                event.ignore()
+                return
+        else:
+            if target_parent != source_parent:
+                event.ignore()
+                return
+
+        event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        if not self._edit_mode or not self._dragging_item:
+            event.ignore()
+            return
+
+        source_item = self._dragging_item
+        source_parent = source_item.parent()
+
+        # 计算目标位置
+        pos = event.position().toPoint()
+        target_item = self.itemAt(pos)
+        drop_indicator = self.dropIndicatorPosition()
+
+        if target_item:
+            if drop_indicator == QTreeWidget.DropIndicatorPosition.OnItem:
+                target_parent = target_item
+                target_row = 0
+            elif drop_indicator == QTreeWidget.DropIndicatorPosition.AboveItem:
+                target_parent = target_item.parent() or self.invisibleRootItem()
+                target_row = target_parent.indexOfChild(target_item)
+            elif drop_indicator == QTreeWidget.DropIndicatorPosition.BelowItem:
+                target_parent = target_item.parent() or self.invisibleRootItem()
+                target_row = target_parent.indexOfChild(target_item) + 1
+            else:
+                target_parent = self.invisibleRootItem()
+                target_row = self.topLevelItemCount()
+        else:
+            target_parent = self.invisibleRootItem()
+            target_row = self.topLevelItemCount()
+
+        # 修正 OnItem：同级排序时按 BelowItem 处理
+        if source_parent is None:                       # 一级分类
+            if (target_item and target_item.parent() is None and
+                    drop_indicator == QTreeWidget.DropIndicatorPosition.OnItem):
+                target_parent = self.invisibleRootItem()
+                target_row = self.invisibleRootItem().indexOfChild(target_item) + 1
+        else:                                           # 二级分类
+            if (target_item and target_item.parent() == source_parent and
+                    drop_indicator == QTreeWidget.DropIndicatorPosition.OnItem):
+                target_parent = source_parent
+                target_row = source_parent.indexOfChild(target_item) + 1
+
+        # 规则限制
+        if source_parent is None:
+            if target_parent != self.invisibleRootItem():
+                event.ignore()
+                self._dragging_item = None
+                return
+        else:
+            if target_parent != source_parent:
+                event.ignore()
+                self._dragging_item = None
+                return
+
+        # 拒绝 Qt 默认 drop 处理，避免其内部 drag 清理逻辑与手动移动冲突
+        event.ignore()
+
+        # 延迟到下一帧再执行移动，等 Qt drag 状态完全结束
+        _source_item = source_item
+        _source_parent = source_parent
+        _target_parent = target_parent
+        _target_row = target_row
+
+        def do_move():
+            if _source_parent is None:
+                old_row = self.indexOfTopLevelItem(_source_item)
+                if old_row < 0:
+                    return
+                taken = self.takeTopLevelItem(old_row)
+                if taken is None:
+                    return
+                tr = _target_row
+                if old_row < tr:
+                    tr -= 1
+                self.insertTopLevelItem(tr, taken)
+                self.setCurrentItem(taken)
+            else:
+                old_row = _source_parent.indexOfChild(_source_item)
+                if old_row < 0:
+                    return
+                taken = _source_parent.takeChild(old_row)
+                if taken is None:
+                    return
+                tr = _target_row
+                if old_row < tr:
+                    tr -= 1
+                _target_parent.insertChild(tr, taken)
+                self.setCurrentItem(taken)
+            self.viewport().update()
+
+        QTimer.singleShot(0, do_move)
+        self._dragging_item = None
 
 
 class MainWindow(QMainWindow):
@@ -1240,7 +1456,7 @@ class MainWindow(QMainWindow):
         left_layout.addLayout(category_header)
         
         # 分类树
-        self.category_tree = QTreeWidget()
+        self.category_tree = CategoryTreeWidget()
         self.category_tree.setFrameShape(QFrame.Shape.NoFrame)
         self.category_tree.setHeaderHidden(True)
         self.category_tree.setColumnCount(1)
@@ -1294,6 +1510,7 @@ class MainWindow(QMainWindow):
                 border: 2px solid #2196F3;
             }
         """
+        self.category_tree.set_normal_style(self._category_tree_normal_style)
         self.category_tree.setStyleSheet(self._category_tree_normal_style)
         self.category_tree.itemClicked.connect(self._on_category_clicked)
         self.category_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -1452,7 +1669,19 @@ class MainWindow(QMainWindow):
         font.setPointSize(13)
         font.setBold(True)
         lbl_ai_title.setFont(font)
-        lbl_ai_title.setStyleSheet("color: #E55A2B;")
+        lbl_ai_title.setStyleSheet("""
+            QLabel {
+                color: #E55A2B;
+                padding: 2px 4px;
+            }
+            QLabel:hover {
+                color: #c94d22;
+                text-decoration: underline;
+            }
+        """)
+        lbl_ai_title.setCursor(Qt.CursorShape.PointingHandCursor)
+        lbl_ai_title.setToolTip("点击查看 炽阳 使用说明")
+        lbl_ai_title.mousePressEvent = lambda e: self.on_ai_show_help()
         ai_header.addWidget(lbl_ai_title)
         ai_header.addStretch()
         
@@ -2035,12 +2264,14 @@ class MainWindow(QMainWindow):
                 continue
             
             display_text = f"{parent_name} ({count})"
+            if edit_mode:
+                display_text = f"☰  {display_text}"
             parent_item = QTreeWidgetItem(self.category_tree)
             parent_item.setText(0, display_text)
             parent_item.setData(0, Qt.ItemDataRole.UserRole, parent_name)
             
             if edit_mode:
-                parent_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                parent_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsDragEnabled)
             elif cat_sel_mode:
                 if parent_name != '全部':
                     parent_item.setFlags(parent_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
@@ -2049,16 +2280,19 @@ class MainWindow(QMainWindow):
                     else:
                         parent_item.setCheckState(0, Qt.CheckState.Unchecked)
             
-            # 添加子节点
-            for child_name in sorted(info['children']):
+            # 添加子节点（已按自定义排序排好序）
+            for child_name in info['children']:
                 full_path = f"{parent_name}>{child_name}"
                 child_count = self._get_category_count(full_path)
+                child_text = f"{child_name} ({child_count})"
+                if edit_mode:
+                    child_text = f"☰  {child_text}"
                 child_item = QTreeWidgetItem(parent_item)
-                child_item.setText(0, f"{child_name} ({child_count})")
+                child_item.setText(0, child_text)
                 child_item.setData(0, Qt.ItemDataRole.UserRole, full_path)
                 
                 if edit_mode:
-                    child_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                    child_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsDragEnabled)
                 elif cat_sel_mode:
                     child_item.setFlags(child_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                     if full_path in self._selected_categories:
@@ -2081,31 +2315,39 @@ class MainWindow(QMainWindow):
             # 进入编辑模式
             self.btn_category_sort.setText("✓")
             self.btn_category_sort.setToolTip("完成")
-            # 树形结构下不启用拖拽，仅做视觉展示
-            self.category_tree.setDragDropMode(QTreeWidget.DragDropMode.NoDragDrop)
+            # 启用受限制的拖拽排序
+            self.category_tree.set_edit_mode(True)
             # 刷新显示
             self._reload_categories()
         else:
-            # 退出编辑模式，保存顺序（仅保存一级节点顺序）
+            # 退出编辑模式，保存顺序（一级 + 二级）
             self._save_category_order()
-            self.btn_category_sort.setText("☰")
+            self.btn_category_sort.setText("排序")
             self.btn_category_sort.setToolTip("编辑分类顺序")
-            self.category_tree.setDragDropMode(QTreeWidget.DragDropMode.NoDragDrop)
+            self.category_tree.set_edit_mode(False)
             # 刷新显示
             self._reload_categories()
     
     def _save_category_order(self):
-        """保存分类自定义排序到数据库（仅保存一级节点顺序）"""
+        """保存分类自定义排序到数据库（支持一级 + 二级节点）"""
         orders = {}
-        idx = 0
+        idx_top = 0
         root = self.category_tree.invisibleRootItem()
         for i in range(root.childCount()):
             item = root.child(i)
             category = item.data(0, Qt.ItemDataRole.UserRole)
             if category == '全部':
                 continue
-            orders[category] = idx
-            idx += 1
+            orders[category] = idx_top
+            idx_top += 1
+            
+            # 保存二级分类顺序
+            idx_child = 0
+            for j in range(item.childCount()):
+                child_item = item.child(j)
+                child_cat = child_item.data(0, Qt.ItemDataRole.UserRole)
+                orders[child_cat] = idx_child
+                idx_child += 1
         
         if self.current_vault == 'accounts':
             self.account_service.save_category_orders(orders)
@@ -2442,30 +2684,46 @@ class MainWindow(QMainWindow):
             return
         
         if action == action_rename:
-            new_name, ok = QInputDialog.getText(self, "重命名分类", "新名称：", text=category)
-            if ok and new_name and new_name != category:
-                new_name = new_name.strip()
-                from core.category_utils import validate_category_name
-                if not validate_category_name(new_name):
-                    QMessageBox.warning(self, "提示", "分类名不能包含 /、>、· 或首尾空格")
-                    return
-                
-                if is_parent_node:
-                    # 一级节点：批量修改前缀
+            if is_parent_node:
+                # 一级分类：直接编辑完整名称
+                new_name, ok = QInputDialog.getText(self, "重命名分类", "新名称：", text=category)
+                if ok and new_name and new_name != category:
+                    new_name = new_name.strip()
+                    from core.category_utils import validate_category_name
+                    if not validate_category_name(new_name):
+                        QMessageBox.warning(self, "提示", "分类名不能包含 /、>、· 或首尾空格")
+                        return
                     self._rename_parent_category(category, new_name)
-                else:
-                    # 二级节点：精确匹配修改
+                    self._reload_categories()
+                    self._cache_dirty = True
+                    self._url_cache_dirty = True
+                    if self.current_category == category:
+                        self.current_category = new_name
+                    self.load_accounts() if self.current_vault == 'accounts' else self.load_urls()
+            else:
+                # 二级分类：只编辑子类名
+                parent_data = parent.data(0, Qt.ItemDataRole.UserRole)
+                child_name = category.split('>', 1)[1] if '>' in category else category
+                new_child, ok = QInputDialog.getText(self, "重命名子类", "新名称：", text=child_name)
+                if ok and new_child and new_child.strip():
+                    new_child = new_child.strip()
+                    if new_child == child_name:
+                        return
+                    from core.category_utils import validate_category_name, format_category_path
+                    if not validate_category_name(new_child):
+                        QMessageBox.warning(self, "提示", "子分类名不能包含 /、>、· 或首尾空格")
+                        return
+                    new_name = format_category_path(parent_data, new_child)
                     if self.current_vault == 'accounts':
                         self.account_service.rename_category(category, new_name)
                     else:
                         self._url_service.rename_category(category, new_name)
-                
-                self._reload_categories()
-                self._cache_dirty = True
-                self._url_cache_dirty = True
-                if self.current_category == category:
-                    self.current_category = new_name
-                self.load_accounts() if self.current_vault == 'accounts' else self.load_urls()
+                    self._reload_categories()
+                    self._cache_dirty = True
+                    self._url_cache_dirty = True
+                    if self.current_category == category:
+                        self.current_category = new_name
+                    self.load_accounts() if self.current_vault == 'accounts' else self.load_urls()
         
         elif action == action_delete:
             # 获取该分类下条目数量
@@ -2480,7 +2738,7 @@ class MainWindow(QMainWindow):
             else:
                 reply = QMessageBox.question(
                     self, "删除分类",
-                    f'删除分类 "{category}"？\n该分类下的 {count} 个条目将移至"其他"。',
+                    f'删除分类 "{category}"？\n该分类下的 {count} 个条目将保留一级分类，去掉二级分类。',
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
                 )
             
@@ -2605,9 +2863,8 @@ class MainWindow(QMainWindow):
                 else:
                     url_item = self._url_service.get_url(item_id)
                     if url_item:
-                        # 网址回收站存在主数据库中：先备份到主库回收站，再删除网址表记录
-                        self.db.soft_delete_url(item_id, url_item.to_dict())
-                        self._url_db.delete_url(item_id)
+                        # 网址库独立回收站
+                        self._url_db.soft_delete_url(item_id, url_item.to_dict())
                         deleted += 1
             except Exception as e:
                 print(f"[BatchDelete] Failed to delete {item_id}: {e}")
@@ -3534,12 +3791,18 @@ class MainWindow(QMainWindow):
             # 高亮显示受影响的账号（删除操作除外，已移入回收站）
             if tool_name not in ('batch_delete_accounts', 'batch_delete_urls'):
                 try:
-                    affected_ids = []
-                    for item in confirmed_items:
-                        if isinstance(item, dict):
-                            item_id = item.get('target_id') or item.get('row_id')
-                            if item_id:
-                                affected_ids.append(int(item_id))
+                    # 优先使用 result 中返回的 affected_ids（新增/修改操作会返回）
+                    affected_ids = result.get('affected_ids', [])
+                    if not affected_ids:
+                        # 回退：从 confirmed_items 中提取 target_id/row_id
+                        for item in confirmed_items:
+                            if isinstance(item, dict):
+                                item_id = item.get('target_id') or item.get('row_id')
+                                if item_id:
+                                    try:
+                                        affected_ids.append(int(item_id))
+                                    except ValueError:
+                                        pass
                     if affected_ids:
                         self.highlight_matched_accounts(affected_ids, query_text="AI本次修改")
                 except Exception as e:
@@ -3805,7 +4068,7 @@ class MainWindow(QMainWindow):
             context = self.account_service.get_all_accounts()
             vault_type = 'accounts'
         else:
-            context = self.url_service.get_all_urls()
+            context = self._url_service.get_all_urls()
             vault_type = 'urls'
         
         # 启动后台线程执行 AI 查询（避免 GPU 满载阻塞主线程）
@@ -4234,7 +4497,8 @@ class MainWindow(QMainWindow):
             print("[DEBUG-HL] empty matched_ids, return")
             return
         
-        self._highlight_matched_ids = set(matched_ids)
+        # 统一转为字符串集合，避免 LLM 返回的字符串 ID 与 SQLite 整数 ID 类型不匹配
+        self._highlight_matched_ids = {str(m) for m in matched_ids}
         
         # 禁用更新避免大量 paint/layout 事件阻塞事件循环
         print("[DEBUG-HL] setUpdatesEnabled(False)")
@@ -4256,8 +4520,8 @@ class MainWindow(QMainWindow):
             use_badges = False
         
         print(f"[DEBUG-HL] all_items={len(all_items)}")
-        matched_items = [item for item in all_items if getattr(item, 'id', None) in matched_ids]
-        unmatched_items = [item for item in all_items if getattr(item, 'id', None) not in matched_ids]
+        matched_items = [item for item in all_items if str(getattr(item, 'id', None)) in self._highlight_matched_ids]
+        unmatched_items = [item for item in all_items if str(getattr(item, 'id', None)) not in self._highlight_matched_ids]
         print(f"[DEBUG-HL] matched={len(matched_items)}, unmatched={len(unmatched_items)}")
         
         # 隐藏列表标题（筛选信息已在横幅中显示）
@@ -4295,7 +4559,7 @@ class MainWindow(QMainWindow):
                 else:
                     widget = ItemWidget(item_obj, badges=badges, selection_mode=self._selection_mode)
                 
-                if self._selection_mode and getattr(item_obj, 'id', None) in self._selected_ids:
+                if self._selection_mode and str(getattr(item_obj, 'id', None)) in {str(s) for s in self._selected_ids}:
                     if hasattr(widget, 'set_checked'):
                         widget.set_checked(True)
                 # 增强边框高亮
@@ -4334,7 +4598,7 @@ class MainWindow(QMainWindow):
                 print(f"[DEBUG-HL]   create ItemWidget")
                 widget = ItemWidget(item_obj, selection_mode=self._selection_mode)
                 
-                if self._selection_mode and getattr(item_obj, 'id', None) in self._selected_ids:
+                if self._selection_mode and str(getattr(item_obj, 'id', None)) in {str(s) for s in self._selected_ids}:
                     if hasattr(widget, 'set_checked'):
                         widget.set_checked(True)
                 # 降低可见度
@@ -4485,6 +4749,253 @@ class MainWindow(QMainWindow):
         self._ai_interacted = False
         self._ai_update_chat_display()
     
+    def on_ai_show_help(self):
+        """显示 炽阳 使用说明对话框"""
+        from PyQt6.QtWidgets import (
+            QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+            QPushButton, QScrollArea, QFrame, QWidget
+        )
+        from PyQt6.QtCore import Qt
+
+        # 排查：局部类 vs 模块级类
+        class LocalHelpDialog(QDialog):
+            def __init__(self, parent=None):
+                super().__init__(parent)
+                self.setWindowTitle("炽阳 使用说明")
+                self.setMinimumSize(540, 620)
+                self.resize(580, 700)
+
+                main_layout = QVBoxLayout(self)
+                main_layout.setContentsMargins(0, 0, 0, 0)
+                main_layout.setSpacing(0)
+
+                header = QWidget()
+                h_layout = QVBoxLayout(header)
+                h_layout.setContentsMargins(32, 24, 32, 16)
+                h_layout.setSpacing(4)
+                lbl_title = QLabel("炽阳")
+                lbl_title.setStyleSheet("color: #1d1d1f; font-size: 22px; font-weight: 600;")
+                h_layout.addWidget(lbl_title)
+                lbl_sub = QLabel("你的本地密码库 AI 助手")
+                lbl_sub.setStyleSheet("color: #86868b; font-size: 14px;")
+                h_layout.addWidget(lbl_sub)
+                main_layout.addWidget(header)
+
+                sep = QFrame()
+                sep.setFrameShape(QFrame.Shape.HLine)
+                sep.setFixedHeight(1)
+                sep.setStyleSheet("background-color: #e5e5e5;")
+                main_layout.addWidget(sep)
+
+                scroll = QScrollArea()
+                scroll.setWidgetResizable(True)
+                scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+                content = QWidget()
+                c_layout = QVBoxLayout(content)
+                c_layout.setContentsMargins(32, 20, 32, 12)
+                c_layout.setSpacing(0)
+                c_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+                intro = QLabel("基于 Ollama + gemma4:4b 本地运行，数据不会上传云端。\n"
+                               "支持 Plan（只读查询）与 Build（确认后执行）两种模式。")
+                intro.setWordWrap(True)
+                intro.setStyleSheet("color: #86868b; font-size: 13px; line-height: 1.7; padding-bottom: 24px;")
+                c_layout.addWidget(intro)
+
+                # Plan
+                plan_header = QHBoxLayout()
+                plan_header.setSpacing(10)
+                plan_badge = QLabel("Plan")
+                plan_badge.setStyleSheet("color: #0071e3; background-color: #e8f4fd; font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 12px;")
+                plan_name = QLabel("规划模式")
+                plan_name.setStyleSheet("color: #1d1d1f; font-size: 17px; font-weight: 600;")
+                plan_header.addWidget(plan_badge)
+                plan_header.addWidget(plan_name)
+                plan_header.addStretch()
+                c_layout.addLayout(plan_header)
+
+                desc_plan = QLabel("仅查询和分析现有数据，不会修改、添加或删除任何内容。")
+                desc_plan.setWordWrap(True)
+                desc_plan.setStyleSheet("color: #86868b; font-size: 13px; padding-top: 4px; padding-bottom: 18px;")
+                c_layout.addWidget(desc_plan)
+
+                features_plan = [
+                    ("语义搜索", "用自然语言描述你想找的内容，炽阳会理解意图并返回相关结果。",
+                     ["帮我找一下跟学习有关的账号", "有哪些支付类的网站"]),
+                    ("条件筛选", "按分类、标签等条件精确筛选条目。",
+                     ["列出分类是工作>开发工具的所有账号", "筛选标签包含「支付」的网址"]),
+                    ("分类与统计", "查看当前库的分类结构、统计信息和最近变更记录。",
+                     ["看一下我有哪些分类", "统计一下密码库里有多少条数据", "最近修改了哪些账号"]),
+                    ("密码强度检测", "分析密码强度等级，仅做检测不保存。",
+                     ["检测一下这个密码强不强：MyP@ssw0rd"]),
+                ]
+                for title, desc, examples in features_plan:
+                    lbl_title = QLabel(title)
+                    lbl_title.setStyleSheet("color: #1d1d1f; font-size: 15px; font-weight: 500; padding-bottom: 4px; padding-top: 2px;")
+                    c_layout.addWidget(lbl_title)
+                    lbl_desc = QLabel(desc)
+                    lbl_desc.setWordWrap(True)
+                    lbl_desc.setStyleSheet("color: #86868b; font-size: 13px; padding-bottom: 8px;")
+                    c_layout.addWidget(lbl_desc)
+                    card = QWidget()
+                    card.setObjectName("helpCard")
+                    card.setStyleSheet("""
+                        #helpCard {
+                            background-color: #ffffff;
+                            border-radius: 10px;
+                            border: 1px solid #e8e8ed;
+                        }
+                    """)
+                    card_layout = QVBoxLayout(card)
+                    card_layout.setContentsMargins(14, 12, 14, 12)
+                    card_layout.setSpacing(6)
+                    for ex in examples:
+                        ex_lbl = QLabel(f'"{ex}"')
+                        ex_lbl.setWordWrap(True)
+                        ex_lbl.setStyleSheet("color: #515154; font-size: 13px; line-height: 1.7;")
+                        card_layout.addWidget(ex_lbl)
+                    c_layout.addWidget(card)
+                    c_layout.addSpacing(18)
+
+                c_layout.addSpacing(24)
+                div = QFrame()
+                div.setFrameShape(QFrame.Shape.HLine)
+                div.setFixedHeight(1)
+                div.setStyleSheet("background-color: #e5e5e5;")
+                c_layout.addWidget(div)
+                c_layout.addSpacing(24)
+
+                # Build
+                build_header = QHBoxLayout()
+                build_header.setSpacing(10)
+                build_badge = QLabel("Build")
+                build_badge.setStyleSheet("color: #d9531e; background-color: #fef2ea; font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 12px;")
+                build_name = QLabel("构建模式")
+                build_name.setStyleSheet("color: #1d1d1f; font-size: 17px; font-weight: 600;")
+                build_header.addWidget(build_badge)
+                build_header.addWidget(build_name)
+                build_header.addStretch()
+                c_layout.addLayout(build_header)
+
+                desc_build = QLabel("执行增删改操作前会展示预览，经你确认后才会生效。")
+                desc_build.setWordWrap(True)
+                desc_build.setStyleSheet("color: #86868b; font-size: 13px; padding-top: 4px; padding-bottom: 18px;")
+                c_layout.addWidget(desc_build)
+
+                features_build = [
+                    ("批量新增", "一次性添加多条账号或网址。",
+                     ["批量添加：B站 username1 pass1，知乎 username2 pass2"]),
+                    ("批量更新与重组", "批量修改分类、标签、备注，或由 AI 智能调整分类结构。",
+                     ["把金融类的账号都改成金融与支付", "帮我把未分类的网址整理一下", "给刚才找到的账号都加上「重要」标签"]),
+                    ("AI 生成备注并应用", "为指定条目生成备注，预览确认后写入数据库。",
+                     ["给 GitHub 生成一条备注并加上", "帮刚才找到的账号都生成备注"]),
+                    ("智能整理", "AI 自动分析数据并建议分类方案，支持细分二级子类。",
+                     ["帮我把教育类的账号细分一下二级分类", "整理一下重复的网址"]),
+                    ("批量删除", "将条目移入回收站，超过 50 条时额外二次确认。",
+                     ["删除所有分类是测试的账号", "把刚才筛选出来的网址删掉"]),
+                    ("生成强密码", "生成随机高强度密码，可指定长度和字符类型。",
+                     ["生成一个 16 位的强密码", "帮我生成不含特殊字符的 12 位密码"]),
+                ]
+                for title, desc, examples in features_build:
+                    lbl_title = QLabel(title)
+                    lbl_title.setStyleSheet("color: #1d1d1f; font-size: 15px; font-weight: 500; padding-bottom: 4px; padding-top: 2px;")
+                    c_layout.addWidget(lbl_title)
+                    lbl_desc = QLabel(desc)
+                    lbl_desc.setWordWrap(True)
+                    lbl_desc.setStyleSheet("color: #86868b; font-size: 13px; padding-bottom: 8px;")
+                    c_layout.addWidget(lbl_desc)
+                    card = QWidget()
+                    card.setObjectName("helpCard")
+                    card.setStyleSheet("""
+                        #helpCard {
+                            background-color: #ffffff;
+                            border-radius: 10px;
+                            border: 1px solid #e8e8ed;
+                        }
+                    """)
+                    card_layout = QVBoxLayout(card)
+                    card_layout.setContentsMargins(14, 12, 14, 12)
+                    card_layout.setSpacing(6)
+                    for ex in examples:
+                        ex_lbl = QLabel(f'"{ex}"')
+                        ex_lbl.setWordWrap(True)
+                        ex_lbl.setStyleSheet("color: #515154; font-size: 13px; line-height: 1.7;")
+                        card_layout.addWidget(ex_lbl)
+                    c_layout.addWidget(card)
+                    c_layout.addSpacing(18)
+
+                c_layout.addSpacing(24)
+                div2 = QFrame()
+                div2.setFrameShape(QFrame.Shape.HLine)
+                div2.setFixedHeight(1)
+                div2.setStyleSheet("background-color: #e5e5e5;")
+                c_layout.addWidget(div2)
+                c_layout.addSpacing(20)
+
+                # 小贴士
+                tips_card = QWidget()
+                tips_card.setObjectName("helpTipsCard")
+                tips_card.setStyleSheet("""
+                    #helpTipsCard {
+                        background-color: #ffffff;
+                        border-radius: 12px;
+                        border: 1px solid #e8e8ed;
+                    }
+                """)
+                tips_layout = QVBoxLayout(tips_card)
+                tips_layout.setContentsMargins(18, 16, 18, 16)
+                tips_layout.setSpacing(10)
+                tips_title = QLabel("使用小贴士")
+                tips_title.setStyleSheet("color: #1d1d1f; font-size: 15px; font-weight: 500;")
+                tips_layout.addWidget(tips_title)
+                tips = [
+                    "首次使用请发送任意消息完成「神经连接预热」。",
+                    "支持上下文对话，可用「刚才找到的」「前面那些」指代历史结果。",
+                    "Build 模式下所有操作先展示预览表格，可勾选后再确认执行。",
+                    "不确定操作是否安全时，先切到 Plan 模式询问。",
+                ]
+                for tip in tips:
+                    row = QHBoxLayout()
+                    row.setSpacing(8)
+                    row.setContentsMargins(0, 0, 0, 0)
+                    dot = QLabel("\u2022")
+                    dot.setStyleSheet("color: #c7c7cc; font-size: 14px;")
+                    dot.setAlignment(Qt.AlignmentFlag.AlignTop)
+                    txt = QLabel(tip)
+                    txt.setWordWrap(True)
+                    txt.setStyleSheet("color: #515154; font-size: 13px; line-height: 1.6;")
+                    row.addWidget(dot)
+                    row.addWidget(txt, 1)
+                    tips_layout.addLayout(row)
+                c_layout.addWidget(tips_card)
+
+                c_layout.addStretch()
+                scroll.setWidget(content)
+                main_layout.addWidget(scroll)
+
+                footer = QWidget()
+                f_layout = QHBoxLayout(footer)
+                f_layout.setContentsMargins(32, 8, 32, 18)
+                f_layout.addStretch()
+                btn = QPushButton("完成")
+                btn.setFixedSize(120, 34)
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #E55A2B; color: white; border: none;
+                        border-radius: 17px; font-size: 14px; font-weight: 500;
+                    }
+                    QPushButton:hover { background-color: #d04d20; }
+                    QPushButton:pressed { background-color: #b5431c; }
+                """)
+                btn.clicked.connect(self.accept)
+                f_layout.addWidget(btn)
+                f_layout.addStretch()
+                main_layout.addWidget(footer)
+
+        dialog = LocalHelpDialog(self)
+        dialog.exec()
+    
     def _setup_session_security(self):
         """设置会话安全：锁定界面 + 空闲检测"""
         # 创建锁定屏幕（作为中央部件的子控件，全屏覆盖）
@@ -4543,19 +5054,22 @@ class MainWindow(QMainWindow):
             self.show_lock_screen()
     
     def on_sync_to_mobile(self):
-        """同步到手机：生成加密 HTML 密包"""
+        """同步到手机：生成加密 HTML 密包（同时导出密码库 + 网址库）"""
         try:
             # 检查是否有 crypto_manager
             if not self.db.crypto:
                 QMessageBox.warning(self, "提示", "当前未启用加密，无法生成密包")
                 return
             
-            # 获取所有账号（解密后的明文）
+            # 获取所有账号和网址（解密后的明文）
             accounts = self.account_service.get_all_accounts()
-            if not accounts:
+            urls = self._url_service.get_all_urls()
+            
+            total_count = len(accounts) + len(urls)
+            if total_count == 0:
                 reply = QMessageBox.question(
                     self, "提示",
-                    "当前没有账号数据，是否仍要生成空密包？",
+                    "当前没有账号和网址数据，是否仍要生成空密包？",
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
                 )
                 if reply != QMessageBox.StandardButton.Yes:
@@ -4579,6 +5093,7 @@ class MainWindow(QMainWindow):
             sync_service.generate_pwa_package(
                 self.db.crypto,
                 accounts,
+                urls,
                 output_path
             )
             
@@ -4587,7 +5102,7 @@ class MainWindow(QMainWindow):
                 self,
                 "生成成功",
                 f"密包已保存至：\n{output_path}\n\n"
-                f"包含 {len(accounts)} 条账号数据\n\n"
+                f"包含 {len(accounts)} 条账号数据 + {len(urls)} 条网址数据\n\n"
                 f"📱 请手动将该 HTML 文件复制到手机，用手机浏览器打开即可查看。\n"
                 f"打开后输入主密码即可本地解密。"
             )
@@ -4598,18 +5113,19 @@ class MainWindow(QMainWindow):
             traceback.print_exc()
     
     def on_recycle_bin(self):
-        """打开回收站"""
+        """打开回收站（根据当前 tab 显示对应库的回收站）"""
         from ui.recycle_bin_dialog import RecycleBinDialog
         
         self._save_scroll_state()
         
-        dialog = RecycleBinDialog(self.db, self._url_db, parent=self)
+        if self.current_vault == 'accounts':
+            dialog = RecycleBinDialog(self.db, vault_type='accounts', parent=self)
+        else:
+            dialog = RecycleBinDialog(self._url_db, vault_type='urls', parent=self)
         dialog.exec()
         # 恢复后刷新
         self._cache_dirty = True
         self._url_cache_dirty = True
-        self.load_accounts()
-        self.load_urls()
         self._reload_categories()
         if self.current_vault == 'accounts':
             self.load_accounts()

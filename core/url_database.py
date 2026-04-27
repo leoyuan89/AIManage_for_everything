@@ -74,6 +74,27 @@ class URLDatabaseManager:
             )
         """)
         
+        # 回收站表（网址库独立回收站）
+        self.cursor.execute("""
+            CREATE TABLE IF NOT EXISTS url_recycle_bin (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                original_id INTEGER NOT NULL,
+                title TEXT,
+                url TEXT,
+                category TEXT,
+                tags TEXT,
+                ai_remark TEXT,
+                remark TEXT,
+                deleted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at TIMESTAMP,
+                is_restored INTEGER DEFAULT 0,
+                restored_at TIMESTAMP
+            )
+        """)
+        self.cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_url_recycle_expires ON url_recycle_bin(expires_at) WHERE is_restored = 0
+        """)
+        
         self.conn.commit()
     
     def close(self):
@@ -196,8 +217,102 @@ class URLDatabaseManager:
         return self.cursor.rowcount > 0
     
     def soft_delete_url(self, url_id: int, url_data: dict) -> bool:
-        """⚠️ 物理删除网址记录（不进入回收站）。调用方需先通过主数据库的 soft_delete_url 备份到回收站！"""
-        return self.delete_url(url_id)
+        """将网址移入回收站（软删除），并删除原记录"""
+        try:
+            from datetime import datetime, timedelta
+            expires_at = datetime.now() + timedelta(days=30)
+            self.cursor.execute("""
+                INSERT INTO url_recycle_bin (original_id, title, url, category, tags, ai_remark, remark, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                url_id,
+                url_data.get('title', ''),
+                url_data.get('url', ''),
+                url_data.get('category', '其他'),
+                url_data.get('tags', '[]'),
+                url_data.get('ai_remark', ''),
+                url_data.get('remark', ''),
+                expires_at
+            ))
+            self.cursor.execute("DELETE FROM urls WHERE id = ?", (url_id,))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            self.conn.rollback()
+            print(f"[URLDB] soft_delete_url error: {e}")
+            return False
+    
+    def get_recycle_bin_items(self, include_expired: bool = False) -> List[Dict[str, Any]]:
+        """获取回收站条目列表"""
+        try:
+            if include_expired:
+                self.cursor.execute(
+                    "SELECT * FROM url_recycle_bin WHERE is_restored = 0 ORDER BY deleted_at DESC"
+                )
+            else:
+                self.cursor.execute(
+                    "SELECT * FROM url_recycle_bin WHERE is_restored = 0 AND expires_at > datetime('now') ORDER BY deleted_at DESC"
+                )
+            rows = self.cursor.fetchall()
+            return [dict(row) for row in rows]
+        except Exception as e:
+            print(f"[URLDB] get_recycle_bin_items error: {e}")
+            return []
+    
+    def restore_url(self, recycle_id: int) -> Optional[Dict[str, Any]]:
+        """从回收站恢复网址，返回恢复后的数据（含新ID）"""
+        try:
+            self.cursor.execute("SELECT * FROM url_recycle_bin WHERE id = ?", (recycle_id,))
+            row = self.cursor.fetchone()
+            if not row:
+                return None
+            
+            url_data = dict(row)
+            url_data.pop('id', None)
+            url_data.pop('original_id', None)
+            url_data.pop('deleted_at', None)
+            url_data.pop('expires_at', None)
+            url_data.pop('is_restored', None)
+            url_data.pop('restored_at', None)
+            
+            new_id = self.insert_url(url_data)
+            
+            self.cursor.execute(
+                "UPDATE url_recycle_bin SET is_restored = 1, restored_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (recycle_id,)
+            )
+            self.conn.commit()
+            
+            url_data['id'] = new_id
+            return url_data
+        except Exception as e:
+            self.conn.rollback()
+            print(f"[URLDB] restore_url error: {e}")
+            return None
+    
+    def permanently_delete_recycle_item(self, recycle_id: int) -> bool:
+        """永久删除回收站条目"""
+        try:
+            self.cursor.execute("DELETE FROM url_recycle_bin WHERE id = ?", (recycle_id,))
+            self.conn.commit()
+            return self.cursor.rowcount > 0
+        except Exception as e:
+            self.conn.rollback()
+            print(f"[URLDB] permanently_delete_recycle_item error: {e}")
+            return False
+    
+    def cleanup_expired_recycle_bin(self, days: int = 30) -> int:
+        """清理超过保留期的回收站条目"""
+        try:
+            self.cursor.execute(
+                "DELETE FROM url_recycle_bin WHERE is_restored = 0 AND expires_at < datetime('now')"
+            )
+            self.conn.commit()
+            return self.cursor.rowcount
+        except Exception as e:
+            self.conn.rollback()
+            print(f"[URLDB] cleanup_expired_recycle_bin error: {e}")
+            return 0
     
     def get_url_by_id(self, url_id: int) -> Optional[Dict[str, Any]]:
         """
@@ -319,17 +434,29 @@ class URLDatabaseManager:
     
     def get_categories(self) -> List[str]:
         """
-        获取所有分类
+        获取所有网址分类（去重，排除空值）。
+        合并数据表中实际使用的分类 + category_order 排序表中记录的空分类，
+        确保新建的空分类也能被显示。
         
         Returns:
             分类名称列表
         """
+        # 1. 从数据表中读取实际使用的分类
         self.cursor.execute(
-            "SELECT DISTINCT category FROM urls ORDER BY category"
+            "SELECT DISTINCT category FROM urls WHERE category IS NOT NULL AND category != ''"
         )
-        rows = self.cursor.fetchall()
+        db_cats = {row['category'] for row in self.cursor.fetchall()}
         
-        return [row['category'] for row in rows]
+        # 2. 从排序表中读取所有已记录的分类（包含空分类）
+        try:
+            self.cursor.execute("SELECT category FROM category_order")
+            order_cats = {row['category'] for row in self.cursor.fetchall()}
+        except Exception:
+            order_cats = set()
+        
+        # 3. 合并、去重、排序
+        all_cats = sorted(db_cats | order_cats)
+        return all_cats
     
     def update_url_field(self, url_id: int, field: str, value: Any) -> bool:
         """
@@ -376,13 +503,39 @@ class URLDatabaseManager:
         )
         self.conn.commit()
         return self.cursor.rowcount
+    
+    def rename_category_order(self, old_name: str, new_name: str) -> bool:
+        """同步重命名 category_order 表中的分类记录"""
+        try:
+            self.cursor.execute(
+                "UPDATE category_order SET category = ? WHERE category = ?",
+                (new_name, old_name)
+            )
+            self.conn.commit()
+            return True
+        except Exception as e:
+            print(f"[URLDB] rename_category_order failed: {e}")
+            return False
 
     def delete_category(self, category_name: str) -> int:
-        """删除分类：将该分类下所有条目的 category 设为 '其他'，并清理 category_order 表"""
-        self.cursor.execute(
-            "UPDATE urls SET category = '其他' WHERE category = ?",
-            (category_name,)
-        )
+        """删除分类：
+        - 二级分类：精确匹配的条目去掉二级部分（保留一级）
+        - 一级分类：该一级及其所有子类下的条目移至'其他'
+        同时清理 category_order 表
+        """
+        if '>' in category_name:
+            # 删除二级分类：精确匹配，去掉二级部分
+            parent = category_name.split('>')[0].strip()
+            self.cursor.execute(
+                "UPDATE urls SET category = ? WHERE category = ?",
+                (parent, category_name)
+            )
+        else:
+            # 删除一级分类：匹配自身及所有子类
+            self.cursor.execute(
+                "UPDATE urls SET category = '其他' WHERE category = ? OR category LIKE ?",
+                (category_name, f"{category_name}>%")
+            )
         affected = self.cursor.rowcount
         # 同步清理 category_order 表
         self.cursor.execute(

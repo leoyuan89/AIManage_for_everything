@@ -250,42 +250,85 @@ class OllamaClient:
         
         return {"think": think, "result": result_text}
     
-    def categorize(self, app_name: str, url: str = "") -> str:
+    def categorize(self, app_name: str, url: str = "", existing_categories: list = None, parent_hint: str = None, remark: str = "", ai_remark: str = "") -> str:
         """
         AI 智能分类
         
         Args:
-            app_name: 应用名称
+            app_name: 应用名称/标题
             url: 网址（可选）
+            existing_categories: 当前已有的分类列表（可选），AI 优先从中匹配
+            parent_hint: 当前已选中的一级分类（可选）。传入时只要求返回二级子类
+            remark: 用户手动备注（可选）
+            ai_remark: AI 生成备注（可选）
             
         Returns:
-            分类名称（社交/金融/邮箱/游戏/工作/其他）
+            分类名称（parent_hint 为空时返回完整分类，否则只返回子类名）
         """
-        prompt = f"""你是一款密码管理软件的分类助手。请根据应用名称和网址，判断该账号属于以下哪个分类：社交、金融、邮箱、游戏、工作、其他。
+        cat_hint = ""
+        if existing_categories:
+            cat_list = "\n".join(f"- {c}" for c in existing_categories if c and c != '全部')
+            cat_hint = f"""当前已有的分类：
+{cat_list}
 
-规则：
-- 只返回分类名称中的一个词，不要解释
-- 如果无法判断，返回"其他"
+"""
+        
+        extra_info = ""
+        if remark:
+            extra_info += f"用户备注：{remark}\n"
+        if ai_remark:
+            extra_info += f"AI备注：{ai_remark}\n"
+        
+        if parent_hint:
+            # 二级分类模式：只返回子类名
+            prompt = f"""你是一款密码管理软件的智能分类助手。当前已选中的一级分类是「{parent_hint}」，请为该条目推荐一个最合适的二级子类。
 
-应用名称：{app_name}
+{cat_hint}规则：
+1. 该条目属于「{parent_hint}」分类体系，请只给出二级子类名称（不要带一级分类前缀）
+2. 如果现有子类中有高度匹配的，优先使用已有子类名
+3. 如果现有子类都不合适，可以自创一个更精准的子类名称
+4. 子类名应简洁明确（2-5个字），如"前端框架"、"后端开发"、"机器学习"等
+5. 只返回子类名称，不要解释、不要加引号、不要返回多余内容
+6. 禁止包含 "/"、">"、"·" 等符号
+
+应用名称/标题：{app_name}
 网址：{url}
+{extra_info}二级子类："""
+        else:
+            # 一级分类模式：返回完整分类名
+            prompt = f"""你是一款密码管理软件的智能分类助手。请根据以下信息，分析该条目最合理的一级分类。
 
-分类："""
+{cat_hint}规则：
+1. 优先从「当前已有的分类」中找出最接近的一个直接使用
+2. 如果现有分类都不合适，再自创一个更精准的新分类名称
+3. 分类名称应简洁明确（2-6个字），如"开发工具"、"学术资源"、"生活服务"等
+4. 只返回一级分类名称，不要解释、不要加引号、不要返回多余内容
+5. 禁止包含 "/"、">"、"·" 等符号
+
+应用名称/标题：{app_name}
+网址：{url}
+{extra_info}一级分类："""
         
         try:
-            result = self.generate(prompt, temperature=0.1, num_predict=50)
+            result = self.generate(prompt, temperature=0.2, num_predict=50)
             
             # 清洗结果
-            result = result.strip()
+            result = result.strip().strip('"').strip("'")
             
-            # 提取分类词（可能返回 "金融" 或 "分类：金融"）
-            valid_categories = ['社交', '金融', '邮箱', '游戏', '工作', '其他']
+            # 如果AI返回了分析内容+分类，尝试提取最后一行或第一个有意义的词
+            lines = [l.strip() for l in result.split('\n') if l.strip()]
+            if lines:
+                result = lines[-1]
             
-            for cat in valid_categories:
-                if cat in result:
-                    return cat
+            # 过滤掉常见的前缀噪音
+            for prefix in ['分类：', '分类:', '分类是', '属于', '结果为', '答案是', '一级分类：', '二级子类：', '子类：']:
+                if result.startswith(prefix):
+                    result = result[len(prefix):].strip()
             
-            return '其他'
+            # 清理非法字符
+            result = result.replace('/', '-').replace('·', '-')
+            
+            return result if result else '其他'
             
         except Exception as e:
             print(f"AI 分类失败: {e}")
@@ -705,8 +748,31 @@ class OllamaClient:
 - 用户："将支付类账号改为金融" → {{"thought": "用户要求修改分类", "tool": "batch_update_accounts", "params": {{"items": [{{"target_id": 1, "field": "category", "new_value": "金融"}}]}}}}
 - 用户："删除这些账号" → {{"thought": "用户要求删除", "tool": "batch_delete_accounts", "params": {{"target_ids": [1, 2, 3]}}}}
 - 用户："给这些账号添加备注" → {{"thought": "每个账号需要不同的针对性备注", "tool": "batch_add_remark_accounts", "params": {{"changes": [{{"target_id": 1, "content": "学工系统报到账号"}}, {{"target_id": 2, "content": "财务处缴费系统"}}]}}}}
-- 用户："给教育与学习细分二级子类" → {{"thought": "用户要求对教育与学习分类进行细分，生成二级子类", "tool": "smart_classify_accounts", "params": {{}}}}  
+- 用户："给教育与学习细分二级子类" → {{"thought": "用户要求对教育与学习分类进行细分，生成二级子类", "tool": "smart_classify_accounts", "params": {{}}}}
 - 用户："有哪些金融类账号？" → {{"thought": "用户只是询问", "tool": "direct_answer", "response": "..."}}
+
+【添加账号示例 - 重点】
+用户输入可能包含应用名、网址、用户名、密码、备注等信息，格式不固定（可能无标签、多行、连在一起）。你需要自行分析提取各字段：
+- 应用名(app_name)：通常是第一个词或最显眼的名称，如"B站"、"专利"
+- 网址(url)：以http://或https://开头的链接，如果没有协议头但有域名，补全为https://
+- 用户名(username)：看起来像手机号、邮箱、学号、QQ号等的字符串
+- 密码(password)：紧跟在"密码"、"pwd"、"pass"等词后面的内容，或单独一行看起来像密码的字符串
+- 分类(category)：根据应用名/网址推测最合适的分类，如学术网站→"学术与研究", 银行→"金融与支付"
+- 备注(remark)：用户额外说明的信息
+- 标签(tags)：可留空数组[]
+
+示例1：用户："专利 https://pss-system.cponline.cnipa.gov.cn/conventionalSearch，13959106910，密码qazPLM89！，添加一下" → {{"thought": "用户要求添加专利查询网站账号", "tool": "batch_add_accounts", "params": {{"items": [{{"app_name": "专利", "url": "https://pss-system.cponline.cnipa.gov.cn/conventionalSearch", "username": "13959106910", "password": "qazPLM89!", "category": "学术与研究", "remark": "", "tags": []}}]}}}}
+示例2：用户："添加B站账号 abc@qq.com 密码123456" → {{"thought": "用户要求添加B站账号", "tool": "batch_add_accounts", "params": {{"items": [{{"app_name": "B站", "url": "https://www.bilibili.com", "username": "abc@qq.com", "password": "123456", "category": "娱乐>视频", "remark": "", "tags": []}}]}}}}
+示例3：用户："帮我存一个学工系统 xgxt.qdu.edu.cn 学号2023001" → {{"thought": "用户要求添加学工系统账号", "tool": "batch_add_accounts", "params": {{"items": [{{"app_name": "学工系统", "url": "https://xgxt.qdu.edu.cn", "username": "2023001", "password": "", "category": "青岛大学", "remark": "", "tags": []}}]}}}}
+
+【添加网址示例】
+- 用户："添加网址 https://github.com 分类开发工具" → {{"thought": "用户要求添加网址", "tool": "batch_add_urls", "params": {{"items": [{{"title": "GitHub", "url": "https://github.com", "category": "专业与开发", "remark": "", "tags": []}}]}}}}
+
+【修改密码示例】
+- 用户："把支付宝密码改成abc123" → {{"thought": "用户要求修改支付宝密码", "tool": "batch_update_accounts", "params": {{"items": [{{"target_id": 1, "field": "password", "new_value": "abc123"}}]}}}}
+
+【最近修改查询示例】
+- 用户："最近修改了哪些账号？" → {{"thought": "用户查询最近变更记录", "tool": "get_recent_changes", "params": {{"vault_type": "account"}}}}
 
 【输出格式 - 严格JSON】
 你必须只输出一个JSON对象，不要添加任何其他文字、解释、markdown代码块：

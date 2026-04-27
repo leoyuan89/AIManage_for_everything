@@ -32,3 +32,19 @@
 - 后续如需运行代码、导入测试或执行任何 Python 脚本，**必须使用该环境**，禁止直接使用系统默认 Python 环境。
 - 激活方式：`conda activate Passwordmanage`
 - 该环境已预装 PyQt6、cryptography、openpyxl、pypinyin、paddleocr、qt-material、requests 等全部依赖。
+
+---
+
+## 自定义工作指令
+
+### 记录问题
+当用户说"记录问题"时，将本次排查的 Bug/问题按以下格式追加到 `docs/debug_journal.md`：
+
+- **日期**
+- **现象**
+- **排查过程**
+- **根因**
+- **解决方案**
+- **经验总结**
+
+参考文件中已有记录的格式和结构。

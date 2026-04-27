@@ -183,11 +183,21 @@ class URLService:
         获取分类树，用于 UI 级联选择和 AI 分类树注入。
         
         Returns:
-            {parent: {'children': set(), 'has_direct_items': bool}}
+            {parent: {'children': [sorted list], 'has_direct_items': bool}}
         """
         from core.category_utils import build_category_tree
         cats = self.get_categories()
-        return build_category_tree([c for c in cats if c != '全部'])
+        tree = build_category_tree([c for c in cats if c != '全部'])
+        
+        # 读取自定义排序，对子分类排序
+        orders = self.get_category_orders()
+        for parent_name, info in tree.items():
+            def _child_sort_key(child_name: str):
+                full_path = f"{parent_name}>{child_name}"
+                return (orders.get(full_path, 999999), child_name.lower())
+            info['children'] = sorted(info['children'], key=_child_sort_key)
+        
+        return tree
     
     def get_category_orders(self) -> Dict[str, int]:
         """获取分类自定义排序"""
@@ -212,6 +222,8 @@ class URLService:
                     new_cat = new_category + suffix
                 self.db.update_url(url_item.id, {'category': new_cat})
                 updated = True
+        # 同步更新 category_order 表（包括空分类）
+        self.db.rename_category_order(old_category, new_category)
         return updated
     
     def add_category(self, category_name: str) -> bool:
@@ -219,15 +231,27 @@ class URLService:
         return self.db.add_category_order(category_name)
 
     def delete_category(self, category: str) -> bool:
-        """删除分类：将匹配条目（含子类）移至'其他'"""
-        from core.category_utils import get_prefix_matcher
-        matcher = get_prefix_matcher(category)
+        """删除分类：
+        - 删除二级分类：精确匹配的条目去掉二级部分（保留一级）
+        - 删除一级分类：该一级及其所有子类下的条目移至'其他'
+        """
         all_urls = self.get_all_urls()
         updated = False
-        for url_item in all_urls:
-            if matcher(url_item.category):
-                self.db.update_url(url_item.id, {'category': '其他'})
-                updated = True
+        if '>' in category:
+            # 删除二级分类：精确匹配，去掉二级部分
+            parent = category.split('>')[0].strip()
+            for url_item in all_urls:
+                if url_item.category == category:
+                    self.db.update_url(url_item.id, {'category': parent})
+                    updated = True
+        else:
+            # 删除一级分类：匹配自身及所有子类，移到"其他"
+            from core.category_utils import get_prefix_matcher
+            matcher = get_prefix_matcher(category)
+            for url_item in all_urls:
+                if matcher(url_item.category):
+                    self.db.update_url(url_item.id, {'category': '其他'})
+                    updated = True
         return updated
     
     def get_favicon_url(self, url: str) -> str:

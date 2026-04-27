@@ -9,7 +9,77 @@ from datetime import datetime
 from pathlib import Path
 from typing import List
 
+from core.pinyin import PinyinConverter
 from models.account import Account
+
+
+def _compute_sort_fields(text: str) -> dict:
+    """
+    计算排序字段（与 main_window.py 中 _get_alpha_key / _account_sort_key 逻辑一致）
+    
+    Returns:
+        {'_alpha_key': 首字母或'#', '_sort_key': 排序文本}
+    """
+    if not text:
+        return {'_alpha_key': '#', '_sort_key': ''}
+    
+    first_char = text[0]
+    # 英文字母
+    if 'a' <= first_char.lower() <= 'z':
+        return {'_alpha_key': first_char.upper(), '_sort_key': text.lower()}
+    # 中文 CJK 范围
+    if '\u4e00' <= first_char <= '\u9fff':
+        pinyin = PinyinConverter.get_pinyin_initials(text).lower()
+        alpha = pinyin[0].upper() if pinyin else '#'
+        return {'_alpha_key': alpha, '_sort_key': pinyin}
+    # 数字、符号等其他字符归为 #
+    return {'_alpha_key': '#', '_sort_key': text.lower()}
+
+
+def _serialize_accounts(accounts: List[Account]) -> list:
+    """序列化账号列表并预计算排序字段"""
+    result = []
+    for acc in accounts:
+        item = {
+            'id': acc.id,
+            'app_name': acc.app_name,
+            'url': acc.url,
+            'username': acc.username,
+            'password': acc.password,
+            'category': acc.category,
+            'tags': acc.tags if isinstance(acc.tags, str) else json.dumps(acc.tags, ensure_ascii=False),
+            'remark': acc.remark,
+            'security_level': acc.security_level,
+        }
+        sort_fields = _compute_sort_fields(acc.app_name or '')
+        item['_alpha_key'] = sort_fields['_alpha_key']
+        item['_sort_key'] = sort_fields['_sort_key']
+        result.append(item)
+    # 按拼音首字母排序：英文/中文排前面，数字符号归为#排最后
+    result.sort(key=lambda x: (0 if x['_alpha_key'] != '#' else 1, x['_sort_key']))
+    return result
+
+
+def _serialize_urls(urls: List) -> list:
+    """序列化网址列表并预计算排序字段"""
+    result = []
+    for u in urls:
+        item = {
+            'id': u.id,
+            'title': u.title,
+            'url': u.url,
+            'category': u.category,
+            'tags': u.tags if isinstance(u.tags, str) else json.dumps(u.tags, ensure_ascii=False),
+            'visit_count': u.visit_count,
+            'ai_remark': u.ai_remark,
+            'remark': u.remark,
+        }
+        sort_fields = _compute_sort_fields(u.title or '')
+        item['_alpha_key'] = sort_fields['_alpha_key']
+        item['_sort_key'] = sort_fields['_sort_key']
+        result.append(item)
+    result.sort(key=lambda x: (0 if x['_alpha_key'] != '#' else 1, x['_sort_key']))
+    return result
 
 
 class SyncService:
@@ -28,13 +98,14 @@ class SyncService:
             template_path = project_root / 'templates' / 'pwa_template.html'
         self.template_path = Path(template_path)
     
-    def generate_pwa_package(self, crypto_manager, accounts: List[Account], output_path: str) -> str:
+    def generate_pwa_package(self, crypto_manager, accounts: List[Account], urls: List, output_path: str) -> str:
         """
-        生成 PWA 密包文件
+        生成 PWA 密包文件（同时包含密码库 + 网址库）
         
         Args:
             crypto_manager: 加密管理器实例
             accounts: 账号列表
+            urls: 网址列表
             output_path: 输出 HTML 文件路径
             
         Returns:
@@ -50,23 +121,19 @@ class SyncService:
         
         if accounts is None:
             raise ValueError("accounts 不能为 None")
+        if urls is None:
+            raise ValueError("urls 不能为 None")
         
-        # 1. 将账号列表转为 JSON（仅包含必要字段）
-        accounts_data = []
-        for acc in accounts:
-            accounts_data.append({
-                'id': acc.id,
-                'app_name': acc.app_name,
-                'url': acc.url,
-                'username': acc.username,
-                'password': acc.password,
-                'category': acc.category,
-                'tags': acc.tags if isinstance(acc.tags, str) else json.dumps(acc.tags, ensure_ascii=False),
-                'remark': acc.remark,
-                'security_level': acc.security_level,
-            })
+        # 1. 序列化账号和网址数据（含排序字段）
+        accounts_data = _serialize_accounts(accounts)
+        urls_data = _serialize_urls(urls)
         
-        json_data = json.dumps(accounts_data, ensure_ascii=False, indent=2)
+        # 打包为统一结构
+        payload = {
+            'accounts': accounts_data,
+            'urls': urls_data,
+        }
+        json_data = json.dumps(payload, ensure_ascii=False, indent=2)
         
         # 2. 用 crypto_manager 加密 JSON 数据
         encrypted_data = crypto_manager.encrypt_to_string(json_data)
@@ -83,6 +150,7 @@ class SyncService:
         html_content = html_content.replace('{{SALT_BASE64}}', salt_b64)
         html_content = html_content.replace('{{GENERATED_AT}}', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
         html_content = html_content.replace('{{ACCOUNT_COUNT}}', str(len(accounts_data)))
+        html_content = html_content.replace('{{URL_COUNT}}', str(len(urls_data)))
         
         # 6. 写出 HTML 文件
         output_path = Path(output_path)

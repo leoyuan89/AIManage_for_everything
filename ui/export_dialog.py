@@ -37,7 +37,7 @@ class ExportDialog(QDialog):
     def setup_ui(self):
         """设置界面"""
         self.setWindowTitle(f"导出{'账号' if self.vault_type == 'accounts' else '网址'}")
-        self.setMinimumSize(1000, 1300)
+        self.setMinimumSize(600, 800)
         
         layout = QVBoxLayout(self)
         layout.setSpacing(15)

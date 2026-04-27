@@ -28,6 +28,8 @@ class URLEditDialog(QDialog):
         self._ai_manager = AIServiceManager.instance()
         self._pending_tags_task = None
         self._pending_remark_task = None
+        self._pending_categorize_parent_task = None
+        self._pending_categorize_child_task = None
         
         self.setup_ui()
         
@@ -126,11 +128,19 @@ class URLEditDialog(QDialog):
         
         self._load_categories()
         
-        self.btn_ai_categorize = QPushButton("AI 智能分类")
-        self.btn_ai_categorize.setFixedHeight(36)
-        self.btn_ai_categorize.setToolTip("自动分析网址类型并分类")
-        self.btn_ai_categorize.clicked.connect(self.on_ai_categorize)
-        category_layout.addWidget(self.btn_ai_categorize)
+        self.btn_ai_parent = QPushButton("AI")
+        self.btn_ai_parent.setFixedHeight(36)
+        self.btn_ai_parent.setFixedWidth(50)
+        self.btn_ai_parent.setToolTip("AI分析一级分类")
+        self.btn_ai_parent.clicked.connect(self.on_ai_categorize_parent)
+        category_layout.addWidget(self.btn_ai_parent)
+        
+        self.btn_ai_child = QPushButton("AI")
+        self.btn_ai_child.setFixedHeight(36)
+        self.btn_ai_child.setFixedWidth(50)
+        self.btn_ai_child.setToolTip("AI分析二级分类（在当前一级下）")
+        self.btn_ai_child.clicked.connect(self.on_ai_categorize_child)
+        category_layout.addWidget(self.btn_ai_child)
         
         layout.addLayout(category_layout)
         
@@ -266,8 +276,10 @@ class URLEditDialog(QDialog):
     def _update_ai_buttons(self, state):
         """根据 AI 状态更新按钮可用性"""
         enabled = state.status == AIStatus.ONLINE
-        if hasattr(self, 'btn_ai_categorize'):
-            self.btn_ai_categorize.setEnabled(enabled)
+        if hasattr(self, 'btn_ai_parent'):
+            self.btn_ai_parent.setEnabled(enabled)
+        if hasattr(self, 'btn_ai_child'):
+            self.btn_ai_child.setEnabled(enabled)
         if hasattr(self, 'btn_ai_tags'):
             self.btn_ai_tags.setEnabled(enabled)
         if hasattr(self, 'btn_ai_remark'):
@@ -294,8 +306,8 @@ class URLEditDialog(QDialog):
         tags = self.url_item.get_tags_list()
         self.txt_tags.setText(", ".join(tags))
     
-    def on_ai_categorize(self):
-        """AI 智能分类"""
+    def on_ai_categorize_parent(self):
+        """AI 分析一级分类"""
         url = self.txt_url.text().strip()
         title = self.txt_title.text().strip()
         
@@ -303,18 +315,45 @@ class URLEditDialog(QDialog):
             QMessageBox.warning(self, "提示", "请先输入网址或标题")
             return
         
-        category = self.url_service.auto_categorize(url, title)
-        from core.category_utils import parse_category_path
-        parent, child = parse_category_path(category)
-        if parent:
-            idx = self.cmb_parent.findText(parent)
-            if idx < 0:
-                self.cmb_parent.addItem(parent)
-                idx = self.cmb_parent.count() - 1
-            self.cmb_parent.setCurrentIndex(idx)
-            if child:
-                self.cmb_child.setCurrentText(child)
-        QMessageBox.information(self, "分类成功", f"AI 识别分类：{category}")
+        self.btn_ai_parent.setEnabled(False)
+        self.btn_ai_parent.setText("...")
+        
+        try:
+            existing_cats = self.url_service.get_categories()
+        except Exception:
+            existing_cats = []
+        
+        remark = self.txt_remark.toPlainText().strip()
+        ai_remark = self.txt_ai_remark.toPlainText().strip()
+        task_id = self._ai_manager.categorize_async(title or url, url, existing_categories=existing_cats, remark=remark, ai_remark=ai_remark)
+        self._pending_categorize_parent_task = task_id
+    
+    def on_ai_categorize_child(self):
+        """AI 分析二级分类（在当前一级分类下）"""
+        url = self.txt_url.text().strip()
+        title = self.txt_title.text().strip()
+        
+        if not url and not title:
+            QMessageBox.warning(self, "提示", "请先输入网址或标题")
+            return
+        
+        current_parent = self.cmb_parent.currentText().strip()
+        if not current_parent or current_parent == "请选择":
+            QMessageBox.warning(self, "提示", "请先选择一级分类，或点击左侧「AI」按钮自动分析一级分类")
+            return
+        
+        self.btn_ai_child.setEnabled(False)
+        self.btn_ai_child.setText("...")
+        
+        try:
+            existing_cats = self.url_service.get_categories()
+        except Exception:
+            existing_cats = []
+        
+        remark = self.txt_remark.toPlainText().strip()
+        ai_remark = self.txt_ai_remark.toPlainText().strip()
+        task_id = self._ai_manager.categorize_async(title or url, url, existing_categories=existing_cats, parent_hint=current_parent, remark=remark, ai_remark=ai_remark)
+        self._pending_categorize_child_task = task_id
     
     def on_ai_generate_tags(self):
         """AI 生成标签：复用 generate_remark_async，结果按逗号拆分作为标签"""
@@ -341,10 +380,16 @@ class URLEditDialog(QDialog):
             QMessageBox.warning(self, "提示", "请先输入标题或网址")
             return
         
+        parent = self.cmb_parent.currentText().strip()
+        child = self.cmb_child.currentText().strip()
+        from core.category_utils import format_category_path
+        category = format_category_path(parent if parent != "请选择" else "", child if child else None)
+        remark = self.txt_remark.toPlainText().strip()
+        
         self.btn_ai_remark.setEnabled(False)
         self.btn_ai_remark.setText("生成中...")
         
-        task_id = self._ai_manager.generate_remark_async(title, url)
+        task_id = self._ai_manager.generate_remark_async(title, url, category, remark)
         self._pending_remark_task = task_id
     
     def _on_ai_task_finished(self, task_id, result):
@@ -355,6 +400,12 @@ class URLEditDialog(QDialog):
         elif task_id == self._pending_remark_task:
             self._pending_remark_task = None
             self._on_remark_result(result)
+        elif task_id == self._pending_categorize_parent_task:
+            self._pending_categorize_parent_task = None
+            self._on_categorize_parent_result(result)
+        elif task_id == self._pending_categorize_child_task:
+            self._pending_categorize_child_task = None
+            self._on_categorize_child_result(result)
     
     def _on_ai_task_failed(self, task_id, error_message):
         """AI 任务失败统一分发"""
@@ -364,6 +415,12 @@ class URLEditDialog(QDialog):
         elif task_id == self._pending_remark_task:
             self._pending_remark_task = None
             self._on_remark_failed(error_message)
+        elif task_id == self._pending_categorize_parent_task:
+            self._pending_categorize_parent_task = None
+            self._on_categorize_parent_failed(error_message)
+        elif task_id == self._pending_categorize_child_task:
+            self._pending_categorize_child_task = None
+            self._on_categorize_child_failed(error_message)
     
     def _on_tags_result(self, result):
         """标签生成完成"""
@@ -388,6 +445,55 @@ class URLEditDialog(QDialog):
         self.btn_ai_remark.setEnabled(True)
         self.btn_ai_remark.setText("生成 AI 备注")
         QMessageBox.warning(self, "生成失败", f"AI 备注生成失败：{error}")
+    
+    def _on_categorize_parent_result(self, result):
+        """AI 一级分类完成"""
+        self.btn_ai_parent.setEnabled(True)
+        self.btn_ai_parent.setText("AI")
+        
+        from core.category_utils import parse_category_path
+        parent, _ = parse_category_path(result)
+        if not parent:
+            parent = result.strip()
+        if parent:
+            idx = self.cmb_parent.findText(parent)
+            if idx < 0:
+                self.cmb_parent.addItem(parent)
+                idx = self.cmb_parent.count() - 1
+            self.cmb_parent.setCurrentIndex(idx)
+            self.cmb_child.clear()  # 一级改变时清空二级
+            self.cmb_child.addItem("")
+            QMessageBox.information(self, "分类成功", f"AI 识别一级分类：{parent}")
+        else:
+            QMessageBox.warning(self, "分类失败", f"AI 返回的分类无法解析：{result}")
+    
+    def _on_categorize_parent_failed(self, error):
+        """AI 一级分类失败"""
+        self.btn_ai_parent.setEnabled(True)
+        self.btn_ai_parent.setText("AI")
+        QMessageBox.warning(self, "分类失败", f"AI 一级分类失败：{error}")
+    
+    def _on_categorize_child_result(self, result):
+        """AI 二级分类完成"""
+        self.btn_ai_child.setEnabled(True)
+        self.btn_ai_child.setText("AI")
+        
+        child = result.strip()
+        if child:
+            idx = self.cmb_child.findText(child)
+            if idx < 0:
+                self.cmb_child.addItem(child)
+                idx = self.cmb_child.count() - 1
+            self.cmb_child.setCurrentIndex(idx)
+            QMessageBox.information(self, "分类成功", f"AI 识别二级分类：{child}")
+        else:
+            QMessageBox.warning(self, "分类失败", f"AI 返回的二级分类无法解析：{result}")
+    
+    def _on_categorize_child_failed(self, error):
+        """AI 二级分类失败"""
+        self.btn_ai_child.setEnabled(True)
+        self.btn_ai_child.setText("AI")
+        QMessageBox.warning(self, "分类失败", f"AI 二级分类失败：{error}")
     
     def on_save(self):
         """保存网址"""
@@ -461,11 +567,8 @@ class URLEditDialog(QDialog):
         
         if reply == QMessageBox.StandardButton.Yes:
             try:
-                from core.database import DatabaseManager
-                # 软删除：先备份到主库回收站，再删除网址表记录
-                db = DatabaseManager()
-                db.soft_delete_url(self.url_item.id, self.url_item.to_dict())
-                self.url_service.delete_url(self.url_item.id)
+                # 软删除：备份到网址库独立回收站，并删除原记录
+                self.url_service.db.soft_delete_url(self.url_item.id, self.url_item.to_dict())
                 QMessageBox.information(self, "成功", "网址已移至回收站")
                 self.accept()
             except Exception as e:

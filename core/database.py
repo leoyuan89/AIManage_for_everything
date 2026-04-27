@@ -377,16 +377,29 @@ class DatabaseManager:
     
     def get_categories(self) -> List[str]:
         """
-        获取所有账号分类（去重，排除空值）
+        获取所有账号分类（去重，排除空值）。
+        合并数据表中实际使用的分类 + category_order 排序表中记录的空分类，
+        确保新建的空分类也能被显示。
         
         Returns:
             分类名称列表
         """
+        # 1. 从数据表中读取实际使用的分类
         self.cursor.execute(
-            "SELECT DISTINCT category FROM accounts WHERE category IS NOT NULL AND category != '' ORDER BY category"
+            "SELECT DISTINCT category FROM accounts WHERE category IS NOT NULL AND category != ''"
         )
-        rows = self.cursor.fetchall()
-        return [row['category'] for row in rows]
+        db_cats = {row['category'] for row in self.cursor.fetchall()}
+        
+        # 2. 从排序表中读取所有已记录的分类（包含空分类）
+        try:
+            self.cursor.execute("SELECT category FROM category_order")
+            order_cats = {row['category'] for row in self.cursor.fetchall()}
+        except Exception:
+            order_cats = set()
+        
+        # 3. 合并、去重、排序
+        all_cats = sorted(db_cats | order_cats)
+        return all_cats
     
     def get_category_orders(self) -> Dict[str, int]:
         """获取分类自定义排序（category -> sort_index）"""
@@ -438,13 +451,39 @@ class DatabaseManager:
         )
         self.conn.commit()
         return self.cursor.rowcount
+    
+    def rename_category_order(self, old_name: str, new_name: str) -> bool:
+        """同步重命名 category_order 表中的分类记录"""
+        try:
+            self.cursor.execute(
+                "UPDATE category_order SET category = ? WHERE category = ?",
+                (new_name, old_name)
+            )
+            self.conn.commit()
+            return True
+        except Exception as e:
+            print(f"[DB] rename_category_order failed: {e}")
+            return False
 
     def delete_category(self, category_name: str) -> int:
-        """删除分类：将该分类下所有条目的 category 设为 '其他'，并清理 category_order 表，返回影响的行数"""
-        self.cursor.execute(
-            "UPDATE accounts SET category = '其他' WHERE category = ?",
-            (category_name,)
-        )
+        """删除分类：
+        - 二级分类：精确匹配的条目去掉二级部分（保留一级）
+        - 一级分类：该一级及其所有子类下的条目移至'其他'
+        同时清理 category_order 表，返回影响的行数
+        """
+        if '>' in category_name:
+            # 删除二级分类：精确匹配，去掉二级部分
+            parent = category_name.split('>')[0].strip()
+            self.cursor.execute(
+                "UPDATE accounts SET category = ? WHERE category = ?",
+                (parent, category_name)
+            )
+        else:
+            # 删除一级分类：匹配自身及所有子类
+            self.cursor.execute(
+                "UPDATE accounts SET category = '其他' WHERE category = ? OR category LIKE ?",
+                (category_name, f"{category_name}>%")
+            )
         affected = self.cursor.rowcount
         # 同步清理 category_order 表，避免弹窗下拉框显示幽灵类别
         self.cursor.execute(

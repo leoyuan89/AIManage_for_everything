@@ -488,11 +488,8 @@ class URLRepository(VaultRepository):
         original = self.db.get_url_by_id(item_id)
         if not original:
             return False
-        # 先通过主库备份到回收站
-        if self.main_db:
-            self.main_db.soft_delete_url(item_id, original)
-        # 再物理删除网址表记录
-        return self.db.delete_url(item_id)
+        # 网址库独立回收站：备份到网址库回收站并删除原记录
+        return self.db.soft_delete_url(item_id, original)
     
     def insert(self, item_data: Dict) -> int:
         url_item = URLItem(

@@ -101,16 +101,32 @@ class AIServiceManager(QObject):
         return task_id
 
     # ── 便捷接口 ──
-    def categorize_async(self, app_name: str, url: str = "") -> str:
-        """异步智能分类，返回 task_id"""
-        return self.submit_task(AITaskType.CATEGORIZE, {
-            "app_name": app_name, "url": url
-        })
+    def categorize_async(self, app_name: str, url: str = "", existing_categories: list = None, parent_hint: str = None, remark: str = "", ai_remark: str = "") -> str:
+        """异步智能分类，返回 task_id
+        
+        Args:
+            app_name: 应用名称/标题
+            url: 网址（可选）
+            existing_categories: 当前已有的分类列表（可选），供 AI 参考
+            parent_hint: 当前已选中的一级分类（可选）。传入时 AI 只返回二级子类
+            remark: 用户手动备注（可选）
+            ai_remark: AI 生成备注（可选）
+        """
+        payload = {"app_name": app_name, "url": url}
+        if existing_categories:
+            payload["existing_categories"] = existing_categories
+        if parent_hint:
+            payload["parent_hint"] = parent_hint
+        if remark:
+            payload["remark"] = remark
+        if ai_remark:
+            payload["ai_remark"] = ai_remark
+        return self.submit_task(AITaskType.CATEGORIZE, payload)
 
-    def generate_remark_async(self, app_name: str, url: str = "", category: str = "") -> str:
+    def generate_remark_async(self, app_name: str, url: str = "", category: str = "", remark: str = "") -> str:
         """异步生成备注，返回 task_id"""
         return self.submit_task(AITaskType.GENERATE_REMARK, {
-            "app_name": app_name, "url": url, "category": category
+            "app_name": app_name, "url": url, "category": category, "remark": remark
         })
 
     def chat_async(self, messages: list, temperature: float = 0.3) -> str:

@@ -14,7 +14,7 @@ class AIRemarkService:
         from services.ai_service_manager import AIServiceManager
         return AIServiceManager.instance().is_available()
     
-    def generate_ai_remark(self, app_name: str, url: str = "", category: str = "") -> str:
+    def generate_ai_remark(self, app_name: str, url: str = "", category: str = "", remark: str = "") -> str:
         """
         生成 AI 一句话备注
         
@@ -22,6 +22,7 @@ class AIRemarkService:
             app_name: 应用名称
             url: 网址
             category: 分类
+            remark: 用户手动备注
             
         Returns:
             生成的一句话备注（不超过20个字）
@@ -34,7 +35,7 @@ class AIRemarkService:
         if not app_name:
             raise ValueError("应用名称不能为空")
         
-        prompt = f"""根据应用名称、网址和分类，用一句话描述这个账号的用途。
+        prompt = f"""根据应用名称、网址、分类和用户手动备注，用一句话描述这个账号的用途。
 
 要求：
 - 不超过20个字
@@ -44,6 +45,7 @@ class AIRemarkService:
 应用名称：{app_name}
 网址：{url or '无'}
 分类：{category or '未分类'}
+用户手动备注：{remark or '无'}
 
 用途描述："""
         
@@ -58,13 +60,13 @@ class AIRemarkService:
             )
             
             # 清洗结果
-            remark = result.strip()
+            ai_remark = result.strip()
             # 移除可能的引号
-            remark = remark.strip('"').strip("'").strip()
+            ai_remark = ai_remark.strip('"').strip("'").strip()
             # 限制长度
             # 备注完整保留，不做截断
             
-            return remark
+            return ai_remark
             
         except Exception as e:
             raise Exception(f"AI 备注生成失败: {str(e)}")

@@ -39,8 +39,10 @@ def _perf_log(phase: str, t0: float, t1: float = None):
 
 class OCRWorker(QThread):
     """OCR 识别后台线程"""
-    finished = pyqtSignal(dict)  # 返回提取的字段
-    error = pyqtSignal(str)
+    # 注意：不能命名为 finished，因为 QThread 本身有 finished 信号，
+    # 同名会导致 C++ 层 signal/slot 冲突，引发 0xC0000409 崩溃
+    ocr_finished = pyqtSignal(dict)  # 返回提取的字段
+    ocr_error = pyqtSignal(str)
     
     def __init__(self, ocr_service, image_path: str):
         super().__init__()
@@ -54,10 +56,10 @@ class OCRWorker(QThread):
                 return
             fields = self.ocr_service.extract_account_fields(self.image_path)
             if self._is_running:
-                self.finished.emit(fields)
+                self.ocr_finished.emit(fields)
         except Exception as e:
             if self._is_running:
-                self.error.emit(str(e))
+                self.ocr_error.emit(str(e))
     
     def stop(self):
         self._is_running = False
@@ -331,7 +333,8 @@ class AccountDialog(QDialog):
         self.ocr_worker = None
         
         # 用于跟踪待处理的 AI 任务
-        self._pending_categorize_task = None
+        self._pending_categorize_parent_task = None
+        self._pending_categorize_child_task = None
         self._pending_remark_task = None
         
         # 注册 Repository（若未注册）
@@ -595,11 +598,19 @@ class AccountDialog(QDialog):
         
         self._load_categories()
         
-        self.btn_ai_categorize = QPushButton("AI 智能分类")
-        self.btn_ai_categorize.setFixedHeight(36)
-        self.btn_ai_categorize.setToolTip("自动分析应用类型并分类")
-        self.btn_ai_categorize.clicked.connect(self.on_ai_categorize)
-        category_layout.addWidget(self.btn_ai_categorize)
+        self.btn_ai_parent = QPushButton("AI")
+        self.btn_ai_parent.setFixedHeight(36)
+        self.btn_ai_parent.setFixedWidth(50)
+        self.btn_ai_parent.setToolTip("AI分析一级分类")
+        self.btn_ai_parent.clicked.connect(self.on_ai_categorize_parent)
+        category_layout.addWidget(self.btn_ai_parent)
+        
+        self.btn_ai_child = QPushButton("AI")
+        self.btn_ai_child.setFixedHeight(36)
+        self.btn_ai_child.setFixedWidth(50)
+        self.btn_ai_child.setToolTip("AI分析二级分类（在当前一级下）")
+        self.btn_ai_child.clicked.connect(self.on_ai_categorize_child)
+        category_layout.addWidget(self.btn_ai_child)
         
         layout.addLayout(category_layout)
         t_cat1 = time.perf_counter(); _perf_log("setup_manual_tab category+AI buttons", t_cat0, t_cat1)
@@ -800,10 +811,15 @@ class AccountDialog(QDialog):
     def _update_ai_buttons(self, state):
         """根据 AI 状态更新按钮可用性"""
         enabled = state.status == AIStatus.ONLINE
-        if hasattr(self, 'btn_ai_categorize'):
-            self.btn_ai_categorize.setEnabled(enabled)
-            self.btn_ai_categorize.setToolTip(
-                "AI 智能分类" if enabled else f"Ollama 未连接 ({state.error_message})"
+        if hasattr(self, 'btn_ai_parent'):
+            self.btn_ai_parent.setEnabled(enabled)
+            self.btn_ai_parent.setToolTip(
+                "AI分析一级分类" if enabled else f"Ollama 未连接 ({state.error_message})"
+            )
+        if hasattr(self, 'btn_ai_child'):
+            self.btn_ai_child.setEnabled(enabled)
+            self.btn_ai_child.setToolTip(
+                "AI分析二级分类（在当前一级下）" if enabled else f"Ollama 未连接 ({state.error_message})"
             )
         if hasattr(self, 'btn_ai_remark'):
             self.btn_ai_remark.setEnabled(enabled)
@@ -815,8 +831,8 @@ class AccountDialog(QDialog):
         """应用名改变时触发（可在此做自动分类，但避免过于频繁）"""
         pass  # 暂时不自动触发，等待用户点击 AI 按钮或失去焦点
     
-    def on_ai_categorize(self):
-        """AI 智能分类按钮点击（异步）"""
+    def on_ai_categorize_parent(self):
+        """AI 分析一级分类"""
         app_name = self.txt_app_name.text().strip()
         url = self.txt_url.text().strip()
         
@@ -824,52 +840,116 @@ class AccountDialog(QDialog):
             QMessageBox.warning(self, "提示", "请先输入应用名")
             return
         
-        self.btn_ai_categorize.setEnabled(False)
-        self.btn_ai_categorize.setText("分析中...")
+        self.btn_ai_parent.setEnabled(False)
+        self.btn_ai_parent.setText("...")
         
-        task_id = self._ai_manager.categorize_async(app_name, url)
-        self._pending_categorize_task = task_id
+        try:
+            existing_cats = self.account_service.get_categories()
+        except Exception:
+            existing_cats = []
+        
+        remark = self.txt_remark.toPlainText().strip()
+        ai_remark = self.txt_ai_remark.text().strip()
+        task_id = self._ai_manager.categorize_async(app_name, url, existing_categories=existing_cats, remark=remark, ai_remark=ai_remark)
+        self._pending_categorize_parent_task = task_id
+    
+    def on_ai_categorize_child(self):
+        """AI 分析二级分类（在当前一级分类下）"""
+        app_name = self.txt_app_name.text().strip()
+        url = self.txt_url.text().strip()
+        
+        if not app_name:
+            QMessageBox.warning(self, "提示", "请先输入应用名")
+            return
+        
+        current_parent = self.cmb_parent.currentText().strip()
+        if not current_parent or current_parent == "请选择":
+            QMessageBox.warning(self, "提示", "请先选择一级分类，或点击左侧「AI」按钮自动分析一级分类")
+            return
+        
+        self.btn_ai_child.setEnabled(False)
+        self.btn_ai_child.setText("...")
+        
+        try:
+            existing_cats = self.account_service.get_categories()
+        except Exception:
+            existing_cats = []
+        
+        remark = self.txt_remark.toPlainText().strip()
+        ai_remark = self.txt_ai_remark.text().strip()
+        task_id = self._ai_manager.categorize_async(app_name, url, existing_categories=existing_cats, parent_hint=current_parent, remark=remark, ai_remark=ai_remark)
+        self._pending_categorize_child_task = task_id
     
     def _on_ai_task_finished(self, task_id, result):
         """AI 任务完成统一分发"""
-        if task_id == self._pending_categorize_task:
-            self._pending_categorize_task = None
-            self._on_categorize_result(task_id, result)
+        if task_id == self._pending_categorize_parent_task:
+            self._pending_categorize_parent_task = None
+            self._on_categorize_parent_result(task_id, result)
+        elif task_id == self._pending_categorize_child_task:
+            self._pending_categorize_child_task = None
+            self._on_categorize_child_result(task_id, result)
         elif task_id == self._pending_remark_task:
             self._pending_remark_task = None
             self._on_remark_result(task_id, result)
     
     def _on_ai_task_failed(self, task_id, error_message):
         """AI 任务失败统一分发"""
-        if task_id == self._pending_categorize_task:
-            self._pending_categorize_task = None
-            self._on_categorize_failed(task_id, error_message)
+        if task_id == self._pending_categorize_parent_task:
+            self._pending_categorize_parent_task = None
+            self._on_categorize_parent_failed(task_id, error_message)
+        elif task_id == self._pending_categorize_child_task:
+            self._pending_categorize_child_task = None
+            self._on_categorize_child_failed(task_id, error_message)
         elif task_id == self._pending_remark_task:
             self._pending_remark_task = None
             self._on_remark_failed(task_id, error_message)
     
-    def _on_categorize_result(self, task_id, result):
-        """AI 分类完成"""
-        self.btn_ai_categorize.setEnabled(True)
-        self.btn_ai_categorize.setText("AI 智能分类")
+    def _on_categorize_parent_result(self, task_id, result):
+        """AI 一级分类完成"""
+        self.btn_ai_parent.setEnabled(True)
+        self.btn_ai_parent.setText("AI")
         
         from core.category_utils import parse_category_path
-        parent, child = parse_category_path(result)
+        parent, _ = parse_category_path(result)
+        if not parent:
+            parent = result.strip()
         if parent:
             idx = self.cmb_parent.findText(parent)
             if idx < 0:
                 self.cmb_parent.addItem(parent)
                 idx = self.cmb_parent.count() - 1
             self.cmb_parent.setCurrentIndex(idx)
-            if child:
-                self.cmb_child.setCurrentText(child)
-            QMessageBox.information(self, "分类成功", f"AI 识别分类：{result}")
+            self.cmb_child.clear()
+            self.cmb_child.addItem("")
+            QMessageBox.information(self, "分类成功", f"AI 识别一级分类：{parent}")
     
-    def _on_categorize_failed(self, task_id, error):
-        """AI 分类失败"""
-        self.btn_ai_categorize.setEnabled(True)
-        self.btn_ai_categorize.setText("AI 智能分类")
-        QMessageBox.warning(self, "分类失败", f"AI 分类失败：{error}")
+    def _on_categorize_parent_failed(self, task_id, error):
+        """AI 一级分类失败"""
+        self.btn_ai_parent.setEnabled(True)
+        self.btn_ai_parent.setText("AI")
+        QMessageBox.warning(self, "分类失败", f"AI 一级分类失败：{error}")
+    
+    def _on_categorize_child_result(self, task_id, result):
+        """AI 二级分类完成"""
+        self.btn_ai_child.setEnabled(True)
+        self.btn_ai_child.setText("AI")
+        
+        child = result.strip()
+        if child:
+            idx = self.cmb_child.findText(child)
+            if idx < 0:
+                self.cmb_child.addItem(child)
+                idx = self.cmb_child.count() - 1
+            self.cmb_child.setCurrentIndex(idx)
+            QMessageBox.information(self, "分类成功", f"AI 识别二级分类：{child}")
+        else:
+            QMessageBox.warning(self, "分类失败", f"AI 返回的二级分类无法解析：{result}")
+    
+    def _on_categorize_child_failed(self, task_id, error):
+        """AI 二级分类失败"""
+        self.btn_ai_child.setEnabled(True)
+        self.btn_ai_child.setText("AI")
+        QMessageBox.warning(self, "分类失败", f"AI 二级分类失败：{error}")
     
     def on_select_image(self):
         """选择图片按钮点击"""
@@ -901,104 +981,113 @@ class AccountDialog(QDialog):
         self.frame_ocr_result.hide()
         self.btn_apply_ocr.hide()
         
-        # 启动 OCR 线程
-        self.ocr_worker = OCRWorker(ocr_service, file_path)
-        self.ocr_worker.finished.connect(self.on_ocr_finished)
-        self.ocr_worker.error.connect(self.on_ocr_error)
-        self.ocr_worker.start()
+        # 在主线程中同步执行 OCR，避免 QThread 相关的 C++ 层崩溃
+        # PaddleOCR 识别约 0.5s，短暂卡顿但稳定性更高
+        try:
+            fields = ocr_service.extract_account_fields(file_path)
+            self.on_ocr_finished(fields)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.on_ocr_error(str(e))
     
     def on_ocr_finished(self, fields: dict):
         """OCR 识别完成"""
-        self.lbl_ocr_status.setText("识别完成，请核对信息")
-        self.ocr_result = fields
-        
-        # 更新预览
-        app = fields.get('app_name', '-') or '-'
-        username = fields.get('username', '-') or '-'
-        password = fields.get('password', '-') or '-'
-        
-        self.lbl_ocr_app.setText(f"应用：{app}")
-        self.lbl_ocr_username.setText(f"账号：{username}")
-        self.lbl_ocr_password.setText(f"密码：{password}")
-        
-        # 显示所有识别的文字
-        all_texts = fields.get('all_texts', [])
-        if all_texts:
-            all_texts_str = ' | '.join(all_texts[:10])  # 最多显示10个
-            if len(all_texts) > 10:
-                all_texts_str += f" ... (共{len(all_texts)}个)"
-            self.lbl_all_texts.setText(all_texts_str)
-        else:
-            self.lbl_all_texts.setText("-")
-        
-        self.frame_ocr_result.show()
-        self.btn_apply_ocr.show()
-        
-        # 清理 worker
-        if self.ocr_worker:
-            self.ocr_worker.deleteLater()
-            self.ocr_worker = None
+        try:
+            self.lbl_ocr_status.setText("识别完成，请核对信息")
+            self.ocr_result = fields
+            
+            # 更新预览
+            app = fields.get('app_name', '-') or '-'
+            username = fields.get('username', '-') or '-'
+            password = fields.get('password', '-') or '-'
+            
+            self.lbl_ocr_app.setText(f"应用：{app}")
+            self.lbl_ocr_username.setText(f"账号：{username}")
+            self.lbl_ocr_password.setText(f"密码：{password}")
+            
+            # 显示所有识别的文字
+            all_texts = fields.get('all_texts', [])
+            if all_texts:
+                all_texts_str = ' | '.join(all_texts[:10])  # 最多显示10个
+                if len(all_texts) > 10:
+                    all_texts_str += f" ... (共{len(all_texts)}个)"
+                self.lbl_all_texts.setText(all_texts_str)
+            else:
+                self.lbl_all_texts.setText("-")
+            
+            self.frame_ocr_result.show()
+            self.btn_apply_ocr.show()
+        except Exception as e:
+            import traceback
+            print(f"[OCR] on_ocr_finished ERROR: {e}")
+            traceback.print_exc()
+        # 不在这里清理 worker，等 QThread.finished 信号触发 _on_ocr_worker_finished
     
     def on_ocr_error(self, error_msg: str):
         """OCR 识别失败"""
         self.lbl_ocr_status.setText(f"识别失败：{error_msg}")
-        
-        # 清理 worker
+        # 不在这里清理 worker，等 QThread.finished 信号触发 _on_ocr_worker_finished
+    
+    def _on_ocr_worker_cleanup(self):
+        """延迟清理 OCR worker 引用，避免在信号处理期间销毁对象"""
         if self.ocr_worker:
-            self.ocr_worker.deleteLater()
             self.ocr_worker = None
     
     def on_apply_ocr_result(self):
         """应用 OCR 识别结果"""
-        # 切换到手动输入标签
-        self.tabs.setCurrentIndex(0)
-        
-        # 填充字段
-        app_name = self.ocr_result.get('app_name', '')
-        username = self.ocr_result.get('username', '')
-        password = self.ocr_result.get('password', '')
-        url = self.ocr_result.get('url', '')
-        all_texts = self.ocr_result.get('all_texts', [])
-        
-        # 自动填充识别到的字段
-        if app_name:
-            self.txt_app_name.setText(app_name)
-        
-        if url:
-            self.txt_url.setText(url)
-        
-        if username:
-            self.txt_username.setText(username)
-        
-        if password:
-            self.txt_password.setText(password)
-        
-        # 生成备注内容：包含自动识别结果和原始识别文字
-        remark_lines = []
-        remark_lines.append("【OCR识别结果】")
-        remark_lines.append(f"应用：{app_name or '(未识别)'}")
-        remark_lines.append(f"账号：{username or '(未识别)'}")
-        remark_lines.append(f"密码：{password or '(未识别)'}")
-        if url:
-            remark_lines.append(f"网址：{url}")
-        remark_lines.append("")
-        remark_lines.append("【原始识别文字】")
-        for i, text in enumerate(all_texts, 1):
-            remark_lines.append(f"{i}. {text}")
-        
-        remark_text = "\n".join(remark_lines)
-        
-        # 如果备注已有内容，追加到后面；否则直接设置
-        current_remark = self.txt_remark.toPlainText().strip()
-        if current_remark:
-            self.txt_remark.setText(current_remark + "\n\n" + remark_text)
-        else:
-            self.txt_remark.setText(remark_text)
-        
-        # 自动触发 AI 分类（异步，由 AI 状态决定按钮是否可用）
-        self.on_ai_categorize()
-        
-        QMessageBox.information(self, "成功", "已应用识别结果，请核对并补充信息\n\n识别详情已添加到备注区域，如有错误请手动修改。")
+        try:
+            print("[OCR] Step 1: setCurrentIndex")
+            self.tabs.setCurrentIndex(0)
+            
+            print("[OCR] Step 2: get fields")
+            app_name = self.ocr_result.get('app_name', '')
+            username = self.ocr_result.get('username', '')
+            password = self.ocr_result.get('password', '')
+            url = self.ocr_result.get('url', '')
+            all_texts = self.ocr_result.get('all_texts', [])
+            
+            print("[OCR] Step 3: fill fields")
+            if app_name:
+                self.txt_app_name.setText(app_name)
+            if url:
+                self.txt_url.setText(url)
+            if username:
+                self.txt_username.setText(username)
+            if password:
+                self.txt_password.setText(password)
+            
+            print("[OCR] Step 4: build remark")
+            remark_lines = []
+            remark_lines.append("【OCR识别结果】")
+            remark_lines.append(f"应用：{app_name or '(未识别)'}")
+            remark_lines.append(f"账号：{username or '(未识别)'}")
+            remark_lines.append(f"密码：{password or '(未识别)'}")
+            if url:
+                remark_lines.append(f"网址：{url}")
+            remark_lines.append("")
+            remark_lines.append("【原始识别文字】")
+            for i, text in enumerate(all_texts, 1):
+                remark_lines.append(f"{i}. {text}")
+            
+            remark_text = "\n".join(remark_lines)
+            
+            print("[OCR] Step 5: set remark")
+            current_remark = self.txt_remark.toPlainText().strip()
+            if current_remark:
+                self.txt_remark.setText(current_remark + "\n\n" + remark_text)
+            else:
+                self.txt_remark.setText(remark_text)
+            
+            print("[OCR] Step 6: AI categorize")
+            self.on_ai_categorize_parent()
+            print("[OCR] Step 7: done")
+            QMessageBox.information(self, "成功", "已应用识别结果，请核对并补充信息\n\n识别详情已添加到备注区域，如有错误请手动修改。")
+        except Exception as e:
+            import traceback
+            print(f"[OCR] on_apply_ocr_result ERROR: {e}")
+            traceback.print_exc()
+            QMessageBox.warning(self, "应用失败", f"应用 OCR 结果时出错：{str(e)}")
     
     def load_account_data(self):
         """加载账号数据（编辑模式）"""
@@ -1106,7 +1195,8 @@ class AccountDialog(QDialog):
         self.btn_ai_remark.setEnabled(False)
         self.btn_ai_remark.setText("生成中...")
         
-        task_id = self._ai_manager.generate_remark_async(app_name, url, category)
+        remark = self.txt_remark.toPlainText().strip()
+        task_id = self._ai_manager.generate_remark_async(app_name, url, category, remark)
         self._pending_remark_task = task_id
     
     def _on_remark_result(self, task_id, result):

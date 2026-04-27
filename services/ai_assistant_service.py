@@ -84,7 +84,13 @@ class AIAssistantService:
         target_category = max(matched_cats, key=len)
         
         # 局部操作关键词：这些操作通常只涉及某个分类下的条目
-        local_op_keywords = ['细分', '二级', '子类', '子分类', '添加备注', '添加标签', '整理分类', '整理', '重组', '重命名']
+        local_op_keywords = [
+            '细分', '二级', '子类', '子分类',
+            '添加备注', '添加标签',
+            '整理分类', '整理', '重组', '重命名',
+            '分类', '重新分类', '调整分类', '修改分类', '改变分类', '变更分类',
+            '移到', '移动到', '转移至', '归类',
+        ]
         is_local_op = any(kw in query for kw in local_op_keywords)
         
         if not is_local_op:
@@ -634,14 +640,14 @@ class AIAssistantService:
             else:
                 db_summary = self.build_db_summary(urls=filtered_items, vault_type=vault_type, max_items=500)
         else:
-            # 全局操作：使用缓存，未命中则构建并缓存
-            db_summary = self.conversation_context.get_db_summary(vault_type)
+            # 全局操作：使用缓存，未命中或条数不一致则构建并缓存
+            db_summary = self.conversation_context.get_db_summary(vault_type, item_count=len(filtered_items))
             if db_summary is None:
                 if vault_type == 'accounts':
                     db_summary = self.build_db_summary(filtered_items, vault_type=vault_type, max_items=500)
                 else:
                     db_summary = self.build_db_summary(urls=filtered_items, vault_type=vault_type, max_items=500)
-                self.conversation_context.set_db_summary(db_summary, vault_type)
+                self.conversation_context.set_db_summary(db_summary, vault_type, item_count=len(filtered_items))
         print(f"[AIAssistant] db_summary length={len(db_summary)}, first_200={db_summary[:200]!r}")
 
         # 4. 准备 tool_context（使用筛选后的数据，确保工具内部也只看到这些条目）
@@ -719,7 +725,7 @@ class AIAssistantService:
                 continue
 
             # Plan 模式拦截非只读工具
-            if mode == 'plan' and tool.permission != PermissionLevel.READONLY:
+            if mode == 'plan' and tool.permission.value != PermissionLevel.READONLY.value:
                 return {
                     "success": True,
                     "done": True,
@@ -750,7 +756,7 @@ class AIAssistantService:
                 continue
 
             # PREVIEW/CONFIRM 权限 + build 模式 -> 暂停等待确认
-            if tool.permission in (PermissionLevel.PREVIEW, PermissionLevel.CONFIRM) and mode == 'build':
+            if tool.permission.value in (PermissionLevel.PREVIEW.value, PermissionLevel.CONFIRM.value) and mode == 'build':
                 preview = self.build_action_preview_from_tool_result(tool_result, tool) if tool_result.preview_data else None
                 return {
                     "success": True,
@@ -769,7 +775,7 @@ class AIAssistantService:
                 }
 
             # READONLY 工具
-            if tool.permission == PermissionLevel.READONLY:
+            if tool.permission.value == PermissionLevel.READONLY.value:
                 # 构造格式化回复
                 response = tool_result.message or "查询完成"
                 matched_ids = []
@@ -777,6 +783,13 @@ class AIAssistantService:
                     data = tool_result.data
                     matched_count = data.get("matched_count", 0)
                     matched_ids = data.get("matched_ids", [])
+                    
+                    # 处理 get_recent_changes 等特殊工具返回的 changes 列表
+                    if not matched_ids and "changes" in data:
+                        changes = data["changes"]
+                        matched_ids = [c["id"] for c in changes if c.get("id") is not None]
+                        matched_count = len(matched_ids)
+                    
                     if matched_count > 0 and matched_ids:
                         # 反查匹配项名称，生成更友好的回复
                         items = tool_context.get("accounts") or tool_context.get("urls") or []
@@ -1365,9 +1378,11 @@ class AIAssistantService:
                     else:
                         original = self.db.get_url_by_id(target_id)
                         if original:
-                            self.db.soft_delete_url(target_id, original)
+                            # 网址库独立回收站
                             if self.url_db:
-                                self.url_db.delete_url(target_id)
+                                self.url_db.soft_delete_url(target_id, original)
+                            else:
+                                self.db.soft_delete_url(target_id, original)
                     affected_ids.append(target_id)
                 except Exception as e:
                     import traceback

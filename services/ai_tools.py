@@ -378,17 +378,17 @@ class SemanticFilterUrlsTool(AITool):
 _BATCH_ADD_ACCOUNT_SCHEMA = {
     "items": {
         "type": "array",
-        "description": "待添加的账号列表",
+        "description": "待添加的账号列表。你需要自行从用户输入中提取各字段，格式不固定时按语义推断。",
         "items": {
             "type": "object",
             "properties": {
-                "app_name": {"type": "string"},
-                "username": {"type": "string"},
-                "password": {"type": "string"},
-                "url": {"type": "string"},
-                "category": {"type": "string"},
-                "remark": {"type": "string"},
-                "tags": {"type": "array", "items": {"type": "string"}}
+                "app_name": {"type": "string", "description": "应用名称/网站名称。通常是用户输入的第一个词或最显眼的名称，如'专利'、'B站'、'学工系统'"},
+                "username": {"type": "string", "description": "用户名/账号。看起来像手机号、邮箱、学号、QQ号等的字符串。如'13959106910'、'abc@qq.com'、'2023001'"},
+                "password": {"type": "string", "description": "密码。紧跟在'密码'、'pwd'等词后面的内容，或看起来像密码的字符串"},
+                "url": {"type": "string", "description": "网址。以http://或https://开头的链接。如果没有协议头但有域名，补全为https://。如'https://pss-system.cponline.cnipa.gov.cn'"},
+                "category": {"type": "string", "description": "分类。根据应用名/网址推测最合适的分类，如学术网站→'学术与研究'，银行→'金融与支付'，学校系统→'青岛大学'"},
+                "remark": {"type": "string", "description": "备注。用户额外说明的信息，没有则留空字符串"},
+                "tags": {"type": "array", "items": {"type": "string"}, "description": "标签列表。没有则留空数组[]"}
             }
         }
     }
@@ -401,11 +401,11 @@ _BATCH_ADD_URL_SCHEMA = {
         "items": {
             "type": "object",
             "properties": {
-                "title": {"type": "string"},
-                "url": {"type": "string"},
-                "category": {"type": "string"},
-                "remark": {"type": "string"},
-                "tags": {"type": "array", "items": {"type": "string"}}
+                "title": {"type": "string", "description": "网址标题/名称。如'GitHub'、'百度'"},
+                "url": {"type": "string", "description": "网址链接。以http://或https://开头"},
+                "category": {"type": "string", "description": "分类。根据网址内容推测最合适的分类"},
+                "remark": {"type": "string", "description": "备注。没有则留空"},
+                "tags": {"type": "array", "items": {"type": "string"}, "description": "标签列表。没有则留空数组[]"}
             }
         }
     }
@@ -1350,6 +1350,7 @@ class SmartClassifyUrlsTool(AITool):
         item_map = {getattr(u, 'id', 0): u for u in urls if hasattr(u, 'id')}
         preview_items = []
         categories = []
+        seen_ids = set()
         for cat_name, id_list in data.items():
             if not isinstance(id_list, list):
                 continue
@@ -1665,35 +1666,81 @@ class GetStatisticsTool(AITool):
         )
 
 
+def _parse_timestamp(ts):
+    """把 SQLite 字符串或 datetime 统一解析为 datetime 对象"""
+    from datetime import datetime
+    if ts is None:
+        return None
+    if isinstance(ts, datetime):
+        return ts
+    if isinstance(ts, str):
+        # 尝试多种格式
+        for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M:%S.%f', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%dT%H:%M:%S.%f', '%Y-%m-%dT%H:%M:%S.%fZ'):
+            try:
+                return datetime.strptime(ts, fmt)
+            except ValueError:
+                continue
+        try:
+            return datetime.fromisoformat(ts.replace('Z', '+00:00'))
+        except ValueError:
+            pass
+    return None
+
+
 @ToolRegistry.register(
     name="get_recent_changes",
-    description="获取最近变更记录",
+    description="获取最近一轮变更记录（按时间聚类，同一批次5分钟内的修改视为一轮）",
     permission=PermissionLevel.READONLY,
     params_schema={
-        "vault_type": {"type": "string", "enum": ["account", "url"], "description": "库类型"},
-        "limit": {"type": "integer", "description": "返回条数", "default": 10}
+        "vault_type": {"type": "string", "enum": ["account", "url"], "description": "库类型"}
     }
 )
 class GetRecentChangesTool(AITool):
     def execute(self, params: Dict, context: Dict) -> ToolResult:
         vault_type = params.get("vault_type", context.get("vault_type", "account"))
-        limit = params.get("limit", 10)
         items = context.get("accounts" if vault_type == "account" else "urls", [])
         changes = []
         for item in items:
-            ts = getattr(item, 'updated_at', None) or getattr(item, 'created_at', None)
-            changes.append({
-                "id": getattr(item, 'id', None),
-                "name": getattr(item, 'app_name', '') or getattr(item, 'title', ''),
-                "timestamp": ts.isoformat() if hasattr(ts, 'isoformat') else str(ts) if ts else None,
-                "type": vault_type
-            })
-        changes.sort(key=lambda x: x["timestamp"] or "", reverse=True)
-        changes = changes[:limit]
+            ts = _parse_timestamp(getattr(item, 'updated_at', None)) \
+                 or _parse_timestamp(getattr(item, 'created_at', None))
+            if ts:
+                changes.append({
+                    "id": getattr(item, 'id', None),
+                    "name": getattr(item, 'app_name', '') or getattr(item, 'title', ''),
+                    "timestamp": ts,
+                    "type": vault_type
+                })
+        
+        if not changes:
+            return ToolResult(
+                success=True,
+                data={"vault_type": vault_type, "changes": []},
+                message="暂无变更记录"
+            )
+        
+        # 按时间倒序排序
+        changes.sort(key=lambda x: x["timestamp"], reverse=True)
+        
+        # 时间聚类：相邻修改时间差 < 5分钟视为同一轮
+        from datetime import timedelta
+        cluster = [changes[0]]
+        for i in range(1, len(changes)):
+            prev_ts = changes[i - 1]["timestamp"]
+            curr_ts = changes[i]["timestamp"]
+            if prev_ts - curr_ts < timedelta(minutes=5):
+                cluster.append(changes[i])
+            else:
+                break
+        
+        # 序列化时间戳用于返回
+        for c in cluster:
+            ts = c["timestamp"]
+            c["timestamp"] = ts.isoformat() if hasattr(ts, 'isoformat') else str(ts)
+        
         return ToolResult(
             success=True,
-            data={"vault_type": vault_type, "limit": limit, "changes": changes},
-            message=f"获取 {vault_type} 库最近 {len(changes)} 条变更"
+            data={"vault_type": vault_type, "changes": cluster},
+            message=f"获取 {vault_type} 库最近一轮修改，共 {len(cluster)} 条"
         )
 
 

@@ -45,6 +45,7 @@ class ConversationContext:
         self._db_summary_loaded: bool = False
         self._db_summary_cache: Optional[str] = None
         self._db_summary_vault_type: Optional[str] = None
+        self._db_summary_item_count: int = 0
 
     def reset(self):
         """重置对话上下文"""
@@ -55,6 +56,7 @@ class ConversationContext:
         self._db_summary_loaded = False
         self._db_summary_cache = None
         self._db_summary_vault_type = None
+        self._db_summary_item_count = 0
 
     def is_expired(self) -> bool:
         """检查上下文是否因空闲超时而过期"""
@@ -150,15 +152,18 @@ class ConversationContext:
             lines.append(f"  结果: {result_str}")
         return "\n".join(lines)
 
-    def set_db_summary(self, summary: str, vault_type: str):
+    def set_db_summary(self, summary: str, vault_type: str, item_count: int = 0):
         """设置数据库摘要缓存"""
         self._db_summary_cache = summary
         self._db_summary_vault_type = vault_type
+        self._db_summary_item_count = item_count
         self._db_summary_loaded = True
 
-    def get_db_summary(self, vault_type: str) -> Optional[str]:
-        """获取数据库摘要（仅当 vault_type 匹配时返回）"""
+    def get_db_summary(self, vault_type: str, item_count: int = 0) -> Optional[str]:
+        """获取数据库摘要（仅当 vault_type 匹配且条数一致时返回）"""
         if not self._db_summary_loaded or self._db_summary_vault_type != vault_type:
+            return None
+        if item_count > 0 and self._db_summary_item_count != item_count:
             return None
         return self._db_summary_cache
 
@@ -167,6 +172,7 @@ class ConversationContext:
         self._db_summary_loaded = False
         self._db_summary_cache = None
         self._db_summary_vault_type = None
+        self._db_summary_item_count = 0
 
 
 class ReferenceResolver:

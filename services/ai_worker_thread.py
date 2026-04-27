@@ -251,6 +251,10 @@ class AIWorkerThread(QThread):
                 result = client.categorize(
                     task.payload.get("app_name", ""),
                     task.payload.get("url", ""),
+                    task.payload.get("existing_categories"),
+                    task.payload.get("parent_hint"),
+                    task.payload.get("remark", ""),
+                    task.payload.get("ai_remark", ""),
                 )
 
             elif task.task_type == AITaskType.GENERATE_REMARK:
@@ -300,11 +304,12 @@ class AIWorkerThread(QThread):
         app_name = payload.get("app_name", "")
         url = payload.get("url", "")
         category = payload.get("category", "")
+        remark = payload.get("remark", "")
 
         if not app_name:
             raise ValueError("应用名称不能为空")
 
-        prompt = f"""根据应用名称、网址和分类，用一句话描述这个账号的用途。
+        prompt = f"""根据应用名称、网址、分类和用户手动备注，用一句话描述这个账号的用途。
 
 要求：
 - 不超过20个字
@@ -314,6 +319,7 @@ class AIWorkerThread(QThread):
 应用名称：{app_name}
 网址：{url or '无'}
 分类：{category or '未分类'}
+用户手动备注：{remark or '无'}
 
 用途描述："""
 

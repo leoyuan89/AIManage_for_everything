@@ -961,23 +961,111 @@ class ActionPreviewWidget(QFrame):
         return f"影响范围：{selected_count}/{total_count} 条记录 | 操作类型：批量更新 ({self.action})"
 
 
+class DropZoneWidget(QLabel):
+    """重组模式下的固定顶部拖放区域"""
+    
+    dropped = pyqtSignal(str)  # (source_path)
+    
+    def __init__(self, parent=None):
+        super().__init__("📌 将类别拖至此处成为一级类别", parent)
+        self.setFixedHeight(40)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setStyleSheet("""
+            DropZoneWidget {
+                background-color: #f0f0f0;
+                color: #888888;
+                border: 2px dashed #cccccc;
+                border-radius: 6px;
+                font-size: 12px;
+                margin: 4px 6px;
+            }
+        """)
+        self.setAcceptDrops(True)
+    
+    def dragEnterEvent(self, event):
+        source = event.source()
+        if isinstance(source, CategoryTreeWidget) and source._dragging_item:
+            event.acceptProposedAction()
+            self.setStyleSheet("""
+                DropZoneWidget {
+                    background-color: #e3f2fd;
+                    color: #1976D2;
+                    border: 2px dashed #90CAF9;
+                    border-radius: 6px;
+                    font-size: 12px;
+                    margin: 4px 6px;
+                }
+            """)
+        else:
+            event.ignore()
+    
+    def dragLeaveEvent(self, event):
+        self.setStyleSheet("""
+            DropZoneWidget {
+                background-color: #f0f0f0;
+                color: #888888;
+                border: 2px dashed #cccccc;
+                border-radius: 6px;
+                font-size: 12px;
+                margin: 4px 6px;
+            }
+        """)
+    
+    def dropEvent(self, event):
+        self.setStyleSheet("""
+            DropZoneWidget {
+                background-color: #f0f0f0;
+                color: #888888;
+                border: 2px dashed #cccccc;
+                border-radius: 6px;
+                font-size: 12px;
+                margin: 4px 6px;
+            }
+        """)
+        source = event.source()
+        if isinstance(source, CategoryTreeWidget) and source._dragging_item:
+            category = source._dragging_item.data(0, Qt.ItemDataRole.UserRole)
+            if category and category not in ('全部', '__DROP_TO_ROOT__'):
+                self.dropped.emit(category)
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+
 class CategoryTreeWidget(QTreeWidget):
-    """支持受限制拖拽排序的分类树
+    """支持受限制拖拽排序和重组的分类树
     
     - 一级分类：只能在顶层之间移动
     - 二级分类：只能在同一父节点下移动，禁止跨父节点
+    - 重组模式：支持跨层级拖拽重组
     """
+    
+    reorganize_requested = pyqtSignal(str, str)  # (source_path, target_parent)
     
     def __init__(self, parent=None):
         super().__init__(parent)
         self._dragging_item = None
         self._edit_mode = False
+        self._reorganize_mode = False
         self._normal_style = ""
+        self._auto_scroll_direction = 0
+        self._auto_scroll_timer = QTimer(self)
+        self._auto_scroll_timer.setInterval(50)
+        self._auto_scroll_timer.timeout.connect(self._perform_auto_scroll)
+    
+    def _perform_auto_scroll(self):
+        scrollbar = self.verticalScrollBar()
+        if self._auto_scroll_direction == -1:
+            new_value = scrollbar.value() - 18
+            scrollbar.setValue(max(scrollbar.minimum(), new_value))
+        elif self._auto_scroll_direction == 1:
+            new_value = scrollbar.value() + 18
+            scrollbar.setValue(min(scrollbar.maximum(), new_value))
     
     def set_normal_style(self, style: str):
         """保存正常模式下的样式表，用于退出编辑模式时恢复"""
         self._normal_style = style
-        if not self._edit_mode:
+        if not self._edit_mode and not self._reorganize_mode:
             self.setStyleSheet(style)
     
     def set_edit_mode(self, enabled: bool):
@@ -1020,22 +1108,139 @@ class CategoryTreeWidget(QTreeWidget):
             # 恢复正常样式
             self.setStyleSheet(self._normal_style)
     
+    def set_reorganize_mode(self, enabled: bool):
+        self._reorganize_mode = enabled
+        if enabled:
+            self.setDragEnabled(True)
+            self.setAcceptDrops(True)
+            self.viewport().setAcceptDrops(True)
+            self.setDragDropMode(QTreeWidget.DragDropMode.InternalMove)
+            self.setDefaultDropAction(Qt.DropAction.MoveAction)
+            self.setStyleSheet("""
+                QTreeWidget {
+                    background-color: #f5f5f5;
+                    border: none;
+                    outline: none;
+                }
+                QTreeWidget::item {
+                    height: 38px;
+                    padding-left: 12px;
+                    border-radius: 6px;
+                    margin: 2px 6px;
+                    border: 1px dashed transparent;
+                }
+                QTreeWidget::item:selected {
+                    background-color: #e3f2fd;
+                    color: #1976D2;
+                    border: 1px dashed #90CAF9;
+                }
+                QTreeWidget::item:hover {
+                    background-color: #eeeeee;
+                }
+            """)
+        else:
+            self.setDragEnabled(False)
+            self.setAcceptDrops(False)
+            self.viewport().setAcceptDrops(False)
+            self.setDragDropMode(QTreeWidget.DragDropMode.NoDragDrop)
+            self.setDefaultDropAction(Qt.DropAction.IgnoreAction)
+            self.setStyleSheet(self._normal_style)
+    
     def startDrag(self, supportedActions):
+        # 开始拖拽前清理可能残留的状态
+        self._auto_scroll_timer.stop()
+        self._auto_scroll_direction = 0
+        
         self._dragging_item = self.currentItem()
         super().startDrag(supportedActions)
+        
+        # drag 结束后（无论成功、取消或异常）强制清理
+        self._auto_scroll_timer.stop()
+        self._auto_scroll_direction = 0
+        self._dragging_item = None
     
     def dragMoveEvent(self, event):
-        if not self._edit_mode or not self._dragging_item:
+        if not self._dragging_item:
+            event.ignore()
+            return
+        
+        if not self._edit_mode and not self._reorganize_mode:
             event.ignore()
             return
 
+        # 自动滚动检测
+        y = event.position().toPoint().y()
+        height = self.viewport().height()
+        if y < height * 0.2:
+            self._auto_scroll_direction = -1
+            if not self._auto_scroll_timer.isActive():
+                self._auto_scroll_timer.start()
+        elif y > height * 0.8:
+            self._auto_scroll_direction = 1
+            if not self._auto_scroll_timer.isActive():
+                self._auto_scroll_timer.start()
+        else:
+            self._auto_scroll_direction = 0
+            self._auto_scroll_timer.stop()
+
         source_item = self._dragging_item
         source_parent = source_item.parent()
+        source_data = source_item.data(0, Qt.ItemDataRole.UserRole)
 
         pos = event.position().toPoint()
         target_item = self.itemAt(pos)
         drop_indicator = self.dropIndicatorPosition()
 
+        if self._reorganize_mode:
+            # 重组模式规则
+            # 1. 源是"全部"或"成为一级"特殊条目 → 拒绝
+            if source_data in ('全部', '__DROP_TO_ROOT__'):
+                event.ignore()
+                return
+            
+            # 2. Above/Below → 接受（同级排序）
+            if drop_indicator in (QTreeWidget.DropIndicatorPosition.AboveItem,
+                                  QTreeWidget.DropIndicatorPosition.BelowItem):
+                # 一级只能在顶层之间排序
+                if source_parent is None:
+                    if target_item and target_item.parent() is not None:
+                        event.ignore()
+                        return
+                else:
+                    # 源是二级，目标必须在同一父节点下
+                    if target_item and target_item.parent() != source_parent:
+                        event.ignore()
+                        return
+                event.acceptProposedAction()
+                return
+            
+            # 3. OnItem 情况
+            if drop_indicator == QTreeWidget.DropIndicatorPosition.OnItem:
+                if target_item is None:
+                    event.ignore()
+                    return
+                
+                target_data = target_item.data(0, Qt.ItemDataRole.UserRole)
+                
+                # 目标是二级节点 → 拒绝（避免三级）
+                if target_item.parent() is not None:
+                    event.ignore()
+                    return
+                
+                # 目标是一级节点
+                # 源是一级（有子类）→ 拒绝（避免产生三级）
+                if source_parent is None and source_item.childCount() > 0:
+                    event.ignore()
+                    return
+                
+                # 其他情况：源是一级（无子类）或二级，目标是一级 → 接受
+                event.acceptProposedAction()
+                return
+            
+            event.ignore()
+            return
+
+        # 原有排序逻辑
         # 先计算原始 target_parent
         if target_item:
             if drop_indicator == QTreeWidget.DropIndicatorPosition.OnItem:
@@ -1070,19 +1275,126 @@ class CategoryTreeWidget(QTreeWidget):
 
         event.acceptProposedAction()
 
+    def dragLeaveEvent(self, event):
+        self._auto_scroll_timer.stop()
+        self._auto_scroll_direction = 0
+        super().dragLeaveEvent(event)
+
     def dropEvent(self, event):
-        if not self._edit_mode or not self._dragging_item:
+        self._auto_scroll_timer.stop()
+        self._auto_scroll_direction = 0
+        if not self._dragging_item:
+            event.ignore()
+            return
+        
+        if not self._edit_mode and not self._reorganize_mode:
             event.ignore()
             return
 
         source_item = self._dragging_item
         source_parent = source_item.parent()
+        source_data = source_item.data(0, Qt.ItemDataRole.UserRole)
 
         # 计算目标位置
         pos = event.position().toPoint()
         target_item = self.itemAt(pos)
         drop_indicator = self.dropIndicatorPosition()
 
+        if self._reorganize_mode:
+            # 先处理 OnItem 跨层级重组
+            if drop_indicator == QTreeWidget.DropIndicatorPosition.OnItem and target_item:
+                target_data = target_item.data(0, Qt.ItemDataRole.UserRole)
+                
+                # 目标是一级节点（二级节点已在 dragMoveEvent 中拒绝）
+                if target_item.parent() is None:
+                    if source_parent is None and source_item.childCount() > 0:
+                        event.ignore()
+                        self._dragging_item = None
+                        return
+                    
+                    event.ignore()
+                    self.reorganize_requested.emit(source_data, target_data)
+                    self._dragging_item = None
+                    return
+            
+            # 以下是 Above/Below 同级排序逻辑，和排序模式相同
+            if target_item:
+                if drop_indicator == QTreeWidget.DropIndicatorPosition.AboveItem:
+                    target_parent = target_item.parent() or self.invisibleRootItem()
+                    target_row = target_parent.indexOfChild(target_item)
+                elif drop_indicator == QTreeWidget.DropIndicatorPosition.BelowItem:
+                    target_parent = target_item.parent() or self.invisibleRootItem()
+                    target_row = target_parent.indexOfChild(target_item) + 1
+                else:
+                    target_parent = self.invisibleRootItem()
+                    target_row = self.topLevelItemCount()
+            else:
+                target_parent = self.invisibleRootItem()
+                target_row = self.topLevelItemCount()
+            
+            # 修正 OnItem：同级排序时按 BelowItem 处理
+            if source_parent is None:                       # 一级分类
+                if (target_item and target_item.parent() is None and
+                        drop_indicator == QTreeWidget.DropIndicatorPosition.OnItem):
+                    target_parent = self.invisibleRootItem()
+                    target_row = self.invisibleRootItem().indexOfChild(target_item) + 1
+            else:                                           # 二级分类
+                if (target_item and target_item.parent() == source_parent and
+                        drop_indicator == QTreeWidget.DropIndicatorPosition.OnItem):
+                    target_parent = source_parent
+                    target_row = source_parent.indexOfChild(target_item) + 1
+            
+            # 规则限制
+            if source_parent is None:
+                if target_parent != self.invisibleRootItem():
+                    event.ignore()
+                    self._dragging_item = None
+                    return
+            else:
+                if target_parent != source_parent:
+                    event.ignore()
+                    self._dragging_item = None
+                    return
+            
+            # 手动移动
+            event.ignore()
+            _source_item = source_item
+            _source_parent = source_parent
+            _target_parent = target_parent
+            _target_row = target_row
+
+            def do_move():
+                if _source_parent is None:
+                    old_row = self.indexOfTopLevelItem(_source_item)
+                    if old_row < 0:
+                        return
+                    taken = self.takeTopLevelItem(old_row)
+                    if taken is None:
+                        return
+                    tr = _target_row
+                    if old_row < tr:
+                        tr -= 1
+                    self.insertTopLevelItem(tr, taken)
+                    self.setCurrentItem(taken)
+                else:
+                    old_row = _source_parent.indexOfChild(_source_item)
+                    if old_row < 0:
+                        return
+                    taken = _source_parent.takeChild(old_row)
+                    if taken is None:
+                        return
+                    tr = _target_row
+                    if old_row < tr:
+                        tr -= 1
+                    _target_parent.insertChild(tr, taken)
+                    self.setCurrentItem(taken)
+                self.viewport().update()
+
+            QTimer.singleShot(0, do_move)
+            self._dragging_item = None
+            return
+
+        # 原有排序模式逻辑
         if target_item:
             if drop_indicator == QTreeWidget.DropIndicatorPosition.OnItem:
                 target_parent = target_item
@@ -1434,6 +1746,26 @@ class MainWindow(QMainWindow):
         self.btn_category_sort.clicked.connect(self._on_category_edit_toggle)
         category_header.addWidget(self.btn_category_sort)
         
+        # 类别重组按钮
+        self.btn_category_reorganize = QPushButton("重组")
+        self.btn_category_reorganize.setFixedSize(56, 26)
+        self.btn_category_reorganize.setStyleSheet("""
+            QPushButton {
+                background-color: #E3F2FD;
+                color: #1976D2;
+                border: 1px solid #90CAF9;
+                border-radius: 4px;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #BBDEFB;
+            }
+        """)
+        self.btn_category_reorganize.setToolTip("重组分类结构")
+        self.btn_category_reorganize.clicked.connect(self._on_category_reorganize_toggle)
+        category_header.addWidget(self.btn_category_reorganize)
+        
         # 类别批量删除按钮
         self.btn_category_batch_delete = QPushButton("删除")
         self.btn_category_batch_delete.setFixedSize(56, 26)
@@ -1454,6 +1786,12 @@ class MainWindow(QMainWindow):
         self.btn_category_batch_delete.clicked.connect(self._on_category_batch_delete_toggle)
         category_header.addWidget(self.btn_category_batch_delete)
         left_layout.addLayout(category_header)
+        
+        # 重组模式顶部固定拖放区域
+        self.drop_zone_widget = DropZoneWidget()
+        self.drop_zone_widget.hide()
+        self.drop_zone_widget.dropped.connect(self._on_drop_zone_dropped)
+        left_layout.addWidget(self.drop_zone_widget)
         
         # 分类树
         self.category_tree = CategoryTreeWidget()
@@ -1513,6 +1851,7 @@ class MainWindow(QMainWindow):
         self.category_tree.set_normal_style(self._category_tree_normal_style)
         self.category_tree.setStyleSheet(self._category_tree_normal_style)
         self.category_tree.itemClicked.connect(self._on_category_clicked)
+        self.category_tree.reorganize_requested.connect(self._on_reorganize_requested)
         self.category_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.category_tree.customContextMenuRequested.connect(self._on_category_context_menu)
         self.category_tree.setDragDropMode(QTreeWidget.DragDropMode.NoDragDrop)
@@ -2170,9 +2509,11 @@ class MainWindow(QMainWindow):
     
     def _on_vault_tab_changed(self, tab_id: int):
         """库切换事件"""
-        # 如果处于分类编辑模式或批量删除模式，先退出
+        # 如果处于分类编辑模式、重组模式或批量删除模式，先退出
         if getattr(self, '_category_edit_mode', False):
             self._on_category_edit_toggle()
+        if getattr(self, '_category_reorganize_mode', False):
+            self._on_category_reorganize_toggle()
         if getattr(self, '_category_selection_mode', False):
             self._on_category_batch_delete_toggle()
         
@@ -2233,6 +2574,11 @@ class MainWindow(QMainWindow):
     
     def _reload_categories(self):
         """重新加载分类导航（树形结构）"""
+        # 重建树期间断开 itemChanged，避免 setCheckState/clear 触发信号修改 _selected_categories
+        try:
+            self.category_tree.itemChanged.disconnect(self._on_category_check_changed)
+        except Exception:
+            pass
         self.category_tree.clear()
         
         # 获取当前模式的分类树
@@ -2243,13 +2589,14 @@ class MainWindow(QMainWindow):
         
         edit_mode = getattr(self, '_category_edit_mode', False)
         cat_sel_mode = getattr(self, '_category_selection_mode', False)
+        reorg_mode = getattr(self, '_category_reorganize_mode', False)
         
         # 添加"全部"节点
         total_count = self._get_total_count()
         root_all = QTreeWidgetItem(self.category_tree)
         root_all.setText(0, f"全部 ({total_count})")
         root_all.setData(0, Qt.ItemDataRole.UserRole, "全部")
-        if edit_mode:
+        if edit_mode or reorg_mode:
             root_all.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
         elif cat_sel_mode:
             root_all.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
@@ -2259,18 +2606,18 @@ class MainWindow(QMainWindow):
             info = tree_data[parent_name]
             count = self._get_category_count(parent_name)
             
-            # 过滤空分类（保留"全部"和"其他"，以及编辑/选择模式下的所有分类）
-            if not edit_mode and not cat_sel_mode and parent_name not in ('全部', '其他') and count == 0 and not info['children']:
+            # 过滤空分类（保留"全部"和"其他"，以及编辑/选择/重组模式下的所有分类）
+            if not edit_mode and not cat_sel_mode and not reorg_mode and parent_name not in ('全部', '其他') and count == 0 and not info['children']:
                 continue
             
             display_text = f"{parent_name} ({count})"
-            if edit_mode:
+            if edit_mode or reorg_mode:
                 display_text = f"☰  {display_text}"
             parent_item = QTreeWidgetItem(self.category_tree)
             parent_item.setText(0, display_text)
             parent_item.setData(0, Qt.ItemDataRole.UserRole, parent_name)
             
-            if edit_mode:
+            if edit_mode or reorg_mode:
                 parent_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsDragEnabled)
             elif cat_sel_mode:
                 if parent_name != '全部':
@@ -2284,14 +2631,20 @@ class MainWindow(QMainWindow):
             for child_name in info['children']:
                 full_path = f"{parent_name}>{child_name}"
                 child_count = self._get_category_count(full_path)
+                
+                # 导航栏过滤空子类：非编辑/选择/重组模式下，count==0 的子类不显示
+                # 但下拉框中仍保留（由 get_categories() 保证）
+                if not edit_mode and not cat_sel_mode and not reorg_mode and child_count == 0:
+                    continue
+                
                 child_text = f"{child_name} ({child_count})"
-                if edit_mode:
+                if edit_mode or reorg_mode:
                     child_text = f"☰  {child_text}"
                 child_item = QTreeWidgetItem(parent_item)
                 child_item.setText(0, child_text)
                 child_item.setData(0, Qt.ItemDataRole.UserRole, full_path)
                 
-                if edit_mode:
+                if edit_mode or reorg_mode:
                     child_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsDragEnabled)
                 elif cat_sel_mode:
                     child_item.setFlags(child_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
@@ -2306,13 +2659,18 @@ class MainWindow(QMainWindow):
         # 默认选中"全部"
         self.category_tree.setCurrentItem(root_all)
         self.current_category = '全部'
+        
+        # 重建完成后重新连接 itemChanged
+        self.category_tree.itemChanged.connect(self._on_category_check_changed)
     
     def _on_category_edit_toggle(self):
         """切换分类编辑排序模式"""
         self._category_edit_mode = not getattr(self, '_category_edit_mode', False)
         
         if self._category_edit_mode:
-            # 进入编辑模式
+            # 进入编辑模式，退出重组模式
+            if getattr(self, '_category_reorganize_mode', False):
+                self._on_category_reorganize_toggle()
             self.btn_category_sort.setText("✓")
             self.btn_category_sort.setToolTip("完成")
             # 启用受限制的拖拽排序
@@ -2336,7 +2694,7 @@ class MainWindow(QMainWindow):
         for i in range(root.childCount()):
             item = root.child(i)
             category = item.data(0, Qt.ItemDataRole.UserRole)
-            if category == '全部':
+            if category == '全部' or category == '__DROP_TO_ROOT__':
                 continue
             orders[category] = idx_top
             idx_top += 1
@@ -2359,22 +2717,98 @@ class MainWindow(QMainWindow):
         self._category_selection_mode = not getattr(self, '_category_selection_mode', False)
         
         if self._category_selection_mode:
-            # 进入批量删除模式，退出编辑模式
+            # 进入批量删除模式，退出编辑/重组模式
             if getattr(self, '_category_edit_mode', False):
                 self._on_category_edit_toggle()
+            if getattr(self, '_category_reorganize_mode', False):
+                self._on_category_reorganize_toggle()
             self.btn_category_batch_delete.setText("取消")
             self.btn_category_sort.hide()
+            self.btn_category_reorganize.hide()
             self.category_sel_bar.show()
             self.category_tree.setStyleSheet(self._category_tree_checkbox_style)
             self._selected_categories.clear()
         else:
             self.btn_category_batch_delete.setText("删除")
             self.btn_category_sort.show()
+            self.btn_category_reorganize.show()
             self.category_sel_bar.hide()
             self.category_tree.setStyleSheet(self._category_tree_normal_style)
             self._selected_categories.clear()
         self._reload_categories()
         self._update_category_sel_bar()
+    
+    def _on_category_reorganize_toggle(self):
+        """切换分类重组模式"""
+        self._category_reorganize_mode = not getattr(self, '_category_reorganize_mode', False)
+        
+        if self._category_reorganize_mode:
+            # 进入重组模式，退出其他模式
+            if getattr(self, '_category_edit_mode', False):
+                self._on_category_edit_toggle()
+            if getattr(self, '_category_selection_mode', False):
+                self._on_category_batch_delete_toggle()
+            self.btn_category_reorganize.setText("✓")
+            self.btn_category_reorganize.setToolTip("完成")
+            self.category_tree.set_reorganize_mode(True)
+            self.drop_zone_widget.show()
+        else:
+            # 退出重组模式，保存顺序
+            self._save_category_order()
+            self.btn_category_reorganize.setText("重组")
+            self.btn_category_reorganize.setToolTip("重组分类结构")
+            self.category_tree.set_reorganize_mode(False)
+            self.drop_zone_widget.hide()
+        self._reload_categories()
+    
+    def _on_drop_zone_dropped(self, source_path: str):
+        """外部拖放区域收到 drop，将类别变为一级"""
+        self.category_tree.reorganize_requested.emit(source_path, "")
+    
+    def _on_reorganize_requested(self, source_path: str, target_parent: str):
+        """处理重组拖拽请求
+        
+        source_path: 旧分类路径，如 "其他>学习" 或 "代码算法"
+        target_parent: 目标一级分类名，空字符串表示变为一级
+        """
+        if '>' in source_path:
+            child_name = source_path.split('>', 1)[1].strip()
+        else:
+            child_name = source_path.strip()
+        
+        if target_parent:
+            new_path = f"{target_parent}>{child_name}"
+        else:
+            new_path = child_name
+        
+        if new_path == source_path:
+            return
+        
+        reply = QMessageBox.question(
+            self,
+            "确认重组",
+            f"确定将「{source_path}」移动到「{new_path}」吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            if self.current_vault == 'accounts':
+                success = self.account_service.reparent_category(source_path, target_parent)
+                self._cache_dirty = True
+            else:
+                success = self._url_service.reparent_category(source_path, target_parent)
+                self._url_cache_dirty = True
+            
+            if success:
+                # 如果当前正查看被移动的旧分类，重置为"全部"避免显示空列表
+                if self.current_category == source_path:
+                    self.current_category = '全部'
+                self._reload_categories()
+                if self.current_vault == 'accounts':
+                    self.load_accounts()
+                else:
+                    self.load_urls()
     
     def _on_category_check_changed(self, item, column):
         """类别复选框状态变化"""
@@ -2658,6 +3092,7 @@ class MainWindow(QMainWindow):
             action_rename = menu.addAction("📝 重命名")
             action_delete = menu.addAction("🗑️ 删除")
         else:
+            action_promote = menu.addAction("⬆️ 升级为一级")
             action_rename = menu.addAction("📝 重命名")
             action_delete = menu.addAction("🗑️ 删除")
         
@@ -2752,6 +3187,38 @@ class MainWindow(QMainWindow):
                 self._url_cache_dirty = True
                 self.current_category = '全部'
                 self.load_accounts() if self.current_vault == 'accounts' else self.load_urls()
+        
+        elif not is_parent_node and action == action_promote:
+            child_name = category.split('>', 1)[1].strip()
+            service = self.account_service if self.current_vault == 'accounts' else self._url_service
+            all_cats = service.get_categories()
+            
+            # 仅检测一级分类同名冲突
+            has_conflict = child_name in all_cats
+            
+            if has_conflict:
+                QMessageBox.warning(self, "提示", f"一级分类「{child_name}」已存在，无法升级")
+                return
+            
+            # 确认对话框
+            reply = QMessageBox.question(
+                self, "确认升级",
+                f'确定将「{category}」升级为一级分类「{child_name}」吗？',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            
+            success = service.promote_category(category)
+            if success:
+                self._reload_categories()
+                self._cache_dirty = True
+                self._url_cache_dirty = True
+                self.current_category = '全部'
+                self.load_accounts() if self.current_vault == 'accounts' else self.load_urls()
+                QMessageBox.information(self, "成功", f'「{category}」已升级为一级分类「{child_name}」')
+            else:
+                QMessageBox.warning(self, "提示", "升级失败，请重试")
     
     def _enter_selection_mode(self):
         """进入批量选择模式"""

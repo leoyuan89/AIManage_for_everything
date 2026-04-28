@@ -21,7 +21,7 @@
   --font-mono: "SF Mono", "Courier New", monospace;
 }
 html, body { width:100%; height:100%; overflow:hidden; background:var(--ios-bg); font-family:var(--font); color:var(--ios-label); -webkit-font-smoothing:antialiased; }
-#app { width:100%; height:100%; position:relative; overflow:hidden; }
+#app { width:100%; height:100%; position:relative; overflow:hidden; overscroll-behavior-x:none; }
 
 /* ===== Animations ===== */
 @keyframes fadeIn { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
@@ -37,9 +37,52 @@ html, body { width:100%; height:100%; overflow:hidden; background:var(--ios-bg);
 .anim-slide-in { animation:slideInRight .3s cubic-bezier(.32,.72,.6,1); }
 
 /* ===== Screen Container ===== */
-.screen { position:absolute; inset:0; display:flex; flex-direction:column; overflow:hidden; }
+.screen {
+  position:absolute; inset:0; display:flex; flex-direction:column; overflow:hidden;
+  transition:transform .25s cubic-bezier(.32,.72,.6,1);
+  background:var(--ios-bg);
+}
 .screen.hidden { display:none; }
 .screen-content { flex:1; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:touch; }
+
+/* 底层状态：上一页可见，但被推至底层并缩小 */
+.screen.behind {
+  z-index:1;
+  transform:translateX(-33%) scale(0.95);
+  transition:none;
+}
+
+/* 当前显示状态 */
+.screen.active {
+  z-index:50;
+  transform:translateX(0) scale(1);
+}
+
+/* 被推出状态（侧滑交互中） */
+.screen.popped {
+  z-index:60;
+  transition:none;
+}
+
+/* 前景页左边缘阴影 —— 宽度 20px，峰值不透明度 0.6 */
+.screen.popped::before {
+  content:'';
+  position:absolute; left:0; top:0; bottom:0; width:20px;
+  background:linear-gradient(to right, rgba(0,0,0,0.6), transparent);
+  z-index:100; pointer-events:none;
+  opacity:var(--shadow-opacity, 0);
+  transition:none;
+}
+
+/* 前后页之间的黑色蒙层 */
+.nav-overlay {
+  position:absolute; inset:0;
+  background:rgba(0,0,0,0.3);
+  z-index:15;
+  pointer-events:none;
+  opacity:0;
+  transition:none;
+}
 
 /* ===== Navigation Bar ===== */
 .nav-bar { flex-shrink:0; display:flex; align-items:center; justify-content:center; height:44px; padding:0 16px; position:relative; background:var(--ios-card); border-bottom:0.5px solid var(--ios-gray4); z-index:10; }
@@ -62,7 +105,7 @@ html, body { width:100%; height:100%; overflow:hidden; background:var(--ios-bg);
 .tab-item { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; height:56px; cursor:pointer; background:none; border:none; font-family:inherit; }
 .tab-item svg { width:24px; height:24px; color:var(--ios-gray); transition:color .2s; }
 .tab-item span { font-size:10px; color:var(--ios-gray); font-weight:500; transition:color .2s; }
-.tab-item.active svg, .tab-item.active span { color:var(--ios-ios-blue); }
+.tab-item.active svg, .tab-item.active span { color:var(--ios-blue); }
 
 /* ===== Lock Screen ===== */
 .lock-screen { background:linear-gradient(160deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); justify-content:center; align-items:center; z-index:100; }
@@ -586,29 +629,150 @@ function sortCategoriesByOrder(cats, orders) {
 
 // ===== SCREEN NAVIGATION =====
 function pushScreen(screenId, builder) {
-  navStack.push({ screen: screenId, scroll: $('.screen:not(.hidden) .screen-content')?.scrollTop||0 });
-  $all('.screen').forEach(s => s.classList.add('hidden'));
-  show(screenId);
+  const currentVisible = $('.screen.active');
+  const currentId = currentVisible?.id;
+
+  // 1. 记录当前页的滚动位置（语义变更：存的是"被覆盖的旧页面"）
+  const scrollTop = currentVisible?.querySelector('.screen-content')?.scrollTop || 0;
+  if(currentId) {
+    navStack.push({ screen: currentId, scroll: scrollTop });
+  }
+
+  // 2. 当前页下沉为 behind（保持可见，但偏移+缩小）
+  if(currentVisible) {
+    currentVisible.classList.remove('active');
+    currentVisible.classList.add('behind');
+  }
+
+  // 3. 新页置为 active（先禁用 CSS transition，避免 class 切换时触发 transform 动画）
+  const newScreen = $('#' + screenId);
+  newScreen.style.transition = 'none';
+  newScreen.classList.remove('hidden', 'behind');
+  newScreen.classList.add('active');
+
+  // 4. 强制 Safari 创建合成层 + 同步重排
+  //    双重保险：backface-visibility:hidden（CSS）+ getBoundingClientRect（JS 强制布局）
+  void newScreen.getBoundingClientRect();
+
+  // 5. 恢复 CSS transition（此时 transform 已稳定，不会误触动画）
+  requestAnimationFrame(() => {
+    newScreen.style.transition = '';
+  });
+
+  // 6. 清理：hidden 掉不在 navStack 中的 behind screen
+  //    保留所有导航栈中记录的页面，确保多层返回时侧滑能看到正确的背景页
+  const keepScreens = new Set(navStack.map(n => n.screen));
+  if(currentId) keepScreens.add(currentId);
+  $all('.screen.behind').forEach(s => {
+    if(!keepScreens.has(s.id)) {
+      s.classList.remove('behind', 'active');
+      s.classList.add('hidden');
+    }
+  });
+
   if(builder) builder();
-  const sc = $(`#${screenId} .screen-content`);
+  const sc = newScreen.querySelector('.screen-content');
   if(sc) sc.scrollTop = 0;
 }
 
 function popScreen() {
-  navStack.pop(); // 丢弃当前 screen
-  const prev = navStack.length > 0 ? navStack[navStack.length - 1] : null;
-  $all('.screen').forEach(s => s.classList.add('hidden'));
-  if(prev) {
-    show(prev.screen);
-    setTimeout(() => { const sc = $(`#${prev.screen} .screen-content`); if(sc) sc.scrollTop = prev.scroll; }, 10);
-  } else {
+  const currentScreen = $('.screen.active') || $('.screen.popped');
+  const popped = navStack.pop();
+
+  // 无导航栈时回到主屏幕（兜底）
+  if(!popped) {
+    if(currentScreen) {
+      currentScreen.classList.remove('active', 'behind');
+      currentScreen.classList.add('hidden');
+    }
+    $all('.screen').forEach(s => s.classList.remove('active','behind','popped'));
     show('mainScreen');
+    const main = $('#mainScreen');
+    if(main) main.classList.add('active');
+    return;
   }
+
+  const prevScreen = $('#' + popped.screen);
+
+  // 1. 当前页彻底隐藏
+  if(currentScreen) {
+    currentScreen.classList.remove('active', 'behind', 'popped');
+    currentScreen.classList.add('hidden');
+    currentScreen.style.transform = '';
+    currentScreen.style.transition = '';
+    currentScreen.style.setProperty('--shadow-opacity', '0');
+  }
+
+  // 清理所有导航栏内联样式（防止侧滑残留的 opacity/transition）
+  $all('.screen .nav-bar').forEach(nb => {
+    nb.style.opacity = '';
+    nb.style.transition = '';
+  });
+
+  // 2. 上一页从 behind 恢复为 active
+  if(prevScreen) {
+    // 先禁用 CSS transition，避免 class 切换时 transform 变化触发意外动画
+    prevScreen.style.transition = 'none';
+    prevScreen.classList.remove('behind', 'hidden', 'popped');
+    prevScreen.classList.add('active');
+    prevScreen.style.transform = '';
+    prevScreen.style.transition = '';
+    // 恢复滚动位置
+    setTimeout(() => {
+      const sc = prevScreen.querySelector('.screen-content');
+      if(sc) sc.scrollTop = popped.scroll;
+    }, 10);
+  }
+}
+
+
+// ===== TEST DATA =====
+function getTestAccounts() {
+  return [
+    { app_name: '微信', username: 'wxuser_2024', password: 'wx#Pass789', category: '通信与社交', _alpha_key: 'W', _sort_key: 'weixin', security_level: '强' },
+    { app_name: 'QQ', username: 'qq_gamer', password: 'QQ@2024!', category: '通信与社交', _alpha_key: 'Q', _sort_key: 'QQ', security_level: '中' },
+    { app_name: '微博', username: 'wb_star', password: 'wb_Star99', category: '通信与社交', _alpha_key: 'W', _sort_key: 'weibo', security_level: '中' },
+    { app_name: 'GitHub', username: 'dev_coder', password: 'gh#Secure42', category: '编程学习与工具>代码托管', _alpha_key: 'G', _sort_key: 'github', security_level: '极强' },
+    { app_name: 'Gmail', username: 'dev.coder', password: 'gm@2024#Safe', category: '工具与系统>邮箱', _alpha_key: 'G', _sort_key: 'gmail', security_level: '强' },
+    { app_name: '支付宝', username: '138****8888', password: 'zfb#Pay2024', category: '金融与支付', _alpha_key: 'Z', _sort_key: 'zhifubao', security_level: '极强' },
+    { app_name: '淘宝', username: 'tb_shopper', password: 'tb#Buy99', category: '电商与购物', _alpha_key: 'T', _sort_key: 'taobao', security_level: '中' },
+    { app_name: '京东', username: 'jd_buyer', password: 'jd#Shop2024', category: '电商与购物', _alpha_key: 'J', _sort_key: 'jingdong', security_level: '中' },
+    { app_name: 'Netflix', username: 'movie_fan', password: 'nf#Watch2024', category: '影音娱乐>视频', _alpha_key: 'N', _sort_key: 'netflix', security_level: '强' },
+    { app_name: 'Spotify', username: 'music_lover', password: 'sp#Listen99', category: '影音娱乐>音乐', _alpha_key: 'S', _sort_key: 'spotify', security_level: '中' },
+    { app_name: 'Steam', username: 'gamer_pro', password: 'st#Game2024!', category: '游戏', _alpha_key: 'S', _sort_key: 'steam', security_level: '强' },
+    { app_name: 'Apple ID', username: 'ios_user@icloud.com', password: 'ap#ID2024!', category: '工具与系统', _alpha_key: 'A', _sort_key: 'apple id', security_level: '极强' },
+    { app_name: '百度网盘', username: 'bd_pan99', password: 'bd#Cloud88', category: '工具与系统>云盘', _alpha_key: 'B', _sort_key: 'baidu wangpan', security_level: '中' },
+    { app_name: '哔哩哔哩', username: 'bili_fans', password: 'bl#Video99', category: '影音娱乐>视频', _alpha_key: 'B', _sort_key: 'bilibili', security_level: '中' },
+    { app_name: '知乎', username: 'zhihu_user', password: 'zh#Answer42', category: '社交与资讯', _alpha_key: 'Z', _sort_key: 'zhihu', security_level: '中' },
+    { app_name: '小红书', username: 'xhs_life', password: 'xhs#Life2024', category: '社交与资讯', _alpha_key: 'X', _sort_key: 'xiaohongshu', security_level: '弱' },
+    { app_name: '美团', username: 'mt_user', password: 'mt#Food88', category: '生活与服务>外卖', _alpha_key: 'M', _sort_key: 'meituan', security_level: '弱' },
+    { app_name: '飞书', username: 'feishu_work', password: 'fs#Work2024', category: '工作办公>协作', _alpha_key: 'F', _sort_key: 'feishu', security_level: '强' },
+    { app_name: 'Dropbox', username: 'db_backup', password: 'db#Cloud99', category: '工具与系统>云盘', _alpha_key: 'D', _sort_key: 'dropbox', security_level: '强' },
+    { app_name: 'Twitter / X', username: 'x_user', password: 'tw#Post42', category: '通信与社交', _alpha_key: 'T', _sort_key: 'twitter', security_level: '中' },
+  ];
+}
+
+function getTestUrls() {
+  return [
+    { title: 'ChatGPT', url: 'https://chat.openai.com', category: 'AI工具', _alpha_key: 'C', _sort_key: 'chatgpt' },
+    { title: 'Claude', url: 'https://claude.ai', category: 'AI工具', _alpha_key: 'C', _sort_key: 'claude' },
+    { title: 'GitHub', url: 'https://github.com', category: '开发工具', _alpha_key: 'G', _sort_key: 'github' },
+    { title: 'Stack Overflow', url: 'https://stackoverflow.com', category: '开发工具', _alpha_key: 'S', _sort_key: 'stackoverflow' },
+    { title: 'V2EX', url: 'https://v2ex.com', category: '技术社区', _alpha_key: 'V', _sort_key: 'v2ex' },
+    { title: '豆瓣', url: 'https://douban.com', category: '文化社区', _alpha_key: 'D', _sort_key: 'douban' },
+    { title: 'YouTube', url: 'https://youtube.com', category: '视频', _alpha_key: 'Y', _sort_key: 'youtube' },
+    { title: 'Hacker News', url: 'https://news.ycombinator.com', category: '技术社区', _alpha_key: 'H', _sort_key: 'hacker news' },
+  ];
 }
 
 // ===== RENDER: Lock Screen =====
 function initLockScreen() {
-  $('#lockInfo').textContent = `生成时间：${GENERATED_AT}  |  ${ACCOUNT_COUNT} 条账号 + ${URL_COUNT} 条网址`;
+  // 测试模式提示
+  if(ENCRYPTED_DATA.startsWith('{{')) {
+    $('#lockInfo').textContent = '【测试模式】主密码：test';
+  } else {
+    $('#lockInfo').textContent = `生成时间：${GENERATED_AT}  |  ${ACCOUNT_COUNT} 条账号 + ${URL_COUNT} 条网址`;
+  }
   $('#lockInput').addEventListener('keydown', e => { if(e.key==='Enter') doUnlock(); });
   $('#unlockBtn').addEventListener('click', doUnlock);
   $('#togglePwd').addEventListener('click', () => {
@@ -624,6 +788,24 @@ async function doUnlock() {
   const err = $('#lockError');
   if(!pwd) { err.textContent = '请输入主密码'; return; }
   btn.classList.add('loading'); btn.disabled = true; err.textContent = '';
+
+  // ===== 测试模式 =====
+  // 当模板尚未注入真实数据（占位符未被替换）时，使用 "test" 作为主密码进入测试模式
+  if(ENCRYPTED_DATA.startsWith('{{') && pwd === 'test') {
+    await new Promise(r => setTimeout(r, 400)); // 模拟解密耗时
+    vault.accounts = getTestAccounts();
+    vault.urls = getTestUrls();
+    vault.account_category_orders = {};
+    vault.url_category_orders = {};
+    vault.decrypted = true;
+    $('#lockInput').value = '';
+    hide('lockScreen');
+    show('mainScreen');
+    renderMainScreen();
+    btn.classList.remove('loading'); btn.disabled = false;
+    return;
+  }
+
   try {
     const jsonStr = await decryptData(pwd, ENCRYPTED_DATA, SALT_BASE64);
     const payload = JSON.parse(jsonStr);
@@ -1021,6 +1203,309 @@ function initItemsFilter() {
   $('#itemsFilterClear').addEventListener('click', () => { $('#itemsFilterInput').value=''; $('#itemsFilterInput').dispatchEvent(new Event('input')); });
 }
 
+// ===== SWIPE BACK GESTURE =====
+function initSwipeBack() {
+  // ===== 常量配置 =====
+  const EDGE_WIDTH = 20;              // 触发区域：屏幕左边缘 0~20pt
+  const ACTIVATE_DX = 8;              // 水平激活阈值：> 8pt
+  const ACTIVATE_DY_RATIO = 0.5;      // 垂直阈值：dy <= dx * 0.5
+  const COMPLETE_RATIO = 0.5;         // 完成阈值：>= 50% 屏宽
+  const COMPLETE_VELOCITY = 300;      // 快速滑动阈值：>= 300 pt/s
+  const ANIM_DURATION_COMPLETE = 250; // 完成动画时长 ms
+  const ANIM_DURATION_CANCEL = 300;   // 取消动画时长 ms
+  const VELOCITY_WINDOW_MS = 150;     // 速度采样窗口：最近 150ms
+
+  // ===== 状态机变量 =====
+  let state = 'idle'; // idle | monitoring | activated | dragging | completing | cancelling
+  let startX = 0, startY = 0;
+  let currentX = 0, currentY = 0;
+  let activeScreen = null;   // 前景页（当前 .active）
+  let prevScreen = null;     // 背景页（.behind）
+  let prevNavBar = null;     // 背景页导航栏
+  let activeNavBar = null;   // 前景页导航栏
+  let navOverlay = null;     // 黑色蒙层元素
+  let screenWidth = 0;
+  let isReducedMotion = false;
+
+  // ===== 速度采样追踪（滑动窗口） =====
+  let moveHistory = [];        // {x, y, time} 最近滑动样本
+  let fastSwipeQualified = false; // 是否满足快速滑动条件
+
+  // ===== 深层 behind screen 暂存 =====
+  let suppressedScreens = [];  // 侧滑期间被 hidden 的非直接前页 behind screen
+
+  function getScreenWidth() {
+    return window.innerWidth || document.documentElement.clientWidth;
+  }
+
+  function ensureNavOverlay() {
+    if(!navOverlay) {
+      navOverlay = document.createElement('div');
+      navOverlay.className = 'nav-overlay';
+      $('#app').appendChild(navOverlay);
+    }
+    return navOverlay;
+  }
+
+  function removeNavOverlay() {
+    if(navOverlay && navOverlay.parentNode) {
+      navOverlay.parentNode.removeChild(navOverlay);
+      navOverlay = null;
+    }
+  }
+
+  function resetStyles() {
+    if(activeScreen) {
+      activeScreen.style.transform = '';
+      activeScreen.style.transition = '';
+      activeScreen.style.setProperty('--shadow-opacity', '0');
+      activeScreen.classList.remove('popped');
+      if(!activeScreen.classList.contains('hidden')) {
+        activeScreen.classList.add('active');
+      }
+    }
+    if(prevScreen) {
+      prevScreen.style.transform = '';
+      prevScreen.style.transition = '';
+    }
+    if(prevNavBar) { prevNavBar.style.opacity = ''; prevNavBar.style.transition = ''; }
+    if(activeNavBar) { activeNavBar.style.opacity = ''; activeNavBar.style.transition = ''; }
+    if(navOverlay) { navOverlay.style.opacity = ''; }
+    removeNavOverlay();
+    // 恢复被隐藏的深层 behind screen（推迟到下一帧，避免与归位动画竞争）
+    const toRestore = suppressedScreens;
+    suppressedScreens = [];
+    requestAnimationFrame(() => {
+      toRestore.forEach(s => {
+        s.classList.add('behind');
+        s.classList.remove('hidden');
+      });
+    });
+  }
+
+  // 计算滑动窗口内的平均速度
+  function computeWindowedVelocity() {
+    if(moveHistory.length < 2) return 0;
+    const first = moveHistory[0];
+    const last = moveHistory[moveHistory.length - 1];
+    const dt = last.time - first.time;
+    if(dt < 10) return 0; // 最少 10ms 间隔，避免除零噪声
+    return Math.abs((last.x - first.x) / dt) * 1000; // pt/s
+  }
+
+  // 检测快速滑动资格（速度 + 方向）
+  function checkFastSwipeQualification() {
+    const totalDx = currentX - startX;
+    const totalDy = currentY - startY;
+    // 整体以水平为主：垂直位移不超过水平位移的 50%
+    const mostlyHorizontal = totalDx > 0 && Math.abs(totalDy) <= Math.abs(totalDx) * ACTIVATE_DY_RATIO;
+    const velocity = computeWindowedVelocity();
+    fastSwipeQualified = (velocity >= COMPLETE_VELOCITY) && mostlyHorizontal;
+  }
+
+  // ===== Touch Start =====
+  document.addEventListener('touchstart', e => {
+    isReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    screenWidth = getScreenWidth();
+
+    if(navStack.length === 0) return;
+
+    activeScreen = $('.screen.active');
+    if(!activeScreen) return;
+    if(activeScreen.id === 'mainScreen' || activeScreen.id === 'lockScreen') return;
+
+    const touch = e.touches[0];
+    if(touch.clientX > EDGE_WIDTH) return;
+
+    state = 'monitoring';
+    startX = touch.clientX;
+    startY = touch.clientY;
+    currentX = startX;
+    currentY = startY;
+
+    // 重置速度采样
+    moveHistory = [];
+    moveHistory.push({ x: startX, y: startY, time: performance.now() });
+    fastSwipeQualified = false;
+
+    const prevInfo = navStack[navStack.length - 1];
+    prevScreen = prevInfo ? $('#' + prevInfo.screen) : null;
+    prevNavBar = prevScreen?.querySelector('.nav-bar');
+    activeNavBar = activeScreen?.querySelector('.nav-bar');
+
+    if(prevNavBar) {
+      prevNavBar.style.transition = 'none';
+      prevNavBar.style.opacity = '0';
+    }
+  }, { passive:true });
+
+  // ===== Touch Move =====
+  document.addEventListener('touchmove', e => {
+    if(state === 'idle') return;
+
+    const touch = e.touches[0];
+    currentX = touch.clientX;
+    currentY = touch.clientY;
+    const dx = currentX - startX;
+    const dy = currentY - startY;
+
+    // 记录滑动样本（滑动窗口）
+    const now = performance.now();
+    moveHistory.push({ x: currentX, y: currentY, time: now });
+    const cutoff = now - VELOCITY_WINDOW_MS;
+    while(moveHistory.length > 2 && moveHistory[0].time < cutoff) {
+      moveHistory.shift();
+    }
+
+    if(state === 'monitoring') {
+      if(dx < 0) { state = 'idle'; resetStyles(); return; }
+      if(Math.abs(dy) > Math.abs(dx) * ACTIVATE_DY_RATIO) { state = 'idle'; resetStyles(); return; }
+      if(dx > ACTIVATE_DX) {
+        state = 'activated';
+        activeScreen.classList.remove('active');
+        activeScreen.classList.add('popped');
+        ensureNavOverlay();
+
+        // 侧滑开始时：hidden 所有非 prevScreen 的 behind screen
+        // 确保拖动时只显示 active + prev 两层，避免露出深层页面 + 减少合成压力
+        suppressedScreens = [];
+        $all('.screen.behind').forEach(s => {
+          if(s !== prevScreen) {
+            s.classList.add('hidden');
+            s.classList.remove('behind');
+            suppressedScreens.push(s);
+          }
+        });
+      } else {
+        return;
+      }
+    }
+
+    if(state !== 'activated' && state !== 'dragging') return;
+    state = 'dragging';
+
+    if(dx < 0) return;
+
+    const progress = Math.min(dx / screenWidth, 1);
+
+    // 1. 前景页：1:1 跟随手指
+    activeScreen.style.transform = `translateX(${dx}px)`;
+
+    // 2. 前景页阴影：随位移递增，峰值 0.6
+    const shadowOpacity = Math.min(dx / (screenWidth * 0.5), 0.6);
+    activeScreen.style.setProperty('--shadow-opacity', String(shadowOpacity));
+
+    // 3. 背景页：从 -1/3 屏宽跟随，缩放 0.95 -> 1.0
+    if(prevScreen) {
+      const prevTranslate = -screenWidth / 3 + dx / 3;
+      const prevScale = 0.95 + progress * 0.05;
+      prevScreen.style.transform = `translateX(${prevTranslate}px) scale(${prevScale})`;
+    }
+
+    // 4. 黑色蒙层：随位移递减
+    if(navOverlay) {
+      navOverlay.style.opacity = String(Math.max(0.3 - progress, 0));
+    }
+
+    // 5. 导航栏转场
+    const navProgress = Math.min(dx / (screenWidth * 0.5), 1);
+    if(activeNavBar) {
+      activeNavBar.style.opacity = String(Math.max(1 - navProgress, 0));
+    }
+    if(prevNavBar) {
+      prevNavBar.style.opacity = String(Math.min(navProgress, 1));
+    }
+
+    // 6. 实时更新快速滑动资格（在拖动过程中持续评估）
+    checkFastSwipeQualification();
+  }, { passive:true });
+
+  // ===== Touch End =====
+  document.addEventListener('touchend', () => {
+    if(state !== 'dragging' && state !== 'activated') {
+      if(state !== 'idle') { state = 'idle'; resetStyles(); }
+      return;
+    }
+
+    const totalDx = currentX - startX;
+    const totalDy = currentY - startY;
+
+    // 计算滑动窗口平均速度
+    const velocity = computeWindowedVelocity();
+
+    // 最终垂直条件检查：整体以水平为主
+    const mostlyHorizontal = totalDx > 0 && Math.abs(totalDy) <= Math.abs(totalDx) * ACTIVATE_DY_RATIO;
+
+    // 快速滑动判定：速度达标 且 方向正确
+    const isFastSwipe = fastSwipeQualified && mostlyHorizontal && velocity >= COMPLETE_VELOCITY;
+
+    // 完成判定：位移 >= 50% 屏宽  或  快速滑动
+    // 快速滑动优先级高于位移判定——满足即直接返回
+    const shouldComplete = totalDx >= screenWidth * COMPLETE_RATIO || isFastSwipe;
+
+    if(shouldComplete) {
+      state = 'completing';
+      const duration = isReducedMotion ? 0 : ANIM_DURATION_COMPLETE;
+
+      if(activeScreen) {
+        activeScreen.style.transition = `transform ${duration}ms ease-out`;
+        activeScreen.style.transform = `translateX(${screenWidth}px)`;
+      }
+      if(prevScreen) {
+        prevScreen.style.transition = `transform ${duration}ms ease-out`;
+        prevScreen.style.transform = 'translateX(0) scale(1)';
+      }
+      if(navOverlay) {
+        navOverlay.style.transition = `opacity ${duration}ms ease-out`;
+        navOverlay.style.opacity = '0';
+      }
+
+      setTimeout(() => {
+        popScreen();
+        resetStyles();
+        state = 'idle';
+      }, duration);
+    } else {
+      state = 'cancelling';
+      const duration = isReducedMotion ? 0 : ANIM_DURATION_CANCEL;
+
+      if(activeScreen) {
+        activeScreen.style.transition = `transform ${duration}ms cubic-bezier(0.34, 1.56, 0.64, 1)`;
+        activeScreen.style.transform = 'translateX(0)';
+      }
+      if(prevScreen) {
+        prevScreen.style.transition = `transform ${duration}ms cubic-bezier(0.34, 1.56, 0.64, 1)`;
+        prevScreen.style.transform = 'translateX(-33%) scale(0.95)';
+      }
+      if(navOverlay) {
+        navOverlay.style.transition = `opacity ${duration}ms ease-out`;
+        navOverlay.style.opacity = '0.3';
+      }
+      if(activeNavBar) {
+        activeNavBar.style.transition = `opacity ${duration}ms ease-out`;
+        activeNavBar.style.opacity = '1';
+      }
+      if(prevNavBar) {
+        prevNavBar.style.transition = `opacity ${duration}ms ease-out`;
+        prevNavBar.style.opacity = '0';
+      }
+
+      setTimeout(() => {
+        resetStyles();
+        state = 'idle';
+      }, duration);
+    }
+  }, { passive:true });
+
+  // ===== Touch Cancel =====
+  document.addEventListener('touchcancel', () => {
+    if(state !== 'idle') {
+      state = 'idle';
+      resetStyles();
+    }
+  }, { passive:true });
+}
+
 // ===== NAVIGATION BINDINGS =====
 function initNav() {
   // Tab switching
@@ -1057,6 +1542,7 @@ function init() {
   initSearch();
   initItemsFilter();
   initNav();
+  initSwipeBack();
 }
 
 // Wait for fonts and DOM

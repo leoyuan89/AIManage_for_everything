@@ -505,12 +505,19 @@ class URLDatabaseManager:
         return self.cursor.rowcount
     
     def rename_category_order(self, old_name: str, new_name: str) -> bool:
-        """同步重命名 category_order 表中的分类记录"""
+        """同步重命名 category_order 表中的分类记录（包括子类前缀）"""
         try:
+            # 1. 精确匹配的旧分类
             self.cursor.execute(
                 "UPDATE category_order SET category = ? WHERE category = ?",
                 (new_name, old_name)
             )
+            # 2. 如果是旧分类是一级分类，同步更新所有子类
+            if '>' not in old_name:
+                self.cursor.execute(
+                    "UPDATE category_order SET category = ? || SUBSTR(category, ?) WHERE category LIKE ?",
+                    (new_name, len(old_name) + 1, f"{old_name}>%")
+                )
             self.conn.commit()
             return True
         except Exception as e:
@@ -544,3 +551,102 @@ class URLDatabaseManager:
         )
         self.conn.commit()
         return affected
+
+    def promote_category(self, old_path: str) -> bool:
+        """
+        将二级分类升级为一级分类
+        - 解析 new_name = old_path.split('>')[1]
+        - 更新 urls 表
+        - 更新 category_order 表
+        """
+        try:
+            new_name = old_path.split('>', 1)[1].strip()
+
+            self.cursor.execute("SELECT 1 FROM category_order WHERE category = ?", (new_name,))
+            if self.cursor.fetchone():
+                return False
+
+            self.cursor.execute(
+                "UPDATE urls SET category = ? WHERE category = ?",
+                (new_name, old_path)
+            )
+
+            self.cursor.execute(
+                "SELECT sort_index FROM category_order WHERE category = ?",
+                (old_path,)
+            )
+            row = self.cursor.fetchone()
+            old_sort_index = row[0] if row else None
+
+            self.cursor.execute(
+                "DELETE FROM category_order WHERE category = ?",
+                (old_path,)
+            )
+
+            if old_sort_index is not None:
+                self.cursor.execute(
+                    "INSERT INTO category_order (category, sort_index) VALUES (?, ?)",
+                    (new_name, old_sort_index)
+                )
+            else:
+                self.cursor.execute("SELECT MAX(sort_index) FROM category_order")
+                row = self.cursor.fetchone()
+                max_idx = row[0] if row and row[0] is not None else -1
+                self.cursor.execute(
+                    "INSERT INTO category_order (category, sort_index) VALUES (?, ?)",
+                    (new_name, max_idx + 1)
+                )
+
+            self.conn.commit()
+            return True
+        except Exception as e:
+            self.conn.rollback()
+            print(f"[URLDB] promote_category failed: {e}")
+            return False
+
+    def reparent_category(self, old_path: str, new_path: str) -> int:
+        """将 old_path 精确匹配的分类条目更新为 new_path，并同步更新 category_order"""
+        try:
+            self.cursor.execute(
+                "UPDATE urls SET category = ? WHERE category = ?",
+                (new_path, old_path)
+            )
+
+            self.cursor.execute(
+                "SELECT sort_index FROM category_order WHERE category = ?",
+                (old_path,)
+            )
+            row = self.cursor.fetchone()
+            old_sort_index = row[0] if row else None
+
+            self.cursor.execute(
+                "DELETE FROM category_order WHERE category = ?",
+                (old_path,)
+            )
+
+            # 如果 new_path 已存在于 category_order 中，保留其现有 sort_index，不覆盖
+            self.cursor.execute(
+                "SELECT 1 FROM category_order WHERE category = ?",
+                (new_path,)
+            )
+            if not self.cursor.fetchone():
+                if old_sort_index is not None:
+                    self.cursor.execute(
+                        "INSERT INTO category_order (category, sort_index) VALUES (?, ?)",
+                        (new_path, old_sort_index)
+                    )
+                else:
+                    self.cursor.execute("SELECT MAX(sort_index) FROM category_order")
+                    row = self.cursor.fetchone()
+                    max_idx = row[0] if row and row[0] is not None else -1
+                    self.cursor.execute(
+                        "INSERT INTO category_order (category, sort_index) VALUES (?, ?)",
+                        (new_path, max_idx + 1)
+                    )
+
+            self.conn.commit()
+            return self.cursor.rowcount
+        except Exception as e:
+            self.conn.rollback()
+            print(f"[URLDB] reparent_category failed: {e}")
+            return 0

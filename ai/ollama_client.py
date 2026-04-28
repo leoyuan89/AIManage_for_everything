@@ -34,18 +34,25 @@ class OllamaClient:
     @staticmethod
     def _extract_json_object_robust(text: str) -> Optional[str]:
         """使用括号深度计数，从文本中提取第一个完整的 JSON 对象"""
-        # 先尝试找 ```json ... ``` 代码块
-        code_block = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', text)
+        # 先尝试找 ```json ... ``` 代码块，提取块内全部内容（避免非贪婪截断嵌套 JSON）
+        code_block = re.search(r'```(?:json)?\s*(.*?)\s*```', text, re.DOTALL)
         if code_block:
-            return code_block.group(1)
-        # 找第一个 { 开始的完整 JSON 对象
-        start = text.find('{')
+            block_content = code_block.group(1).strip()
+            start = block_content.find('{')
+            if start != -1:
+                text_to_scan = block_content
+            else:
+                text_to_scan = text
+                start = text_to_scan.find('{')
+        else:
+            text_to_scan = text
+            start = text_to_scan.find('{')
         if start == -1:
             return None
         depth = 0
         in_string = False
         escape = False
-        for i, ch in enumerate(text[start:], start):
+        for i, ch in enumerate(text_to_scan[start:], start):
             if escape:
                 escape = False
                 continue
@@ -61,7 +68,7 @@ class OllamaClient:
                 elif ch == '}':
                     depth -= 1
                     if depth == 0:
-                        return text[start:i+1]
+                        return text_to_scan[start:i+1]
         return None
 
     @staticmethod
@@ -106,7 +113,10 @@ class OllamaClient:
         text = re.sub(r',(\s*[}\]])', r'\1', text)
         # 5. 缺少逗号：}{ 之间、}{ 前面有引号等情况（保守修复，只处理明显的）
         text = re.sub(r'"\s*\}\s*\{', r'"},{', text)
-        # 6. 去除 JSON 后可能粘着的解释文字（取最后一个 } 之前的内容）
+        # 6. 紧凑JSON常见：数组/对象结束后直接开始下一个键，缺少逗号
+        text = re.sub(r'\](\s*)"', r'],\1"', text)
+        text = re.sub(r'\}(\s*)"(?!\s*[\]\}])', r'},\1"', text)
+        # 7. 去除 JSON 后可能粘着的解释文字（取最后一个 } 之前的内容）
         last_brace = text.rfind('}')
         if last_brace != -1 and last_brace < len(text) - 1:
             # 检查最后一个 } 后面是否是非空白字符
@@ -709,20 +719,23 @@ class OllamaClient:
         
         return self.generate(prompt, temperature=temperature, num_predict=num_predict)
     
-    def generate_tool_call(self, query: str, db_summary: str, 
-                           observations: str, tools: List[Dict]) -> Dict:
+    def generate_tool_call(self, query: str, category_tree: str,
+                           observations: str, tools: List[Dict],
+                           vault_type: str = 'accounts') -> Dict:
         """
         生成Tool Call决策。
-        
+
         Returns:
             {"thought": str, "tool": str, "params": dict, "response": str}
         """
         tools_text = json.dumps(tools, ensure_ascii=False, indent=2)
-        
-        prompt = f"""你是密码管理软件的AI助手。请根据用户请求、数据库信息和可用工具，决定下一步操作。
+        vault_label = '密码库（账号）' if vault_type == 'accounts' else '网址库'
+        tool_suffix_hint = '以 "_accounts" 或 "_accounts" 结尾' if vault_type == 'accounts' else '以 "_urls" 结尾'
 
-当前数据库信息：
-{db_summary}
+        prompt = f"""你是密码管理软件的AI助手。请根据用户请求、当前分类体系和可用工具，决定下一步操作。
+
+当前分类体系（仅用于判断用户提到的分类是否存在）：
+{category_tree}
 
 {observations}
 
@@ -731,10 +744,16 @@ class OllamaClient:
 可用工具列表：
 {tools_text}
 
+【极其重要 - 库类型强制匹配规则】
+当前用户正在 **{vault_label}** 页面操作。用户的用词（如"账号"、"网址"、"密码"、"URL"等）可能不准确，**请以当前库类型为准选择工具，不要拒绝执行**：
+- 当前是 **密码库** → 调用 _accounts 结尾的工具（如 smart_classify_accounts）
+- 当前是 **网址库** → 调用 _urls 结尾的工具（如 smart_classify_urls）
+即使用户说"细分账号"但当前在网址库，也直接调用 smart_classify_urls，不要提示用户切换页面！
+
 【极其重要 - 决策规则】
 1. 如果用户请求是**纯查询类**（查找、搜索、筛选、统计、询问信息），且不需要修改数据 → 使用 tool="direct_answer"
 2. 如果用户请求涉及**任何数据修改**（新增、删除、修改分类、修改备注、添加标签、整理、重组、批量更新） → **必须调用对应工具**，绝对不能用 direct_answer
-3. **特别重要**：如果用户要求"分类"、"细分"、"细分二级子类"、"整理分类"、"重组分类" → **必须调用 smart_classify_accounts 或 smart_classify_urls**，绝对不能用 direct_answer。这是**分类操作**，不是纯查询！
+3. **特别重要**：如果用户要求"分类"、"细分"、"细分二级子类"、"整理分类"、"重组分类" → **必须调用与当前库类型匹配的 smart_classify 工具**（密码库用 smart_classify_accounts，网址库用 smart_classify_urls），绝对不能用 direct_answer。这是**分类操作**，不是纯查询！
 4. 如果 observation 中已经包含搜索结果（如 matched_ids），你要**直接使用这些 ID** 构造写操作工具的参数，不要返回 direct_answer 说"我找不到 ID"
 5. 你只能决定调用哪个工具，不能直接替用户执行修改
 
@@ -774,9 +793,17 @@ class OllamaClient:
 【最近修改查询示例】
 - 用户："最近修改了哪些账号？" → {{"thought": "用户查询最近变更记录", "tool": "get_recent_changes", "params": {{"vault_type": "account"}}}}
 
+【分类解析规则】
+你必须从用户请求中解析出所有涉及的目标分类，利用语义理解而不仅仅是字符串匹配：
+- 用户说"细分编程学习与工具" → target_categories: ["编程学习与工具"]
+- 用户说"整理算法类的" → target_categories: ["编程学习与工具"]（语义理解：算法类属于编程学习）
+- 用户说"看看青岛大学和学术的" → target_categories: ["青岛大学", "学术考试与学习资料"]
+- 用户说"整理编程学习与工具>算法理论" → target_categories: ["编程学习与工具>算法理论"]（支持二级分类）
+- 用户没有提到具体分类 → target_categories: []
+
 【输出格式 - 严格JSON】
 你必须只输出一个JSON对象，不要添加任何其他文字、解释、markdown代码块：
-{{"thought": "你的思考过程", "tool": "工具名称或直接_answer", "params": {{参数}}, "response": "给用户的回复（仅direct_answer时需要）"}}
+{{"thought": "你的思考过程", "tool": "工具名称或直接_answer", "params": {{参数}}, "target_categories": ["用户提到的目标分类1", "目标分类2"], "response": "给用户的回复（仅direct_answer时需要）"}}
 
 输出："""
         
@@ -799,6 +826,7 @@ class OllamaClient:
                     "thought": result.get("thought", ""),
                     "tool": result.get("tool", "direct_answer"),
                     "params": result.get("params", {}),
+                    "target_categories": result.get("target_categories", []),
                     "response": result.get("response", "")
                 }
             except json.JSONDecodeError as e1:
@@ -813,6 +841,7 @@ class OllamaClient:
                     "thought": result.get("thought", ""),
                     "tool": result.get("tool", "direct_answer"),
                     "params": result.get("params", {}),
+                    "target_categories": result.get("target_categories", []),
                     "response": result.get("response", "")
                 }
             except json.JSONDecodeError as e2:
@@ -828,6 +857,7 @@ class OllamaClient:
                         "thought": result.get("thought", ""),
                         "tool": result.get("tool", "direct_answer"),
                         "params": result.get("params", {}),
+                        "target_categories": result.get("target_categories", []),
                         "response": result.get("response", "")
                     }
                 except json.JSONDecodeError as e3:
@@ -841,6 +871,7 @@ class OllamaClient:
                         "thought": result.get("thought", ""),
                         "tool": result.get("tool", "direct_answer"),
                         "params": result.get("params", {}),
+                        "target_categories": result.get("target_categories", []),
                         "response": result.get("response", "")
                     }
                 except json.JSONDecodeError as e4:
@@ -874,6 +905,7 @@ class OllamaClient:
                         "thought": extracted_thought,
                         "tool": extracted_tool,
                         "params": extracted_params,
+                        "target_categories": [],
                         "response": extracted_response
                     }
             

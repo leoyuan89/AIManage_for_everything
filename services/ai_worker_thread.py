@@ -312,9 +312,10 @@ class AIWorkerThread(QThread):
         prompt = f"""根据应用名称、网址、分类和用户手动备注，用一句话描述这个账号的用途。
 
 要求：
-- 不超过20个字
+- 只输出一句话，20个字以内
 - 简洁明了
 - 直接返回描述内容，不要加引号或额外解释
+- 不要输出任何其他文字、说明、分析
 
 应用名称：{app_name}
 网址：{url or '无'}
@@ -323,8 +324,10 @@ class AIWorkerThread(QThread):
 
 用途描述："""
 
-        result = client.generate(prompt=prompt, temperature=0.3, num_predict=50)
+        result = client.generate(prompt=prompt, temperature=0.3)
         remark = result.strip().strip('"').strip("'")
+        if not remark:
+            raise Exception("AI 返回了空内容，请重试")
         # 备注完整保留，不做截断
         return remark
 

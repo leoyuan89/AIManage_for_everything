@@ -44,7 +44,7 @@ html, body { width:100%; height:100%; overflow:hidden; background:var(--ios-bg);
 /* ===== Navigation Bar ===== */
 .nav-bar { flex-shrink:0; display:flex; align-items:center; justify-content:center; height:44px; padding:0 16px; position:relative; background:var(--ios-card); border-bottom:0.5px solid var(--ios-gray4); z-index:10; }
 .nav-bar.translucent { background:rgba(255,255,255,.85); backdrop-filter:saturate(180%) blur(20px); -webkit-backdrop-filter:saturate(180%) blur(20px); }
-.nav-bar .nav-back { position:absolute; left:8px; top:50%; transform:translateY(-50%); display:flex; align-items:center; color:var(--ios-blue); font-size:17px; font-weight:400; cursor:pointer; background:none; border:none; padding:4px 8px; font-family:inherit; }
+.nav-bar .nav-back { position:absolute; left:0; top:0; bottom:0; display:flex; align-items:center; color:var(--ios-blue); font-size:17px; font-weight:400; cursor:pointer; background:none; border:none; padding:0 12px; font-family:inherit; -webkit-touch-callout:none; }
 .nav-bar .nav-back::before { content:""; display:inline-block; width:10px; height:10px; border-left:2.5px solid var(--ios-blue); border-bottom:2.5px solid var(--ios-blue); transform:rotate(45deg); margin-right:2px; }
 .nav-bar .nav-title { font-size:17px; font-weight:600; text-align:center; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:60%; }
 .nav-bar .nav-action { position:absolute; right:16px; top:50%; transform:translateY(-50%); color:var(--ios-blue); font-size:17px; background:none; border:none; font-family:inherit; cursor:pointer; }
@@ -309,7 +309,7 @@ const ACCOUNT_COUNT = parseInt("{{ACCOUNT_COUNT}}", 10) || 0;
 const URL_COUNT = parseInt("{{URL_COUNT}}", 10) || 0;
 
 // ===== STATE =====
-let vault = { accounts: [], urls: [], decrypted: false };
+let vault = { accounts: [], urls: [], account_category_orders: {}, url_category_orders: {}, decrypted: false };
 let currentVault = 'accounts';
 let navStack = [];
 let searchScope = 'all';
@@ -571,6 +571,19 @@ function buildCategoryTree(items) {
   return tree;
 }
 
+function getCurrentCategoryOrders() {
+  return currentVault === 'accounts' ? vault.account_category_orders : vault.url_category_orders;
+}
+
+function sortCategoriesByOrder(cats, orders) {
+  return cats.sort((a, b) => {
+    const oa = orders[a] !== undefined ? orders[a] : Infinity;
+    const ob = orders[b] !== undefined ? orders[b] : Infinity;
+    if (oa !== ob) return oa - ob;
+    return a.localeCompare(b, 'zh-CN');
+  });
+}
+
 // ===== SCREEN NAVIGATION =====
 function pushScreen(screenId, builder) {
   navStack.push({ screen: screenId, scroll: $('.screen:not(.hidden) .screen-content')?.scrollTop||0 });
@@ -582,7 +595,8 @@ function pushScreen(screenId, builder) {
 }
 
 function popScreen() {
-  const prev = navStack.pop();
+  navStack.pop(); // 丢弃当前 screen
+  const prev = navStack.length > 0 ? navStack[navStack.length - 1] : null;
   $all('.screen').forEach(s => s.classList.add('hidden'));
   if(prev) {
     show(prev.screen);
@@ -615,6 +629,8 @@ async function doUnlock() {
     const payload = JSON.parse(jsonStr);
     vault.accounts = payload.accounts || [];
     vault.urls = payload.urls || [];
+    vault.account_category_orders = payload.account_category_orders || {};
+    vault.url_category_orders = payload.url_category_orders || {};
     vault.decrypted = true;
     $('#lockInput').value = '';
     hide('lockScreen');
@@ -651,8 +667,9 @@ function renderMainScreen() {
   allCard.addEventListener('click', () => openItemsList('全部', items));
   grid.appendChild(allCard);
 
-  // Level-1 categories (sort by zh-CN pinyin)
-  Object.keys(tree).filter(k => k !== '全部').sort((a, b) => a.localeCompare(b, 'zh-CN')).forEach(cat => {
+  // Level-1 categories (sort by software category order)
+  const orders = getCurrentCategoryOrders();
+  sortCategoriesByOrder(Object.keys(tree).filter(k => k !== '全部'), orders).forEach(cat => {
     const info = tree[cat];
     const hasSubs = Object.keys(info.subs).length > 0;
     const card = document.createElement('div');
@@ -688,7 +705,8 @@ function openSubCategories(parentCat, subs, allItems) {
     allCard.addEventListener('click', () => openItemsList(parentCat, allItems.filter(i => parseCategory(i.category).level1 === parentCat)));
     grid.appendChild(allCard);
 
-    Object.keys(subs).sort((a, b) => a.localeCompare(b, 'zh-CN')).forEach(sub => {
+    const subOrders = getCurrentCategoryOrders();
+    sortCategoriesByOrder(Object.keys(subs), subOrders).forEach(sub => {
       const info = subs[sub];
       const card = document.createElement('div');
       card.className = 'subcat-card';
@@ -773,7 +791,12 @@ function createItemCell(item, isAccount) {
   const cell = document.createElement('div');
   cell.className = 'item-cell';
   const name = isAccount ? (item.app_name || '未命名') : (item.title || '未命名');
-  const subtitle = isAccount ? maskUsername(item.username || '') : (item.url || '');
+  let subtitle = isAccount ? maskUsername(item.username || '') : (item.url || '');
+  // 如果有备注或AI备注，优先显示在副标题中
+  const note = item.ai_remark || item.remark || '';
+  if(note) {
+    subtitle = subtitle ? (subtitle + ' · ' + note) : note;
+  }
   const color = generateIconColor(name);
   const initial = getInitial(name);
   const cat = item.category || '其他';
@@ -834,8 +857,11 @@ function openDetail(item, isAccount) {
     }
 
     let noteSection = '';
+    if(item.ai_remark) {
+      noteSection += `<div class="detail-note"><div class="detail-note-label">AI 备注</div><div class="detail-note-text">${escapeHtml(item.ai_remark)}</div></div>`;
+    }
     if(item.remark) {
-      noteSection = `<div class="detail-note"><div class="detail-note-label">备注</div><div class="detail-note-text">${escapeHtml(item.remark)}</div></div>`;
+      noteSection += `<div class="detail-note"><div class="detail-note-label">备注</div><div class="detail-note-text">${escapeHtml(item.remark)}</div></div>`;
     }
 
     container.innerHTML = `
@@ -921,7 +947,7 @@ function initSearch() {
   });
 
   $('#searchClear').addEventListener('click', () => { $('#searchRealInput').value=''; renderSearchResults(''); $('#searchRealInput').focus(); });
-  $('#searchBack').addEventListener('click', () => { popScreen(); });
+  $('#searchBack').addEventListener('click', popScreen);
 }
 
 function renderSearchResults(query) {

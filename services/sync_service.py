@@ -36,8 +36,20 @@ def _compute_sort_fields(text: str) -> dict:
     return {'_alpha_key': '#', '_sort_key': text.lower()}
 
 
-def _serialize_accounts(accounts: List[Account]) -> list:
+def _get_category_sort_key(category: str, category_orders: dict) -> tuple:
+    """获取分类的排序key：(父类sort_index, 子类sort_index)"""
+    if not category:
+        return (float('inf'), float('inf'))
+    parent = category.split('>')[0].strip() if '>' in category else category.strip()
+    parent_order = category_orders.get(parent, float('inf'))
+    child_order = category_orders.get(category, float('inf'))
+    return (parent_order, child_order)
+
+
+def _serialize_accounts(accounts: List[Account], category_orders: dict = None) -> list:
     """序列化账号列表并预计算排序字段"""
+    if category_orders is None:
+        category_orders = {}
     result = []
     for acc in accounts:
         item = {
@@ -49,19 +61,26 @@ def _serialize_accounts(accounts: List[Account]) -> list:
             'category': acc.category,
             'tags': acc.tags if isinstance(acc.tags, str) else json.dumps(acc.tags, ensure_ascii=False),
             'remark': acc.remark,
+            'ai_remark': getattr(acc, 'ai_remark', None),
             'security_level': acc.security_level,
         }
         sort_fields = _compute_sort_fields(acc.app_name or '')
         item['_alpha_key'] = sort_fields['_alpha_key']
         item['_sort_key'] = sort_fields['_sort_key']
         result.append(item)
-    # 按拼音首字母排序：英文/中文排前面，数字符号归为#排最后
-    result.sort(key=lambda x: (0 if x['_alpha_key'] != '#' else 1, x['_sort_key']))
+    # 先按软件中设置的类别顺序排序，同一类别内按拼音首字母排序
+    result.sort(key=lambda x: (
+        _get_category_sort_key(x.get('category', ''), category_orders),
+        0 if x['_alpha_key'] != '#' else 1,
+        x['_sort_key']
+    ))
     return result
 
 
-def _serialize_urls(urls: List) -> list:
+def _serialize_urls(urls: List, category_orders: dict = None) -> list:
     """序列化网址列表并预计算排序字段"""
+    if category_orders is None:
+        category_orders = {}
     result = []
     for u in urls:
         item = {
@@ -78,7 +97,11 @@ def _serialize_urls(urls: List) -> list:
         item['_alpha_key'] = sort_fields['_alpha_key']
         item['_sort_key'] = sort_fields['_sort_key']
         result.append(item)
-    result.sort(key=lambda x: (0 if x['_alpha_key'] != '#' else 1, x['_sort_key']))
+    result.sort(key=lambda x: (
+        _get_category_sort_key(x.get('category', ''), category_orders),
+        0 if x['_alpha_key'] != '#' else 1,
+        x['_sort_key']
+    ))
     return result
 
 
@@ -98,7 +121,8 @@ class SyncService:
             template_path = project_root / 'templates' / 'pwa_template.html'
         self.template_path = Path(template_path)
     
-    def generate_pwa_package(self, crypto_manager, accounts: List[Account], urls: List, output_path: str) -> str:
+    def generate_pwa_package(self, crypto_manager, accounts: List[Account], urls: List, output_path: str,
+                             account_category_orders: dict = None, url_category_orders: dict = None) -> str:
         """
         生成 PWA 密包文件（同时包含密码库 + 网址库）
         
@@ -107,6 +131,8 @@ class SyncService:
             accounts: 账号列表
             urls: 网址列表
             output_path: 输出 HTML 文件路径
+            account_category_orders: 账号分类自定义排序（category -> sort_index）
+            url_category_orders: 网址分类自定义排序（category -> sort_index）
             
         Returns:
             生成的文件路径
@@ -124,14 +150,16 @@ class SyncService:
         if urls is None:
             raise ValueError("urls 不能为 None")
         
-        # 1. 序列化账号和网址数据（含排序字段）
-        accounts_data = _serialize_accounts(accounts)
-        urls_data = _serialize_urls(urls)
+        # 1. 序列化账号和网址数据（含排序字段，按软件中设置的类别顺序）
+        accounts_data = _serialize_accounts(accounts, account_category_orders)
+        urls_data = _serialize_urls(urls, url_category_orders)
         
-        # 打包为统一结构
+        # 打包为统一结构（包含分类排序信息，供手机端按软件中的顺序显示）
         payload = {
             'accounts': accounts_data,
             'urls': urls_data,
+            'account_category_orders': account_category_orders or {},
+            'url_category_orders': url_category_orders or {},
         }
         json_data = json.dumps(payload, ensure_ascii=False, indent=2)
         

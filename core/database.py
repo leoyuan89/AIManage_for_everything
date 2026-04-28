@@ -453,12 +453,19 @@ class DatabaseManager:
         return self.cursor.rowcount
     
     def rename_category_order(self, old_name: str, new_name: str) -> bool:
-        """同步重命名 category_order 表中的分类记录"""
+        """同步重命名 category_order 表中的分类记录（包括子类前缀）"""
         try:
+            # 1. 精确匹配的旧分类
             self.cursor.execute(
                 "UPDATE category_order SET category = ? WHERE category = ?",
                 (new_name, old_name)
             )
+            # 2. 如果是旧分类是一级分类，同步更新所有子类（如 教育>考试应试 → 新教育>考试应试）
+            if '>' not in old_name:
+                self.cursor.execute(
+                    "UPDATE category_order SET category = ? || SUBSTR(category, ?) WHERE category LIKE ?",
+                    (new_name, len(old_name) + 1, f"{old_name}>%")
+                )
             self.conn.commit()
             return True
         except Exception as e:
@@ -492,6 +499,114 @@ class DatabaseManager:
         )
         self.conn.commit()
         return affected
+
+    def promote_category(self, old_path: str) -> bool:
+        """
+        将二级分类升级为一级分类
+        - 解析 new_name = old_path.split('>')[1]
+        - 更新 accounts 表中 category = old_path 的条目为 new_name
+        - 更新 category_order 表：删除 old_path 记录，插入 new_name（复用 sort_index）
+        """
+        try:
+            new_name = old_path.split('>', 1)[1].strip()
+
+            # 检查 category_order 中是否已有该名称
+            self.cursor.execute("SELECT 1 FROM category_order WHERE category = ?", (new_name,))
+            if self.cursor.fetchone():
+                return False
+
+            # 更新 accounts 表
+            self.cursor.execute(
+                "UPDATE accounts SET category = ? WHERE category = ?",
+                (new_name, old_path)
+            )
+
+            # 获取旧分类的 sort_index
+            self.cursor.execute(
+                "SELECT sort_index FROM category_order WHERE category = ?",
+                (old_path,)
+            )
+            row = self.cursor.fetchone()
+            old_sort_index = row[0] if row else None
+
+            # 删除旧路径记录
+            self.cursor.execute(
+                "DELETE FROM category_order WHERE category = ?",
+                (old_path,)
+            )
+
+            # 插入新一级分类记录
+            if old_sort_index is not None:
+                self.cursor.execute(
+                    "INSERT INTO category_order (category, sort_index) VALUES (?, ?)",
+                    (new_name, old_sort_index)
+                )
+            else:
+                self.cursor.execute("SELECT MAX(sort_index) FROM category_order")
+                row = self.cursor.fetchone()
+                max_idx = row[0] if row and row[0] is not None else -1
+                self.cursor.execute(
+                    "INSERT INTO category_order (category, sort_index) VALUES (?, ?)",
+                    (new_name, max_idx + 1)
+                )
+
+            self.conn.commit()
+            return True
+        except Exception as e:
+            self.conn.rollback()
+            print(f"[DB] promote_category failed: {e}")
+            return False
+    
+    def reparent_category(self, old_path: str, new_path: str) -> int:
+        """将 old_path 精确匹配的分类条目更新为 new_path，并同步更新 category_order"""
+        try:
+            self.cursor.execute(
+                "UPDATE accounts SET category = ? WHERE category = ?",
+                (new_path, old_path)
+            )
+            updated_rows = self.cursor.rowcount
+
+            self.cursor.execute(
+                "SELECT sort_index FROM category_order WHERE category = ?",
+                (old_path,)
+            )
+            row = self.cursor.fetchone()
+            old_sort_index = row[0] if row else None
+
+            self.cursor.execute(
+                "DELETE FROM category_order WHERE category = ?",
+                (old_path,)
+            )
+
+            # 如果 new_path 已存在于 category_order 中，保留其现有 sort_index，不覆盖
+            self.cursor.execute(
+                "SELECT 1 FROM category_order WHERE category = ?",
+                (new_path,)
+            )
+            if not self.cursor.fetchone():
+                if old_sort_index is not None:
+                    self.cursor.execute(
+                        "INSERT INTO category_order (category, sort_index) VALUES (?, ?)",
+                        (new_path, old_sort_index)
+                    )
+                else:
+                    self.cursor.execute("SELECT MAX(sort_index) FROM category_order")
+                    row = self.cursor.fetchone()
+                    max_idx = row[0] if row and row[0] is not None else -1
+                    self.cursor.execute(
+                        "INSERT INTO category_order (category, sort_index) VALUES (?, ?)",
+                        (new_path, max_idx + 1)
+                    )
+
+            # 清理 AI 分类缓存，避免缓存返回旧分类路径
+            self.cursor.execute("DELETE FROM category_cache")
+
+            self.conn.commit()
+            return updated_rows
+        except Exception as e:
+            self.conn.rollback()
+            print(f"[DB] reparent_category failed: {e}")
+            return 0
     
     def _decrypt_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
         """解密一行数据"""

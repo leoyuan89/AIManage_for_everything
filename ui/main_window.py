@@ -5554,6 +5554,10 @@ class MainWindow(QMainWindow):
             if not output_path:
                 return
             
+            # 获取分类自定义排序
+            account_category_orders = self.db.get_category_orders() if hasattr(self.db, 'get_category_orders') else {}
+            url_category_orders = self._url_db.get_category_orders() if hasattr(self._url_db, 'get_category_orders') else {}
+            
             # 生成密包
             from services.sync_service import SyncService
             sync_service = SyncService()
@@ -5561,7 +5565,9 @@ class MainWindow(QMainWindow):
                 self.db.crypto,
                 accounts,
                 urls,
-                output_path
+                output_path,
+                account_category_orders=account_category_orders,
+                url_category_orders=url_category_orders
             )
             
             # 成功提示

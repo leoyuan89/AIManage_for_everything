@@ -66,17 +66,36 @@ class AIAssistantService:
             if cat:
                 categories.add(cat)
         
+        # 目标指示词：出现在这些词后面的分类名通常是操作目标，不是源筛选条件
+        target_indicators = ['改为', '改成', '修改为', '变更为', '调整为', '重命名为', 
+                             '设置为', '定义为', '移到', '移动到', '转移至', '归类到', 
+                             '归类为', '分配到', '映射到']
+        
+        def _is_target_category(cat_name: str, q: str) -> bool:
+            """判断分类名是否出现在目标指示词之后"""
+            for indicator in target_indicators:
+                # 查找指示词位置
+                idx = q.find(indicator)
+                if idx == -1:
+                    continue
+                # 指示词后面的内容
+                after = q[idx + len(indicator):]
+                # 如果分类名出现在指示词后面（允许中间有少量字符如"的"、"为"等）
+                if cat_name in after[:len(cat_name) + 5]:
+                    return True
+            return False
+        
         # 查找查询中提到的分类名（完整路径或父节点）
         matched_cats = []
         for cat in categories:
             if not cat:
                 continue
-            if cat in query:
+            if cat in query and not _is_target_category(cat, query):
                 matched_cats.append(cat)
             # 二级路径的父节点也可能在查询中被提及
             elif '>' in cat:
                 parent = cat.split('>')[0].strip()
-                if parent in query:
+                if parent in query and not _is_target_category(parent, query):
                     matched_cats.append(parent)
         if not matched_cats:
             return items, ""
@@ -101,7 +120,8 @@ class AIAssistantService:
         filtered = [item for item in items if matcher(getattr(item, 'category', '') or '')]
         
         if filtered:
-            return filtered, f"（仅包含「{target_category}」分类下的 {len(filtered)} 个条目）"
+            item_type = '网址' if hasattr(items[0], 'url') and not hasattr(items[0], 'app_name') else '账号'
+            return filtered, f"（仅包含「{target_category}」分类下的 {len(filtered)} 个{item_type}）"
         return items, ""
     
     def build_db_summary(self, accounts: List[Account] = None, urls: List = None, vault_type: str = 'accounts', max_items: int = 200) -> str:
@@ -136,11 +156,19 @@ class AIAssistantService:
                 cat = getattr(u, 'category', None) or '未分类'
                 categories[cat] = categories.get(cat, 0) + 1
             cats = ' '.join(f"{k}({v})" for k, v in sorted(categories.items(), key=lambda x: -x[1]))
-            lines = [f"共{len(urls)}个网址。分类：{cats}", "ID|标题|分类|网址"]
+            lines = [f"共{len(urls)}个网址。分类：{cats}", "ID|标题|分类|备注|AI备注"]
             for u in urls[:max_items]:
-                title = getattr(u, 'title', '')[:25]
-                url_str = getattr(u, 'url', '')[:40]
-                lines.append(f"{getattr(u, 'id', 0)}|{title}|{getattr(u, 'category', '') or '未分类'}|{url_str}")
+                title = getattr(u, 'title', '')[:30]
+                remark = (getattr(u, 'remark', '') or '')[:20]
+                ai_remark = (getattr(u, 'ai_remark', '') or '')[:20]
+                parts = [f"{getattr(u, 'id', 0)}", title, getattr(u, 'category', '') or '未分类']
+                if remark:
+                    parts.append(remark)
+                else:
+                    parts.append('')
+                if ai_remark:
+                    parts.append(ai_remark)
+                lines.append('|'.join(parts))
             if len(urls) > max_items:
                 lines.append(f"...还有{len(urls)-max_items}个未列出")
             return '\n'.join(lines)
@@ -196,7 +224,14 @@ class AIAssistantService:
                             tags_str = ','.join(tags)
                     except Exception:
                         tags_str = str(u_tags)
-                lines.append(f"{getattr(u, 'id', '')} | {getattr(u, 'title', '')} | {getattr(u, 'category', '未分类')} | {tags_str} | {getattr(u, 'url', '')}")
+                remark = (getattr(u, 'remark', '') or '')[:20]
+                ai_remark = (getattr(u, 'ai_remark', '') or '')[:20]
+                parts = [f"{getattr(u, 'id', '')}", getattr(u, 'title', ''), getattr(u, 'category', '未分类'), tags_str]
+                if remark:
+                    parts.append(f"备注:{remark}")
+                if ai_remark:
+                    parts.append(f"AI备注:{ai_remark}")
+                lines.append(' | '.join(parts))
         
         items_summary = '\n'.join(lines)
         
@@ -628,19 +663,85 @@ class AIAssistantService:
         from services.conversation_context import ReferenceResolver
         enhanced_query, inherited_ids = ReferenceResolver.resolve(query, self.conversation_context)
 
-        # 2. 根据查询筛选目标分类下的条目（局部操作时不传全部数据）
-        filtered_items, scope_hint = self._filter_items_by_query(context_items or [], enhanced_query)
-        print(f"[AIAssistant] _filter_items_by_query: original={len(context_items or [])}, filtered={len(filtered_items)}, scope_hint='{scope_hint}'")
+        # 2. 构建分类树（先用总数，后续根据大模型解析的目标分类更新）
+        repo = RepositoryFactory.get_repository(vault_type)
+        try:
+            existing_categories = repo.get_categories() if hasattr(repo, 'get_categories') else []
+        except Exception:
+            existing_categories = []
+        from core.category_utils import build_category_tree
+        tree = build_category_tree([c for c in existing_categories if c and c != '全部'])
+        tree_lines = []
+        for parent, info in sorted(tree.items()):
+            children = sorted(info.get('children', set()))
+            if children:
+                tree_lines.append(f"- {parent}")
+                for child in children:
+                    tree_lines.append(f"  - {parent}>{child}")
+            else:
+                tree_lines.append(f"- {parent}")
+        tree_body = "\n".join(tree_lines) if tree_lines else "（暂无分类）"
+        vault_type_name = '网址库' if vault_type == 'urls' else '密码库'
+        item_type_name = '网址' if vault_type == 'urls' else '账号'
+        total_count = len(context_items or [])
+        category_tree_text = f"当前库类型：{vault_type_name}\n共{total_count}个{item_type_name}\n分类体系：\n{tree_body}"
+        print(f"[AIAssistant] category_tree length={len(category_tree_text)}, text={category_tree_text[:200]!r}")
 
-        # 3. 构建 db_summary：局部操作直接构建局部数据（不缓存），全局操作走缓存
+        # 3. 预决策：让大模型解析用户提到的目标分类（语义理解替代硬编码字符串匹配）
+        from ai.ollama_client import OllamaClient
+        from services.ai_service_manager import AIServiceManager
+        ai_manager = AIServiceManager.instance()
+        ollama = OllamaClient(model=ai_manager.get_state().model_name or "gemma4:4b")
+        
+        tools = []
+        for tool in ToolRegistry.list():
+            name = tool.name
+            if '_accounts' in name and vault_type != 'accounts':
+                continue
+            if '_urls' in name and vault_type != 'urls':
+                continue
+            tools.append({
+                "name": tool.name,
+                "description": tool.description,
+                "params_schema": tool.params_schema
+            })
+        
+        pre_decision = ollama.generate_tool_call(enhanced_query, category_tree_text, "", tools, vault_type=vault_type)
+        target_categories = pre_decision.get("target_categories", [])
+        print(f"[AIAssistant] target_categories={target_categories}")
+
+        # 4. 用 target_categories 筛选条目（支持多分类和二级分类）
+        if target_categories:
+            from core.category_utils import get_prefix_matcher
+            filtered_items = []
+            seen_ids = set()
+            for cat in target_categories:
+                matcher = get_prefix_matcher(cat)
+                for item in (context_items or []):
+                    item_id = getattr(item, 'id', 0)
+                    if item_id in seen_ids:
+                        continue
+                    if matcher(getattr(item, 'category', '') or ''):
+                        seen_ids.add(item_id)
+                        filtered_items.append(item)
+            if filtered_items:
+                scope_hint = f"（仅包含{', '.join(target_categories)}分类下的 {len(filtered_items)} 个{item_type_name}）"
+            else:
+                filtered_items, scope_hint = self._filter_items_by_query(context_items or [], enhanced_query)
+        else:
+            filtered_items, scope_hint = self._filter_items_by_query(context_items or [], enhanced_query)
+        print(f"[AIAssistant] filtered={len(filtered_items)}, scope_hint='{scope_hint}'")
+
+        # 5. 更新分类树中的数量（用筛选后的结果）
+        category_tree_text = f"当前库类型：{vault_type_name}\n共{len(filtered_items)}个{item_type_name}\n分类体系：\n{tree_body}"
+
+        # 完整的db_summary保留构建供工具内部或日志参考
         if scope_hint:
-            # 局部操作：按需构建，不存入缓存（避免污染全局缓存）
             if vault_type == 'accounts':
                 db_summary = self.build_db_summary(filtered_items, vault_type=vault_type, max_items=500)
             else:
                 db_summary = self.build_db_summary(urls=filtered_items, vault_type=vault_type, max_items=500)
         else:
-            # 全局操作：使用缓存，未命中或条数不一致则构建并缓存
             db_summary = self.conversation_context.get_db_summary(vault_type, item_count=len(filtered_items))
             if db_summary is None:
                 if vault_type == 'accounts':
@@ -648,9 +749,8 @@ class AIAssistantService:
                 else:
                     db_summary = self.build_db_summary(urls=filtered_items, vault_type=vault_type, max_items=500)
                 self.conversation_context.set_db_summary(db_summary, vault_type, item_count=len(filtered_items))
-        print(f"[AIAssistant] db_summary length={len(db_summary)}, first_200={db_summary[:200]!r}")
 
-        # 4. 准备 tool_context（使用筛选后的数据，确保工具内部也只看到这些条目）
+        # 6. 准备 tool_context（使用筛选后的数据，确保工具内部也只看到这些条目）
         tool_context = {
             "accounts": filtered_items if vault_type == 'accounts' else None,
             "urls": filtered_items if vault_type == 'urls' else None,
@@ -664,26 +764,16 @@ class AIAssistantService:
 
         observations = []
 
-        # 4. ReAct 循环
-        from ai.ollama_client import OllamaClient
-        from services.ai_service_manager import AIServiceManager
-
-        ai_manager = AIServiceManager.instance()
-        ollama = OllamaClient(model=ai_manager.get_state().model_name or "gemma4:4b")
-
+        # 7. ReAct 循环
         for turn in range(max_turns):
             observations_text = self.conversation_context.get_observations_text(max_count=5)
 
-            tools = []
-            for tool in ToolRegistry.list():
-                tools.append({
-                    "name": tool.name,
-                    "description": tool.description,
-                    "params_schema": tool.params_schema
-                })
-
             try:
-                decision = ollama.generate_tool_call(enhanced_query, db_summary, observations_text, tools)
+                if turn == 0:
+                    # 第一轮直接使用预决策结果，避免重复调用模型
+                    decision = pre_decision
+                else:
+                    decision = ollama.generate_tool_call(enhanced_query, category_tree_text, observations_text, tools, vault_type=vault_type)
             except Exception as e:
                 return {
                     "success": False,

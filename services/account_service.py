@@ -198,15 +198,22 @@ class AccountService:
         cats = self.get_categories()
         tree = build_category_tree([c for c in cats if c != '全部'])
         
-        # 读取自定义排序，对子分类排序
+        # 读取自定义排序
         orders = self.get_category_orders()
-        for parent_name, info in tree.items():
+        
+        # 一级节点按自定义排序排列（未设置的排最后，再按名称字母序兜底）
+        sorted_parents = sorted(tree.keys(), key=lambda p: (orders.get(p, 999999), p.lower()))
+        
+        result = {}
+        for parent_name in sorted_parents:
+            info = tree[parent_name]
             def _child_sort_key(child_name: str):
                 full_path = f"{parent_name}>{child_name}"
                 return (orders.get(full_path, 999999), child_name.lower())
             info['children'] = sorted(info['children'], key=_child_sort_key)
+            result[parent_name] = info
         
-        return tree
+        return result
     
     def get_category_orders(self) -> Dict[str, int]:
         """获取分类自定义排序"""
@@ -243,6 +250,7 @@ class AccountService:
         """删除分类：
         - 删除二级分类：精确匹配的条目去掉二级部分（保留一级）
         - 删除一级分类：该一级及其所有子类下的条目移至'其他'
+        同时从 category_order 排序表中真正移除该分类
         """
         all_accounts = self.get_all_accounts()
         updated = False
@@ -261,7 +269,31 @@ class AccountService:
                 if matcher(account.category):
                     self.db.update_account(account.id, {'category': '其他'})
                     updated = True
+        # 同步从排序表中删除，确保该分类真正消失
+        self.db.delete_category(category)
         return updated
+
+    def promote_category(self, category_path: str) -> bool:
+        """将二级分类升级为一级分类"""
+        return self.db.promote_category(category_path)
+    
+    def reparent_category(self, old_path: str, new_parent: str = "") -> bool:
+        """
+        改变分类的父级
+        old_path: 旧分类路径
+        new_parent: 新的一级父分类名，空字符串表示变为一级
+        """
+        if '>' in old_path:
+            child_name = old_path.split('>', 1)[1].strip()
+        else:
+            child_name = old_path.strip()
+        
+        if new_parent:
+            new_path = f"{new_parent}>{child_name}"
+        else:
+            new_path = child_name
+        
+        return self.db.reparent_category(old_path, new_path) > 0
     
     def get_accounts_grouped(self) -> dict:
         """

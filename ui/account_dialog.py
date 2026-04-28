@@ -38,17 +38,25 @@ def _perf_log(phase: str, t0: float, t1: float = None):
 
 
 class OCRWorker(QThread):
-    """OCR 识别后台线程"""
+    """OCR 识别后台线程（安全模式）
+    
+    生命周期由 Qt 自动管理：
+    1. parent=AccountDialog，对话框关闭时自动销毁
+    2. self.finished.connect(self.deleteLater)，线程结束后自动销毁
+    3. 外部不主动 deleteLater，避免 race condition
+    """
     # 注意：不能命名为 finished，因为 QThread 本身有 finished 信号，
     # 同名会导致 C++ 层 signal/slot 冲突，引发 0xC0000409 崩溃
     ocr_finished = pyqtSignal(dict)  # 返回提取的字段
     ocr_error = pyqtSignal(str)
     
-    def __init__(self, ocr_service, image_path: str):
-        super().__init__()
+    def __init__(self, ocr_service, image_path: str, parent=None):
+        super().__init__(parent)
         self.ocr_service = ocr_service
         self.image_path = image_path
         self._is_running = True
+        # 线程自然结束后自动销毁，外部无需手动 deleteLater
+        self.finished.connect(self.deleteLater)
     
     def run(self):
         try:
@@ -981,15 +989,11 @@ class AccountDialog(QDialog):
         self.frame_ocr_result.hide()
         self.btn_apply_ocr.hide()
         
-        # 在主线程中同步执行 OCR，避免 QThread 相关的 C++ 层崩溃
-        # PaddleOCR 识别约 0.5s，短暂卡顿但稳定性更高
-        try:
-            fields = ocr_service.extract_account_fields(file_path)
-            self.on_ocr_finished(fields)
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            self.on_ocr_error(str(e))
+        # 启动 OCR 后台线程（安全模式：parent=self + finished→deleteLater）
+        self.ocr_worker = OCRWorker(ocr_service, file_path, parent=self)
+        self.ocr_worker.ocr_finished.connect(self.on_ocr_finished)
+        self.ocr_worker.ocr_error.connect(self.on_ocr_error)
+        self.ocr_worker.start()
     
     def on_ocr_finished(self, fields: dict):
         """OCR 识别完成"""
@@ -1029,10 +1033,7 @@ class AccountDialog(QDialog):
         self.lbl_ocr_status.setText(f"识别失败：{error_msg}")
         # 不在这里清理 worker，等 QThread.finished 信号触发 _on_ocr_worker_finished
     
-    def _on_ocr_worker_cleanup(self):
-        """延迟清理 OCR worker 引用，避免在信号处理期间销毁对象"""
-        if self.ocr_worker:
-            self.ocr_worker = None
+
     
     def on_apply_ocr_result(self):
         """应用 OCR 识别结果"""
@@ -1203,6 +1204,10 @@ class AccountDialog(QDialog):
         """AI 备注生成完成"""
         self.btn_ai_remark.setEnabled(True)
         self.btn_ai_remark.setText("✨ AI生成")
+        
+        if not result or not str(result).strip():
+            QMessageBox.warning(self, "生成失败", "AI 备注生成失败：返回内容为空，请重试")
+            return
         
         self.txt_ai_remark.setText(result)
         QMessageBox.information(self, "生成成功", f"AI 备注：{result}")

@@ -76,3 +76,44 @@ def dropEvent(self, event):
 - QWidget 样式表避免使用 `QWidget { ... }` 全局选择器，应使用 `#objectName` 限定，防止 cascade 到子控件
 
 ---
+
+## 2026-04-28 | 网址分类任务 212→143 数据丢失
+
+### 现象
+对「编程学习与工具」分类下的212个网址执行智能细分二级子类，最终只有143个条目完成分类赋值，剩余60个条目被**静默丢弃**。日志中仅记录了8条SKIP重复ID，无其他异常或错误。
+
+### 排查过程
+1. **排除截断可能**：`done_reason='stop'` 而非 `'length'`，且 `gen_tokens=4790` 远未达 `num_predict=16384` 上限 → **不是被截断**
+2. **检查JSON解析**：`smart_classify_urls` 工具内无 `JSON parse failed` 日志 → **解析成功**
+3. **检查工具执行逻辑**：遍历 `data.items()` 生成预览项，仅处理模型返回的ID。代码**未对比输入ID集合 vs 输出ID集合**，未返回的ID直接静默丢弃
+4. **分析prompt内容**：`SmartClassifyUrlsTool` 上传了 `ID+标题+网址+分类`，其中网址URL被截断40字符仍占大量token。212条网址prompt达18681字符/10360 token，4B模型面对如此大规模重复性输出任务容易"偷懒"遗漏
+5. **发现 `_extract_json_object_robust` 正则隐患**：代码块提取使用 `\{[\s\S]*?\}` 非贪婪匹配，遇到嵌套JSON时可能提前在第一个 `}` 截断
+
+### 根因
+1. **大模型一次性处理数据量过载**：prompt塞入212条全部信息，4B小模型生成过程中主动停止，遗漏约60个条目
+2. **代码无遗漏兜底**：`SmartClassifyUrlsTool` / `SmartClassifyAccountsTool` 均未检测「模型未返回的ID」，导致遗漏条目静默丢失
+3. **prompt冗余**：上传了网址URL（对用户分类决策无价值），浪费大量token
+
+### 解决方案
+1. **精简prompt**（`services/ai_tools.py`）：
+   - `SmartClassifyUrlsTool`：去掉网址URL，改为上传 `ID+标题+分类+备注+AI备注`
+   - `SmartClassifyAccountsTool`：补充 `AI备注`，去掉空备注字段以节省token
+2. **精简 db_summary**（`services/ai_assistant_service.py`）：
+   - `build_db_summary`（网址库）：去掉 `网址` 列，改为 `ID|标题|分类|备注|AI备注`
+   - `semantic_query`（网址库）：去掉URL，改为上传标题/分类/标签/备注/AI备注
+3. **精简语义搜索摘要**（`services/ai_tools.py`）：
+   - `_build_urls_summary`：去掉URL，改为上传标题/分类/标签/备注/AI备注
+4. **添加遗漏检测**（`services/ai_tools.py`）：
+   - 生成预览后，计算 `input_ids - seen_ids`，找出模型未返回的ID
+   - `force_subclass` 模式下归入 `主类>未分类`，非细分模式归入 `其他`
+   - 打印 `MISSING` 日志提示用户
+5. **修复 `_extract_json_object_robust` 正则bug**（`ai/ollama_client.py`）：
+   - 将 `\{[\s\S]*?\}` 非贪婪提取改为提取代码块全部内容，再用括号深度计数找完整JSON对象
+
+### 经验总结
+- **大模型不是万能的**：4B参数模型面对200+条目的全量分类任务，单次prompt极易遗漏。代码必须自己做「输入输出ID对齐检查」
+- **prompt即成本**：每条冗余字段（如URL）都会增加模型负担。只上传对决策真正有价值的字段
+- **静默丢弃是最危险的bug**：比崩溃更隐蔽，用户可能在很久后才发现数据不完整
+- **db_summary 是更大的隐患**：`build_db_summary` 上传了500条带URL的数据（`max_items=500`），比工具内部prompt更膨胀，是第一轮决策调用prompt达3万字符的元凶
+
+---

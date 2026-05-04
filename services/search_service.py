@@ -135,9 +135,13 @@ class SearchService:
         if account.url and query in account.url.lower():
             return ('url', 0.8)
         
-        # 备注匹配
+        # 用户备注匹配
         if account.remark and query in account.remark.lower():
             return ('remark', 0.7)
+        
+        # AI备注匹配
+        if account.ai_remark and query in account.ai_remark.lower():
+            return ('ai_remark', 0.75)
         
         # 分类匹配
         if query in account.category.lower():
@@ -167,6 +171,14 @@ class SearchService:
         # 分类拼音匹配
         if PinyinConverter.match_pinyin(query, account.category):
             return ('category', 0.7)
+        
+        # 用户备注拼音匹配
+        if account.remark and PinyinConverter.match_pinyin(query, account.remark):
+            return ('remark', 0.65)
+        
+        # AI备注拼音匹配
+        if account.ai_remark and PinyinConverter.match_pinyin(query, account.ai_remark):
+            return ('ai_remark', 0.65)
         
         return None
     

@@ -375,9 +375,9 @@ class URLDatabaseManager:
         keyword = f"%{keyword}%"
         self.cursor.execute(
             """SELECT * FROM urls 
-               WHERE title LIKE ? OR url LIKE ? OR tags LIKE ?
+               WHERE title LIKE ? OR url LIKE ? OR tags LIKE ? OR ai_remark LIKE ? OR remark LIKE ?
                ORDER BY created_at DESC""",
-            (keyword, keyword, keyword)
+            (keyword, keyword, keyword, keyword, keyword)
         )
         rows = self.cursor.fetchall()
         

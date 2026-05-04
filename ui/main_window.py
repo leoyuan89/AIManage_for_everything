@@ -1609,7 +1609,7 @@ class MainWindow(QMainWindow):
         
         # 搜索框（按回车搜索）
         self.search_box = QLineEdit()
-        self.search_box.setPlaceholderText("搜索账号（支持拼音，如：wx=微信），按回车搜索...")
+        self.search_box.setPlaceholderText("搜索账号（应用名/网址/备注），按回车搜索...")
         self.search_box.setFixedHeight(36)
         self.search_box.returnPressed.connect(self.on_search)
         top_layout.addWidget(self.search_box, 1)
@@ -2520,12 +2520,12 @@ class MainWindow(QMainWindow):
         if tab_id == 0:
             self.current_vault = 'accounts'
             self.lbl_list_title.setText("全部账号")
-            self.search_box.setPlaceholderText("搜索账号（支持拼音，如：wx=微信），按回车搜索...")
+            self.search_box.setPlaceholderText("搜索账号（应用名/网址/备注），按回车搜索...")
             self.btn_add.setText("+ 添加账号")
         else:
             self.current_vault = 'urls'
             self.lbl_list_title.setText("全部网址")
-            self.search_box.setPlaceholderText("搜索网址...")
+            self.search_box.setPlaceholderText("搜索网址（标题/网址/备注）...")
             self.btn_add.setText("+ 添加网址")
         
         # 重置对话上下文和欢迎语状态

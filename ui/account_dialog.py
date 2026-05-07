@@ -1296,9 +1296,11 @@ class AccountDialog(QDialog):
                 QMessageBox.information(self, "成功", "账号已更新")
             else:
                 # 新增
-                self.account_service.add_account(account)
+                new_id = self.account_service.add_account(account)
+                account.id = new_id
                 QMessageBox.information(self, "成功", "账号已添加")
             
+            self.account = account
             self.accept()
             
         except Exception as e:

@@ -1527,6 +1527,7 @@ class MainWindow(QMainWindow):
         self._pending_action = None      # 待用户确认的操作 (action, params, description)
         self._highlight_matched_ids = None  # Plan 模式高亮的账号 ID 集合
         self._highlight_reasoning = ""      # Plan 模式高亮的推理文本
+        self._view_mode = 'default'         # 'default' | 'search' | 'ai_highlight'
         
         # AI 查询状态
         self._ai_query_start_time = None  # 查询开始时间
@@ -2493,6 +2494,7 @@ class MainWindow(QMainWindow):
     
     def load_accounts(self):
         """加载账号列表（搜索框为空时调用）"""
+        self._view_mode = 'default'
         self.lbl_list_title.show()
         self.account_list.clear()
         
@@ -2919,6 +2921,7 @@ class MainWindow(QMainWindow):
     
     def load_urls(self):
         """加载网址列表"""
+        self._view_mode = 'default'
         self.lbl_list_title.show()
         self.account_list.clear()
         
@@ -3048,6 +3051,7 @@ class MainWindow(QMainWindow):
         # 批量删除模式下仅更新选中状态，不切换列表视图
         if getattr(self, '_category_selection_mode', False):
             return
+        self._view_mode = 'default'
         self.current_category = item.data(0, Qt.ItemDataRole.UserRole)
         # 切换分类时强制刷新缓存
         self._cache_dirty = True
@@ -3373,12 +3377,7 @@ class MainWindow(QMainWindow):
         self._selection_mode = False
         self._selected_ids.clear()
         self._update_bottom_bar_for_normal()
-        self._cache_dirty = True
-        self._url_cache_dirty = True
-        if self.current_vault == 'accounts':
-            self.load_accounts()
-        else:
-            self.load_urls()
+        self._smart_refresh()
         self._restore_scroll_state()
         self._reload_categories()
         
@@ -3434,8 +3433,7 @@ class MainWindow(QMainWindow):
         t2 = time.perf_counter()
         print(f"[Perf] AccountDialog exec: {(t2-t1)*1000:.1f} ms")
         if result == AccountDialog.DialogCode.Accepted:
-            self._cache_dirty = True
-            self.load_accounts()
+            self._smart_refresh()
             self._restore_scroll_state()
             self._reload_categories()
     
@@ -3450,8 +3448,7 @@ class MainWindow(QMainWindow):
         
         dialog = URLEditDialog(self._url_service, url_item, parent=self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            self._url_cache_dirty = True
-            self.load_urls()
+            self._smart_refresh()
             self._restore_scroll_state()
             self._reload_categories()
     
@@ -3467,16 +3464,38 @@ class MainWindow(QMainWindow):
             t2 = time.perf_counter()
             print(f"[Perf] AccountDialog exec: {(t2-t1)*1000:.1f} ms")
             if result == AccountDialog.DialogCode.Accepted:
+                new_id = dialog.account.id if dialog.account else None
                 self._cache_dirty = True
+                self.current_category = '全部'
+                self._view_mode = 'default'
+                self._highlight_matched_ids = None
+                self._highlight_reasoning = ""
+                if hasattr(self, 'ai_filter_banner'):
+                    self.ai_filter_banner.hide()
+                self.lbl_list_title.show()
+                self.search_box.clear()
                 self.load_accounts()
+                if new_id:
+                    self.highlight_matched_accounts([new_id], query_text="AI本次修改")
                 self._restore_scroll_state()
                 self._reload_categories()
         else:
             from models.url_item import URLItem
             dialog = URLEditDialog(self._url_service, URLItem(), parent=self)
             if dialog.exec() == QDialog.DialogCode.Accepted:
+                new_id = dialog.url_item.id if dialog.url_item else None
                 self._url_cache_dirty = True
+                self.current_category = '全部'
+                self._view_mode = 'default'
+                self._highlight_matched_ids = None
+                self._highlight_reasoning = ""
+                if hasattr(self, 'ai_filter_banner'):
+                    self.ai_filter_banner.hide()
+                self.lbl_list_title.show()
+                self.search_box.clear()
                 self.load_urls()
+                if new_id:
+                    self.highlight_matched_accounts([new_id], query_text="AI本次修改")
                 self._restore_scroll_state()
                 self._reload_categories()
     
@@ -3490,6 +3509,7 @@ class MainWindow(QMainWindow):
         text = self.search_box.text().strip()
         
         if not text:
+            self._view_mode = 'default'
             if self.current_vault == 'accounts':
                 self.load_accounts()
             else:
@@ -3497,14 +3517,10 @@ class MainWindow(QMainWindow):
             return
         
         # 搜索框仅使用精确匹配
+        self._view_mode = 'search'
         
         if self.current_vault == 'accounts':
-            # 确保缓存最新
-            if not self._cached_accounts or self._cache_dirty:
-                self._cached_accounts = self.account_service.get_all_accounts()
-                self._cache_dirty = False
-            
-            all_accounts = self._cached_accounts
+            all_accounts = self.account_service.get_all_accounts()
             query = text
             
             # 同步搜索：精确 + 拼音
@@ -3514,7 +3530,7 @@ class MainWindow(QMainWindow):
             # 渲染搜索结果
             self._display_search_results(exact_results, all_accounts=all_accounts)
         else:
-            # 网址搜索保持不变
+            # 网址搜索
             results = self._url_service.search_urls(text)
             self._display_url_search_results(results)
     
@@ -5082,6 +5098,48 @@ class MainWindow(QMainWindow):
             traceback.print_exc()
             self._append_ai_system_msg(f"处理出错：{str(e)}")
     
+    def _smart_refresh(self):
+        """智能刷新：保持当前视图模式，不自动回退到默认视图"""
+        self._cache_dirty = True
+        self._url_cache_dirty = True
+        
+        if self._view_mode == 'search':
+            text = self.search_box.text().strip()
+            if text:
+                self.on_search()
+            else:
+                self._view_mode = 'default'
+                if self.current_vault == 'accounts':
+                    self.load_accounts()
+                else:
+                    self.load_urls()
+        elif self._view_mode == 'ai_highlight':
+            if self._highlight_matched_ids:
+                self._reapply_ai_highlight()
+            else:
+                self._view_mode = 'default'
+                if self.current_vault == 'accounts':
+                    self.load_accounts()
+                else:
+                    self.load_urls()
+        else:
+            if self.current_vault == 'accounts':
+                self.load_accounts()
+            else:
+                self.load_urls()
+    
+    def _reapply_ai_highlight(self):
+        """重新应用当前的 AI 高亮筛选（数据变更后刷新）"""
+        self._cache_dirty = True
+        self._url_cache_dirty = True
+        if self.current_vault == 'accounts':
+            self._cached_accounts = self.account_service.get_all_accounts()
+        else:
+            self._cached_urls = self._url_service.get_all_urls()
+        
+        matched_ids = [int(id_str) for id_str in self._highlight_matched_ids]
+        self.highlight_matched_accounts(matched_ids, query_text=self._highlight_reasoning or "AI筛选")
+
     def _refresh_account_list(self):
         """刷新账号列表"""
         self._cache_dirty = True
@@ -5267,6 +5325,8 @@ class MainWindow(QMainWindow):
         if not matched_ids:
             return
         
+        self._view_mode = 'ai_highlight'
+        
         # 统一转为字符串集合，避免 LLM 返回的字符串 ID 与 SQLite 整数 ID 类型不匹配
         self._highlight_matched_ids = {str(m) for m in matched_ids}
         
@@ -5388,6 +5448,7 @@ class MainWindow(QMainWindow):
         """清除左侧列表的高亮筛选"""
         self._highlight_matched_ids = None
         self._highlight_reasoning = ""
+        self._view_mode = 'default'
         if hasattr(self, 'ai_filter_banner'):
             self.ai_filter_banner.hide()
         # 恢复列表标题显示

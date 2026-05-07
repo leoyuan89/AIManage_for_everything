@@ -14,6 +14,7 @@ from services.url_service import URLService
 from core.repositories import RepositoryFactory, URLRepository
 from services.ai_service_manager import AIServiceManager
 from services.ai_worker_thread import AIStatus
+from core.theme_manager import ThemeManager, ThemeColors
 
 
 class URLEditDialog(QDialog):
@@ -64,6 +65,7 @@ class URLEditDialog(QDialog):
     
     def setup_ui(self):
         """设置界面"""
+        colors = ThemeManager.instance().colors
         if self.is_edit_mode:
             self.setWindowTitle(f"编辑网址 - {self.url_item.title or self.url_item.url}")
         else:
@@ -116,7 +118,7 @@ class URLEditDialog(QDialog):
         category_layout.addWidget(self.cmb_parent)
         
         lbl_sep = QLabel(">")
-        lbl_sep.setStyleSheet("color: #999; font-size: 14px; font-weight: bold;")
+        lbl_sep.setStyleSheet(f"color: {colors.text_tertiary}; font-size: 14px; font-weight: bold;")
         lbl_sep.setAlignment(Qt.AlignmentFlag.AlignCenter)
         category_layout.addWidget(lbl_sep)
         
@@ -221,17 +223,17 @@ class URLEditDialog(QDialog):
         btn_save = QPushButton("保存")
         btn_save.setFixedHeight(40)
         btn_save.setFixedWidth(100)
-        btn_save.setStyleSheet("""
-            QPushButton {
-                background-color: #2196F3;
-                color: white;
+        btn_save.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_blue};
+                color: {colors.text_on_accent};
                 border: none;
                 border-radius: 4px;
                 font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #1976D2;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_blue_dark};
+            }}
         """)
         btn_save.clicked.connect(self.on_save)
         button_layout.addWidget(btn_save)
@@ -242,16 +244,16 @@ class URLEditDialog(QDialog):
         if self.is_edit_mode:
             btn_delete = QPushButton("删除网址")
             btn_delete.setFixedHeight(40)
-            btn_delete.setStyleSheet("""
-                QPushButton {
-                    background-color: #f44336;
-                    color: white;
+            btn_delete.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {colors.accent_red};
+                    color: {colors.text_on_dark};
                     border: none;
                     border-radius: 4px;
-                }
-                QPushButton:hover {
-                    background-color: #d32f2f;
-                }
+                }}
+                QPushButton:hover {{
+                    background-color: {colors.accent_red_dark};
+                }}
             """)
             btn_delete.clicked.connect(self.on_delete)
             layout.addWidget(btn_delete, alignment=Qt.AlignmentFlag.AlignCenter)

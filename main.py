@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from core.crypto import CryptoManager
 from core.database import DatabaseManager
+from core.theme_manager import ThemeManager, style_button_primary
 from ui.main_window import MainWindow
 
 
@@ -98,18 +99,7 @@ class SetupDialog(QDialog):
         btn_ok = QPushButton("确定")
         btn_ok.setFixedHeight(40)
         btn_ok.setFixedWidth(120)
-        btn_ok.setStyleSheet("""
-            QPushButton {
-                background-color: #2196F3;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #1976D2;
-            }
-        """)
+        btn_ok.setStyleSheet(style_button_primary(ThemeManager.instance().colors))
         btn_ok.clicked.connect(self.on_ok)
         btn_layout.addWidget(btn_ok)
         
@@ -187,18 +177,7 @@ class LoginDialog(QDialog):
         btn_login = QPushButton("解锁")
         btn_login.setFixedHeight(40)
         btn_login.setFixedWidth(120)
-        btn_login.setStyleSheet("""
-            QPushButton {
-                background-color: #2196F3;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #1976D2;
-            }
-        """)
+        btn_login.setStyleSheet(style_button_primary(ThemeManager.instance().colors))
         btn_login.clicked.connect(self.on_login)
         btn_layout.addWidget(btn_login)
         
@@ -231,8 +210,9 @@ def main():
     db_path = data_dir / 'vault.db'
     config_path = data_dir / 'config.json'
     
-    # 加载并应用主题配置（非首次启动时从配置读取）
-    from core.theme_manager import apply_theme_to_app
+    # 加载并应用主题配置
+    import json
+    theme = 'light'
     if config_path.exists():
         try:
             with open(config_path, 'r', encoding='utf-8') as f:
@@ -240,9 +220,9 @@ def main():
             theme = config.get('theme', 'light')
         except Exception:
             theme = 'light'
-        apply_theme_to_app(app, theme)
-    else:
-        apply_theme_to_app(app, 'light')
+
+    # 初始化主题管理器
+    ThemeManager.instance().init_app(app, theme)
     
     # 检查是否是首次启动
     is_first_run = not db_path.exists()
@@ -262,7 +242,6 @@ def main():
         crypto = CryptoManager(master_password)
         
         # 保存盐值到配置
-        import json
         config = {
             'salt': crypto.salt.hex(),
             'version': '1.0',
@@ -283,7 +262,6 @@ def main():
         )
     else:
         # 非首次启动：验证主密码（循环直到密码正确或用户取消）
-        import json
         with open(config_path, 'r', encoding='utf-8') as f:
             config = json.load(f)
         salt = bytes.fromhex(config['salt'])

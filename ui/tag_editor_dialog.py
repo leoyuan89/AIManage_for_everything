@@ -13,6 +13,7 @@ from PyQt6.QtGui import QFont
 from typing import List
 from models.account import Account
 from services.tag_service import TagService
+from core.theme_manager import ThemeManager, ThemeColors
 
 
 class TagButton(QPushButton):
@@ -20,28 +21,29 @@ class TagButton(QPushButton):
     
     def __init__(self, text: str, removable: bool = True, parent=None):
         super().__init__(text, parent)
+        colors = ThemeManager.instance().colors
         self.setFixedHeight(28)
         self.removable = removable
         
         if removable:
             self.setText(f"{text}  ×")
         
-        self.setStyleSheet("""
-            QPushButton {
-                background-color: #e3f2fd;
-                color: #1976D2;
-                border: 1px solid #90caf9;
+        self.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_blue_bg};
+                color: {colors.accent_blue};
+                border: 1px solid {colors.accent_blue_light};
                 border-radius: 14px;
                 padding: 2px 10px;
                 font-size: 12px;
-            }
-            QPushButton:hover {
-                background-color: #bbdefb;
-                border-color: #64b5f6;
-            }
-            QPushButton:pressed {
-                background-color: #90caf9;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_blue_bg_hover};
+                border-color: {colors.accent_blue_light};
+            }}
+            QPushButton:pressed {{
+                background-color: {colors.accent_blue_light};
+            }}
         """)
 
 
@@ -59,6 +61,7 @@ class TagEditorDialog(QDialog):
     
     def setup_ui(self):
         """设置界面"""
+        colors = ThemeManager.instance().colors
         self.setWindowTitle(f"编辑标签 - {self.account.app_name}")
         self.setMinimumSize(400, 300)
         
@@ -77,7 +80,7 @@ class TagEditorDialog(QDialog):
         
         # 说明
         lbl_desc = QLabel("标签用于快速分类和搜索，最多 5 个")
-        lbl_desc.setStyleSheet("color: #666; font-size: 11px;")
+        lbl_desc.setStyleSheet(f"color: {colors.text_secondary}; font-size: 11px;")
         lbl_desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(lbl_desc)
         
@@ -105,16 +108,16 @@ class TagEditorDialog(QDialog):
         btn_add = QPushButton("添加")
         btn_add.setFixedHeight(32)
         btn_add.setFixedWidth(60)
-        btn_add.setStyleSheet("""
-            QPushButton {
-                background-color: #2196F3;
-                color: white;
+        btn_add.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_blue};
+                color: {colors.text_on_accent};
                 border: none;
                 border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: #1976D2;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_blue_dark};
+            }}
         """)
         btn_add.clicked.connect(self.on_add_tag)
         add_layout.addWidget(btn_add)
@@ -124,20 +127,20 @@ class TagEditorDialog(QDialog):
         # AI 生成按钮
         self.btn_ai_generate = QPushButton("✨ AI 智能生成标签")
         self.btn_ai_generate.setFixedHeight(36)
-        self.btn_ai_generate.setStyleSheet("""
-            QPushButton {
+        self.btn_ai_generate.setStyleSheet(f"""
+            QPushButton {{
                 background-color: #9c27b0;
                 color: white;
                 border: none;
                 border-radius: 4px;
                 font-weight: bold;
-            }
-            QPushButton:hover {
+            }}
+            QPushButton:hover {{
                 background-color: #7b1fa2;
-            }
-            QPushButton:disabled {
-                background-color: #ccc;
-            }
+            }}
+            QPushButton:disabled {{
+                background-color: {colors.text_disabled};
+            }}
         """)
         self.btn_ai_generate.clicked.connect(self.on_ai_generate)
         layout.addWidget(self.btn_ai_generate)
@@ -166,17 +169,17 @@ class TagEditorDialog(QDialog):
         btn_ok = QPushButton("确定")
         btn_ok.setFixedHeight(36)
         btn_ok.setFixedWidth(80)
-        btn_ok.setStyleSheet("""
-            QPushButton {
-                background-color: #4CAF50;
-                color: white;
+        btn_ok.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_green};
+                color: {colors.text_on_accent};
                 border: none;
                 border-radius: 4px;
                 font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #45a049;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_green_dark};
+            }}
         """)
         btn_ok.clicked.connect(self.on_ok)
         button_layout.addWidget(btn_ok)
@@ -185,6 +188,7 @@ class TagEditorDialog(QDialog):
     
     def refresh_tags_display(self):
         """刷新标签显示"""
+        colors = ThemeManager.instance().colors
         # 清除现有标签按钮
         while self.tags_layout.count():
             item = self.tags_layout.takeAt(0)
@@ -193,7 +197,7 @@ class TagEditorDialog(QDialog):
         
         if not self.tags:
             lbl_empty = QLabel("暂无标签")
-            lbl_empty.setStyleSheet("color: #999; font-style: italic;")
+            lbl_empty.setStyleSheet(f"color: {colors.text_tertiary}; font-style: italic;")
             self.tags_layout.addWidget(lbl_empty)
             return
         

@@ -5,6 +5,86 @@
 
 ---
 
+## 2026-05-07 | UI 主题系统重构：暗色主题适配 + 功能修复
+
+### 背景
+项目原有 200+ 处硬编码的浅色主题颜色值，暗色主题切换后界面丑陋不可用。用户要求全面改造主题系统，支持浅色/深色平滑切换。
+
+### 改造范围
+- **14 个文件**，+1670/-880 行
+- 新建 `ThemeColors` 色板系统（40+ 颜色 Token）
+- 新建 `ThemeManager` 单例（信号驱动主题切换）
+- 集成 `qtawesome` 图标库
+- 所有 UI 文件的硬编码颜色替换为主题 Token
+
+### 排查过程
+
+#### 1. 多次 `NameError: name 'colors' is not defined`
+**现象**：主题改造用 agent 批量替换硬编码颜色，但 agent 在多处将 `colors = ThemeManager.instance().colors` 写入了 **f-string 内部**（变成 CSS 文本而非 Python 代码），导致运行时 NameError。
+
+**根因**：agent 错误地将 Python 赋值语句放在了 f-string 的三引号内。静态扫描工具无法区分 f-string 内的文本和真正的 Python 代码。
+
+**修复方法**：
+- 编写静态扫描脚本，检测所有使用 `{colors.xxx}`（f-string 内）和 `colors.xxx`（Python 表达式）的方法
+- 逐一手动修复，在所有引用 `colors` 的方法顶部添加真正的 `colors = ThemeManager.instance().colors`
+- 共修复 **6 个方法**：`_display_search_results`, `_ai_display_results_in_list`, `set_preview_data`, `_fill_table`, `highlight_matched_accounts`, `_on_ai_mode_changed`
+
+#### 2. 初始暗色主题不生效
+**现象**：配置文件中 `theme: dark`，但启动后界面仍为浅色。通过设置切换却能正常工作。
+
+**根因**：`ThemeManager.init_app()` 只调用了 `_apply_qt_material()` 应用 qt-material 样式，但**没有设置 `self._current` 和 `self._colors`**。导致 `setup_ui()` 读取 `ThemeManager.instance().colors` 时拿到的是默认 `LIGHT_COLORS`。
+
+**修复**：`init_app()` 现在正确设置 `self._current = theme` 和 `self._colors = DARK/LIGHT_COLORS`。
+
+#### 3. 设置弹窗主题切换延迟
+**现象**：通过设置→主题设置切换主题后，主窗口不立即刷新，需再次打开设置才生效。
+
+**根因**：主题切换信号链经过嵌套模态弹窗（SettingsDialog → ThemeSettingsDialog → QMessageBox），主窗口的 paint 事件被模态弹窗阻塞。
+
+**修复**：
+- `_apply_theme()` 中直接调用 `_reapply_styles()` + `repaint()` + `processEvents()`，不依赖信号异步传递
+- `on_settings()` 在弹窗关闭后无条件执行 `_reapply_styles()`
+- `SettingsDialog` 监听 `ThemeManager.theme_changed` 信号，实时更新自身按钮样式
+
+#### 4. AI 匹配高亮不生效
+**现象**：炽阳 AI 搜索结果中，匹配条目没有任何视觉高亮，与普通条目无法区分。
+
+**排查**：尝试了多种方案均失败：
+- `widget.setStyleSheet(background-color)` → 样式表正确替换但视觉无变化（QWidget 在 QListWidgetItem 中 CSS 背景不渲染）
+- `widget.setPalette()` + `setAutoFillBackground(True)` → 同样不生效
+- `item.setBackground()` → 无效（`setItemWidget()` 时 item 不绘制自己的背景）
+- 红色极端测试 → 确认机制可行但子控件（图标、分类标签）的背景遮挡了父控件
+
+**根因**：Qt 的 `setItemWidget()` 让 widget 完全接管 item 的绘制。widget 内的子控件（`icon_label`, `lbl_category`）有独立的不透明背景色，遮挡了父 widget 的背景。
+
+**最终方案**：创建带高亮背景色的 `QWidget` 容器，将整个 `AccountListItem` 包裹其中，内部 widget 设为透明，子控件（分类标签）背景也透明化。这样容器背景色覆盖整条 item。
+
+**颜色方案**：
+- 浅色主题：`#BBDEFB`（中等蓝色，在白底上清晰可见）
+- 深色主题：`#2A3D55`（蓝灰色，在黑底上清晰可见）
+
+### 新增架构
+
+```
+ThemeManager (QObject 单例)
+├── ThemeColors (40+ token 色板)
+│   ├── LIGHT_COLORS  → Material Design 3 浅色
+│   └── DARK_COLORS   → Material Design 3 深色
+├── theme_changed 信号 → 驱动全局 UI 刷新
+├── init_app()       → 启动时初始化
+├── apply_theme()    → 运行时切换
+├── get_icon()       → qtawesome 图标
+└── style_*()        → 预设样式生成函数
+```
+
+### 经验总结
+- **Agent 批量替换的陷阱**：agent 容易将代码写入 f-string 内部，静态检查工具可能漏检。必须编写针对性的验证脚本。
+- **Qt 的 setItemWidget 机制**：使用 `setItemWidget` 后，item 完全不绘制自己的背景。高亮需在 widget 层实现。
+- **QWidget CSS 背景**：QWidget（非 QFrame 子类）的 CSS `background-color` 在特定场景下不渲染，需配合 `setAutoFillBackground` 或使用容器包裹。
+- **模态弹窗链**：嵌套模态弹窗会阻塞父窗口的事件处理，信号驱动方案不可靠时，应改为直接调用 + 弹窗关闭后兜底重绘。
+
+---
+
 ## 2026-04-27 | QTreeWidget 自定义拖拽排序后条目被"吞掉"
 
 ### 现象

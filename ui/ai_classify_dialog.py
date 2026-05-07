@@ -19,6 +19,7 @@ from services.ai_classification_service import (
 )
 from models.account import Account
 from models.url_item import URLItem
+from core.theme_manager import ThemeManager, ThemeColors
 
 
 class PreAnalysisWorker(QThread):
@@ -93,6 +94,7 @@ class SnapshotSelectionDialog(QDialog):
         self.setup_ui()
     
     def setup_ui(self):
+        colors = ThemeManager.instance().colors
         self.setWindowTitle("选择要回滚的快照")
         self.setMinimumSize(450, 350)
         
@@ -129,17 +131,17 @@ class SnapshotSelectionDialog(QDialog):
         btn_ok = QPushButton("回滚")
         btn_ok.setFixedHeight(36)
         btn_ok.setFixedWidth(100)
-        btn_ok.setStyleSheet("""
-            QPushButton {
-                background-color: #f44336;
-                color: white;
+        btn_ok.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_red};
+                color: {colors.text_on_dark};
                 border: none;
                 border-radius: 4px;
                 font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #d32f2f;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_red_dark};
+            }}
         """)
         btn_ok.clicked.connect(self.on_ok)
         btn_layout.addWidget(btn_ok)
@@ -169,36 +171,37 @@ class MigrationGroupWidget(QGroupBox):
         self.setup_ui()
     
     def setup_ui(self):
+        colors = ThemeManager.instance().colors
         if self.is_pending_group:
             self.setTitle(f"📋 待整理 ({len(self.changes)}条)")
-            self.setStyleSheet("""
-                QGroupBox {
-                    border: 2px solid #FF9800;
+            self.setStyleSheet(f"""
+                QGroupBox {{
+                    border: 2px solid {colors.accent_orange};
                     border-radius: 8px;
                     margin-top: 10px;
                     font-weight: bold;
-                    color: #E65100;
-                }
-                QGroupBox::title {
+                    color: {colors.accent_orange_text};
+                }}
+                QGroupBox::title {{
                     subcontrol-origin: margin;
                     left: 10px;
                     padding: 0 5px;
-                }
+                }}
             """)
         else:
             self.setTitle(f"{self.category} ({len(self.changes)}条)")
-            self.setStyleSheet("""
-                QGroupBox {
-                    border: 1px solid #e0e0e0;
+            self.setStyleSheet(f"""
+                QGroupBox {{
+                    border: 1px solid {colors.border_light};
                     border-radius: 8px;
                     margin-top: 10px;
                     font-weight: bold;
-                }
-                QGroupBox::title {
+                }}
+                QGroupBox::title {{
                     subcontrol-origin: margin;
                     left: 10px;
                     padding: 0 5px;
-                }
+                }}
             """)
         
         layout = QVBoxLayout(self)
@@ -211,34 +214,34 @@ class MigrationGroupWidget(QGroupBox):
         
         btn_accept = QPushButton("采纳本组")
         btn_accept.setFixedHeight(28)
-        btn_accept.setStyleSheet("""
-            QPushButton {
-                background-color: #4CAF50;
-                color: white;
+        btn_accept.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_green};
+                color: {colors.text_on_accent};
                 border: none;
                 border-radius: 4px;
                 padding: 4px 12px;
-            }
-            QPushButton:hover {
-                background-color: #45a049;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_green_dark};
+            }}
         """)
         btn_accept.clicked.connect(self.on_accept_group)
         btn_layout.addWidget(btn_accept)
         
         btn_revert = QPushButton("撤销本组")
         btn_revert.setFixedHeight(28)
-        btn_revert.setStyleSheet("""
-            QPushButton {
-                background-color: #f44336;
-                color: white;
+        btn_revert.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_red};
+                color: {colors.text_on_dark};
                 border: none;
                 border-radius: 4px;
                 padding: 4px 12px;
-            }
-            QPushButton:hover {
-                background-color: #d32f2f;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_red_dark};
+            }}
         """)
         btn_revert.clicked.connect(self.on_revert_group)
         btn_layout.addWidget(btn_revert)
@@ -261,7 +264,7 @@ class MigrationGroupWidget(QGroupBox):
             
             # 原分类
             lbl_old = QLabel(f"→ {change.old_category}")
-            lbl_old.setStyleSheet("color: #666;")
+            lbl_old.setStyleSheet(f"color: {colors.text_secondary};")
             row_layout.addWidget(lbl_old)
             
             # 新分类（可编辑下拉框）
@@ -277,7 +280,7 @@ class MigrationGroupWidget(QGroupBox):
             lbl_conf = QLabel(conf_text)
             if change.is_low_confidence:
                 lbl_conf.setText(conf_text + " (低)")
-                lbl_conf.setStyleSheet("color: #FF9800;")
+                lbl_conf.setStyleSheet(f"color: {colors.accent_orange};")
             row_layout.addWidget(lbl_conf)
             
             row_layout.addStretch()
@@ -321,17 +324,18 @@ class CategoryProposalCard(QFrame):
         self.setup_ui()
     
     def setup_ui(self):
+        colors = ThemeManager.instance().colors
         self.setFrameShape(QFrame.Shape.StyledPanel)
-        self.setStyleSheet("""
-            CategoryProposalCard {
-                background-color: white;
-                border: 2px solid #e0e0e0;
+        self.setStyleSheet(f"""
+            CategoryProposalCard {{
+                background-color: {colors.bg_primary};
+                border: 2px solid {colors.border_light};
                 border-radius: 8px;
                 padding: 10px;
-            }
-            CategoryProposalCard:hover {
-                border-color: #2196F3;
-            }
+            }}
+            CategoryProposalCard:hover {{
+                border-color: {colors.accent_blue};
+            }}
         """)
         
         layout = QVBoxLayout(self)
@@ -352,7 +356,7 @@ class CategoryProposalCard(QFrame):
         
         # 预计数量标签
         lbl_count = QLabel(f"({self.proposal.estimated_count}条)")
-        lbl_count.setStyleSheet("color: #666;")
+        lbl_count.setStyleSheet(f"color: {colors.text_secondary};")
         top_layout.addWidget(lbl_count)
         
         layout.addLayout(top_layout)
@@ -360,21 +364,21 @@ class CategoryProposalCard(QFrame):
         # 描述
         if self.proposal.description:
             lbl_desc = QLabel(self.proposal.description)
-            lbl_desc.setStyleSheet("color: #666; font-size: 12px;")
+            lbl_desc.setStyleSheet(f"color: {colors.text_secondary}; font-size: 12px;")
             lbl_desc.setWordWrap(True)
             layout.addWidget(lbl_desc)
         
         # 示例
         if self.proposal.examples:
             lbl_examples = QLabel(f"示例：{', '.join(self.proposal.examples[:3])}")
-            lbl_examples.setStyleSheet("color: #888; font-size: 11px;")
+            lbl_examples.setStyleSheet(f"color: {colors.text_tertiary}; font-size: 11px;")
             lbl_examples.setWordWrap(True)
             layout.addWidget(lbl_examples)
         
         # 冲突提示
         if self.proposal.conflicts:
             lbl_conflict = QLabel(f"⚠️ {'; '.join(self.proposal.conflicts)}")
-            lbl_conflict.setStyleSheet("color: #f44336; font-size: 11px;")
+            lbl_conflict.setStyleSheet(f"color: {colors.accent_red}; font-size: 11px;")
             lbl_conflict.setWordWrap(True)
             layout.addWidget(lbl_conflict)
         
@@ -398,7 +402,7 @@ class CategoryProposalCard(QFrame):
         # 是否新建标记
         if self.proposal.is_new and not getattr(self, 'chk_force_new', None):
             lbl_new = QLabel("[新建]")
-            lbl_new.setStyleSheet("color: #4CAF50; font-size: 11px;")
+            lbl_new.setStyleSheet(f"color: {colors.accent_green}; font-size: 11px;")
             layout.addWidget(lbl_new)
     
     def on_selection_changed(self, state):
@@ -465,6 +469,7 @@ class AIClassifyDialog(QDialog):
     
     def setup_ui(self):
         """设置界面"""
+        colors = ThemeManager.instance().colors
         layout = QVBoxLayout(self)
         layout.setSpacing(15)
         layout.setContentsMargins(20, 20, 20, 20)
@@ -480,7 +485,7 @@ class AIClassifyDialog(QDialog):
         
         # 说明
         self.lbl_status = QLabel("正在分析数据...")
-        self.lbl_status.setStyleSheet("color: #666;")
+        self.lbl_status.setStyleSheet(f"color: {colors.text_secondary};")
         self.lbl_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.lbl_status)
         
@@ -527,17 +532,17 @@ class AIClassifyDialog(QDialog):
         self.btn_next = QPushButton("确认并执行")
         self.btn_next.setFixedHeight(40)
         self.btn_next.setFixedWidth(120)
-        self.btn_next.setStyleSheet("""
-            QPushButton {
-                background-color: #2196F3;
-                color: white;
+        self.btn_next.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_blue};
+                color: {colors.text_on_accent};
                 border: none;
                 border-radius: 4px;
                 font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #1976D2;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_blue_dark};
+            }}
         """)
         self.btn_next.clicked.connect(self.on_next_clicked)
         self.btn_next.setEnabled(False)
@@ -546,17 +551,17 @@ class AIClassifyDialog(QDialog):
         self.btn_apply = QPushButton("正式生效")
         self.btn_apply.setFixedHeight(40)
         self.btn_apply.setFixedWidth(120)
-        self.btn_apply.setStyleSheet("""
-            QPushButton {
-                background-color: #4CAF50;
-                color: white;
+        self.btn_apply.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_green};
+                color: {colors.text_on_accent};
                 border: none;
                 border-radius: 4px;
                 font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #45a049;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_green_dark};
+            }}
         """)
         self.btn_apply.clicked.connect(self.on_apply_clicked)
         self.btn_apply.hide()
@@ -573,8 +578,9 @@ class AIClassifyDialog(QDialog):
     
     def start_pre_analysis(self):
         """启动预分析后台线程"""
+        colors = ThemeManager.instance().colors
         self.lbl_status.setText(f"🤖 AI 正在深度分析您的 {len(self.items)} 条数据，请稍候...")
-        self.lbl_status.setStyleSheet("color: #1976D2; font-weight: bold;")
+        self.lbl_status.setStyleSheet(f"color: {colors.accent_blue}; font-weight: bold;")
         self.progress_bar.setVisible(True)
         self.progress_bar.setMaximum(0)  # 无限循环动画
         self.progress_bar.setValue(0)
@@ -594,9 +600,10 @@ class AIClassifyDialog(QDialog):
     
     def on_pre_analysis_error(self, error_msg: str):
         """预分析出错回调"""
+        colors = ThemeManager.instance().colors
         self.progress_bar.hide()
         self.lbl_status.setText(f"分析失败：{error_msg}")
-        self.lbl_status.setStyleSheet("color: #f44336;")
+        self.lbl_status.setStyleSheet(f"color: {colors.accent_red};")
         QMessageBox.critical(self, "错误", f"AI预分析失败：\n{error_msg}")
     
     def run_pre_analysis(self):
@@ -605,6 +612,7 @@ class AIClassifyDialog(QDialog):
     
     def show_proposals(self, proposals: List[CategoryProposal]):
         """显示类别提议卡片"""
+        colors = ThemeManager.instance().colors
         # 清除所有内容
         while self.proposals_layout.count():
             item = self.proposals_layout.takeAt(0)
@@ -623,11 +631,11 @@ class AIClassifyDialog(QDialog):
         
         # 添加自定义类别输入区域
         custom_widget = QWidget()
-        custom_widget.setStyleSheet("""
-            QWidget {
-                background-color: #f5f5f5;
+        custom_widget.setStyleSheet(f"""
+            QWidget {{
+                background-color: {colors.bg_secondary};
                 border-radius: 8px;
-            }
+            }}
         """)
         custom_layout = QHBoxLayout(custom_widget)
         custom_layout.setContentsMargins(15, 10, 15, 10)
@@ -640,16 +648,16 @@ class AIClassifyDialog(QDialog):
         btn_add_custom = QPushButton("添加")
         btn_add_custom.setFixedHeight(32)
         btn_add_custom.setFixedWidth(70)
-        btn_add_custom.setStyleSheet("""
-            QPushButton {
-                background-color: #2196F3;
-                color: white;
+        btn_add_custom.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_blue};
+                color: {colors.text_on_accent};
                 border: none;
                 border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: #1976D2;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_blue_dark};
+            }}
         """)
         btn_add_custom.clicked.connect(self.on_add_custom_category)
         custom_layout.addWidget(btn_add_custom)

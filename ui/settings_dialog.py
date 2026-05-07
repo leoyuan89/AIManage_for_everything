@@ -15,6 +15,7 @@ from PyQt6.QtGui import QFont
 
 from core.database import DatabaseManager
 from core.crypto import CryptoManager
+from core.theme_manager import ThemeManager, ThemeColors
 
 
 
@@ -41,6 +42,7 @@ class ChangePasswordDialog(QDialog):
         self.setup_ui()
     
     def setup_ui(self):
+        colors = ThemeManager.instance().colors
         self.setWindowTitle("修改主密码")
         self.setMinimumSize(450, 350)
         
@@ -62,7 +64,7 @@ class ChangePasswordDialog(QDialog):
         # 说明
         lbl_desc = QLabel("修改主密码需要重新加密所有数据，请谨慎操作。")
         lbl_desc.setWordWrap(True)
-        lbl_desc.setStyleSheet("color: #666;")
+        lbl_desc.setStyleSheet(f"color: {colors.text_secondary};")
         lbl_desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(lbl_desc)
         
@@ -109,17 +111,17 @@ class ChangePasswordDialog(QDialog):
         btn_ok = QPushButton("确认修改")
         btn_ok.setFixedHeight(40)
         btn_ok.setFixedWidth(120)
-        btn_ok.setStyleSheet("""
-            QPushButton {
-                background-color: #2196F3;
-                color: white;
+        btn_ok.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_blue};
+                color: {colors.text_on_accent};
                 border: none;
                 border-radius: 4px;
                 font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #1976D2;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_blue_dark};
+            }}
         """)
         btn_ok.clicked.connect(self.on_change_password)
         btn_layout.addWidget(btn_ok)
@@ -272,6 +274,7 @@ class ThemeSettingsDialog(QDialog):
             self.current_theme = 'light'
     
     def setup_ui(self):
+        colors = ThemeManager.instance().colors
         self.setWindowTitle("主题设置")
         self.setMinimumSize(400, 280)
         
@@ -293,7 +296,7 @@ class ThemeSettingsDialog(QDialog):
         # 说明
         lbl_desc = QLabel("选择您喜欢的界面主题风格。")
         lbl_desc.setWordWrap(True)
-        lbl_desc.setStyleSheet("color: #666;")
+        lbl_desc.setStyleSheet(f"color: {colors.text_secondary};")
         lbl_desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(lbl_desc)
         
@@ -306,7 +309,7 @@ class ThemeSettingsDialog(QDialog):
         layout.addWidget(self.rb_light)
         
         lbl_light_desc = QLabel("    清爽明亮的界面风格，适合日间使用")
-        lbl_light_desc.setStyleSheet("color: #999; font-size: 11px;")
+        lbl_light_desc.setStyleSheet(f"color: {colors.text_tertiary}; font-size: 11px;")
         layout.addWidget(lbl_light_desc)
         
         layout.addSpacing(10)
@@ -317,7 +320,7 @@ class ThemeSettingsDialog(QDialog):
         layout.addWidget(self.rb_dark)
         
         lbl_dark_desc = QLabel("    护眼暗色界面风格，适合夜间使用")
-        lbl_dark_desc.setStyleSheet("color: #999; font-size: 11px;")
+        lbl_dark_desc.setStyleSheet(f"color: {colors.text_tertiary}; font-size: 11px;")
         layout.addWidget(lbl_dark_desc)
         
         layout.addStretch()
@@ -337,17 +340,17 @@ class ThemeSettingsDialog(QDialog):
         btn_apply = QPushButton("应用")
         btn_apply.setFixedHeight(40)
         btn_apply.setFixedWidth(120)
-        btn_apply.setStyleSheet("""
-            QPushButton {
-                background-color: #2196F3;
-                color: white;
+        btn_apply.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_blue};
+                color: {colors.text_on_accent};
                 border: none;
                 border-radius: 4px;
                 font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #1976D2;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_blue_dark};
+            }}
         """)
         btn_apply.clicked.connect(self.on_apply)
         btn_layout.addWidget(btn_apply)
@@ -397,6 +400,7 @@ class AIAssistantSettingsDialog(QDialog):
             self.idle_timeout = 300
     
     def setup_ui(self):
+        colors = ThemeManager.instance().colors
         self.setWindowTitle("AI 助手设置")
         self.setMinimumSize(400, 250)
         
@@ -418,7 +422,7 @@ class AIAssistantSettingsDialog(QDialog):
         # 说明
         lbl_desc = QLabel("配置 AI 助手对话上下文的行为参数。")
         lbl_desc.setWordWrap(True)
-        lbl_desc.setStyleSheet("color: #666;")
+        lbl_desc.setStyleSheet(f"color: {colors.text_secondary};")
         lbl_desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(lbl_desc)
         
@@ -437,7 +441,7 @@ class AIAssistantSettingsDialog(QDialog):
         ai_form.addRow("对话上下文超时:", self.spin_idle_timeout)
         
         lbl_hint = QLabel("超过此时长未与 AI 对话，上下文将自动清空。")
-        lbl_hint.setStyleSheet("color: #999; font-size: 11px;")
+        lbl_hint.setStyleSheet(f"color: {colors.text_tertiary}; font-size: 11px;")
         ai_form.addRow("", lbl_hint)
         
         layout.addWidget(ai_group)
@@ -459,17 +463,17 @@ class AIAssistantSettingsDialog(QDialog):
         btn_apply = QPushButton("保存")
         btn_apply.setFixedHeight(40)
         btn_apply.setFixedWidth(120)
-        btn_apply.setStyleSheet("""
-            QPushButton {
-                background-color: #2196F3;
-                color: white;
+        btn_apply.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_blue};
+                color: {colors.text_on_accent};
                 border: none;
                 border-radius: 4px;
                 font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #1976D2;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_blue_dark};
+            }}
         """)
         btn_apply.clicked.connect(self.on_save)
         btn_layout.addWidget(btn_apply)
@@ -520,6 +524,7 @@ class SettingsDialog(QDialog):
         _perf_log("SettingsDialog __init__ TOTAL", t0, t3)
     
     def setup_ui(self):
+        colors = ThemeManager.instance().colors
         t0 = time.perf_counter()
         self.setWindowTitle("设置")
         self.setMinimumSize(400, 300)
@@ -544,19 +549,19 @@ class SettingsDialog(QDialog):
         # 修改主密码
         self.btn_change_password = QPushButton("修改主密码")
         self.btn_change_password.setFixedHeight(50)
-        self.btn_change_password.setStyleSheet("""
-            QPushButton {
-                background-color: #f5f5f5;
-                border: 1px solid #ddd;
+        self.btn_change_password.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.bg_secondary};
+                border: 1px solid {colors.border_default};
                 border-radius: 8px;
                 font-size: 14px;
                 text-align: left;
                 padding-left: 20px;
-            }
-            QPushButton:hover {
-                background-color: #e3f2fd;
-                border-color: #2196F3;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_blue_bg};
+                border-color: {colors.accent_blue};
+            }}
         """)
         self.btn_change_password.clicked.connect(self.on_change_password_click)
         layout.addWidget(self.btn_change_password)
@@ -564,19 +569,19 @@ class SettingsDialog(QDialog):
         # 主题设置
         self.btn_theme = QPushButton("主题设置")
         self.btn_theme.setFixedHeight(50)
-        self.btn_theme.setStyleSheet("""
-            QPushButton {
-                background-color: #f5f5f5;
-                border: 1px solid #ddd;
+        self.btn_theme.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.bg_secondary};
+                border: 1px solid {colors.border_default};
                 border-radius: 8px;
                 font-size: 14px;
                 text-align: left;
                 padding-left: 20px;
-            }
-            QPushButton:hover {
-                background-color: #e3f2fd;
-                border-color: #2196F3;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_blue_bg};
+                border-color: {colors.accent_blue};
+            }}
         """)
         self.btn_theme.clicked.connect(self.on_theme_click)
         layout.addWidget(self.btn_theme)
@@ -584,19 +589,19 @@ class SettingsDialog(QDialog):
         # AI 助手设置
         self.btn_ai_settings = QPushButton("AI 助手设置")
         self.btn_ai_settings.setFixedHeight(50)
-        self.btn_ai_settings.setStyleSheet("""
-            QPushButton {
-                background-color: #f5f5f5;
-                border: 1px solid #ddd;
+        self.btn_ai_settings.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.bg_secondary};
+                border: 1px solid {colors.border_default};
                 border-radius: 8px;
                 font-size: 14px;
                 text-align: left;
                 padding-left: 20px;
-            }
-            QPushButton:hover {
-                background-color: #e3f2fd;
-                border-color: #2196F3;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_blue_bg};
+                border-color: {colors.accent_blue};
+            }}
         """)
         self.btn_ai_settings.clicked.connect(self.on_ai_settings_click)
         layout.addWidget(self.btn_ai_settings)
@@ -613,6 +618,33 @@ class SettingsDialog(QDialog):
         layout.addWidget(btn_close, alignment=Qt.AlignmentFlag.AlignCenter)
         
         _perf_log("SettingsDialog setup_ui total", t0)
+        
+        # 监听主题变化，实时更新自身样式
+        ThemeManager.instance().theme_changed.connect(self._on_settings_theme_changed)
+    
+    def _on_settings_theme_changed(self, theme_name: str):
+        """主题变化时更新设置弹窗自身样式"""
+        colors = ThemeManager.instance().colors
+        btn_style = f"""
+            QPushButton {{
+                background-color: {colors.bg_secondary};
+                border: 1px solid {colors.border_default};
+                border-radius: 8px;
+                font-size: 14px;
+                text-align: left;
+                padding-left: 20px;
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_blue_bg};
+                border-color: {colors.accent_blue};
+            }}
+        """
+        if hasattr(self, 'btn_change_password'):
+            self.btn_change_password.setStyleSheet(btn_style)
+        if hasattr(self, 'btn_theme'):
+            self.btn_theme.setStyleSheet(btn_style)
+        if hasattr(self, 'btn_ai_settings'):
+            self.btn_ai_settings.setStyleSheet(btn_style)
     
     def on_change_password_click(self):
         """点击修改主密码"""

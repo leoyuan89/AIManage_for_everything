@@ -17,6 +17,7 @@ from core.database import DatabaseManager
 from core.clipboard import ClipboardManager
 from core.password_strength import evaluate_password_strength
 from core.repositories import RepositoryFactory, AccountRepository
+from core.theme_manager import ThemeManager, ThemeColors
 from services.account_service import AccountService
 from services.category_service import CategoryService
 from services.ai_service_manager import AIServiceManager
@@ -90,7 +91,8 @@ class PopupComboBox(QWidget):
         self._btn.clicked.connect(self._show_popup)
         
         self._arrow = QLabel("▼", self)
-        self._arrow.setStyleSheet("color: #999; font-size: 10px; background: transparent;")
+        colors = ThemeManager.instance().colors
+        self._arrow.setStyleSheet(f"color: {colors.text_tertiary}; font-size: 10px; background: transparent;")
         self._arrow.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._arrow.setFixedSize(20, 20)
         self._arrow.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -155,19 +157,20 @@ class PopupComboBox(QWidget):
         self._btn.setStyleSheet(sheet)
     
     def _apply_btn_style(self):
-        self._btn.setStyleSheet("""
-            QPushButton {
-                border: 1px solid #ccc;
+        colors = ThemeManager.instance().colors
+        self._btn.setStyleSheet(f"""
+            QPushButton {{
+                border: 1px solid {colors.border_medium};
                 border-radius: 4px;
-                background-color: white;
+                background-color: {colors.bg_primary};
                 padding: 4px 28px 4px 10px;
                 text-align: left;
-                color: #333;
+                color: {colors.text_primary};
                 font-size: 13px;
-            }
-            QPushButton:hover {
-                border-color: #2196F3;
-            }
+            }}
+            QPushButton:hover {{
+                border-color: {colors.accent_blue};
+            }}
         """)
     
     def _update_btn_text(self):
@@ -175,6 +178,7 @@ class PopupComboBox(QWidget):
         self._btn.setText(text if text else " ")
     
     def _show_popup(self):
+        colors = ThemeManager.instance().colors
         if not self._items:
             return
         
@@ -204,25 +208,25 @@ class PopupComboBox(QWidget):
         self._list_widget.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._list_widget.setFixedSize(popup_width, list_height)
-        self._list_widget.setStyleSheet("""
-            QListWidget {
-                border: 1px solid #ccc;
+        self._list_widget.setStyleSheet(f"""
+            QListWidget {{
+                border: 1px solid {colors.border_medium};
                 border-radius: 4px;
-                background-color: white;
+                background-color: {colors.bg_primary};
                 outline: none;
-            }
-            QListWidget::item {
+            }}
+            QListWidget::item {{
                 padding: 6px 10px;
                 min-height: 24px;
-                color: #333;
-            }
-            QListWidget::item:hover {
-                background-color: #f5f5f5;
-            }
-            QListWidget::item:selected {
-                background-color: #e3f2fd;
-                color: #1976D2;
-            }
+                color: {colors.text_primary};
+            }}
+            QListWidget::item:hover {{
+                background-color: {colors.bg_secondary};
+            }}
+            QListWidget::item:selected {{
+                background-color: {colors.accent_blue_bg};
+                color: {colors.accent_blue};
+            }}
         """)
         
         for item in self._items:
@@ -405,6 +409,7 @@ class AccountDialog(QDialog):
     
     def setup_ui(self):
         """设置界面"""
+        colors = ThemeManager.instance().colors
         t_setup0 = time.perf_counter()
         if self.is_edit_mode:
             self.setWindowTitle(f"编辑账号 - {self.account.app_name}")
@@ -451,17 +456,17 @@ class AccountDialog(QDialog):
         btn_save = QPushButton("保存")
         btn_save.setFixedHeight(40)
         btn_save.setFixedWidth(100)
-        btn_save.setStyleSheet("""
-            QPushButton {
-                background-color: #2196F3;
-                color: white;
+        btn_save.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_blue};
+                color: {colors.text_on_accent};
                 border: none;
                 border-radius: 4px;
                 font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #1976D2;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_blue_dark};
+            }}
         """)
         btn_save.clicked.connect(self.on_save)
         button_layout.addWidget(btn_save)
@@ -472,16 +477,16 @@ class AccountDialog(QDialog):
         if self.is_edit_mode:
             btn_delete = QPushButton("删除账号")
             btn_delete.setFixedHeight(40)
-            btn_delete.setStyleSheet("""
-                QPushButton {
-                    background-color: #f44336;
-                    color: white;
+            btn_delete.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {colors.accent_red};
+                    color: {colors.text_on_dark};
                     border: none;
                     border-radius: 4px;
-                }
-                QPushButton:hover {
-                    background-color: #d32f2f;
-                }
+                }}
+                QPushButton:hover {{
+                    background-color: {colors.accent_red_dark};
+                }}
             """)
             btn_delete.clicked.connect(self.on_delete)
             layout.addWidget(btn_delete, alignment=Qt.AlignmentFlag.AlignCenter)
@@ -491,6 +496,7 @@ class AccountDialog(QDialog):
     
     def setup_manual_tab(self):
         """设置手动输入标签页"""
+        colors = ThemeManager.instance().colors
         t_manual0 = time.perf_counter()
         layout = QVBoxLayout(self.tab_manual)
         layout.setSpacing(12)
@@ -594,7 +600,7 @@ class AccountDialog(QDialog):
         category_layout.addWidget(self.cmb_parent)
         
         lbl_sep = QLabel(">")
-        lbl_sep.setStyleSheet("color: #999; font-size: 14px; font-weight: bold;")
+        lbl_sep.setStyleSheet(f"color: {colors.text_tertiary}; font-size: 14px; font-weight: bold;")
         lbl_sep.setAlignment(Qt.AlignmentFlag.AlignCenter)
         category_layout.addWidget(lbl_sep)
         
@@ -644,14 +650,14 @@ class AccountDialog(QDialog):
         btn_edit_tags = QPushButton("编辑标签")
         btn_edit_tags.setFixedHeight(32)
         btn_edit_tags.setFixedWidth(80)
-        btn_edit_tags.setStyleSheet("""
-            QPushButton {
-                background-color: #e3f2fd;
-                color: #1976D2;
-                border: 1px solid #90caf9;
+        btn_edit_tags.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_blue_bg};
+                color: {colors.accent_blue};
+                border: 1px solid {colors.accent_blue_light};
                 border-radius: 4px;
                 font-size: 11px;
-            }
+            }}
         """)
         btn_edit_tags.clicked.connect(self.on_edit_tags)
         tags_layout.addWidget(btn_edit_tags)
@@ -707,6 +713,7 @@ class AccountDialog(QDialog):
     
     def setup_ocr_tab(self):
         """设置截图导入标签页"""
+        colors = ThemeManager.instance().colors
         layout = QVBoxLayout(self.tab_ocr)
         layout.setSpacing(15)
         layout.setContentsMargins(15, 15, 15, 15)
@@ -714,24 +721,24 @@ class AccountDialog(QDialog):
         # 说明文字
         lbl_desc = QLabel("上传包含账号密码的截图，系统将自动识别并填充")
         lbl_desc.setWordWrap(True)
-        lbl_desc.setStyleSheet("color: #666; padding: 10px;")
+        lbl_desc.setStyleSheet(f"color: {colors.text_secondary}; padding: 10px;")
         layout.addWidget(lbl_desc)
         
         # 选择图片按钮
         self.btn_select_image = QPushButton("选择图片")
         self.btn_select_image.setFixedHeight(45)
-        self.btn_select_image.setStyleSheet("""
-            QPushButton {
-                background-color: #4CAF50;
-                color: white;
+        self.btn_select_image.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_green};
+                color: {colors.text_on_accent};
                 border: none;
                 border-radius: 4px;
                 font-size: 14px;
                 font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #45a049;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_green_dark};
+            }}
         """)
         self.btn_select_image.clicked.connect(self.on_select_image)
         layout.addWidget(self.btn_select_image)
@@ -739,14 +746,14 @@ class AccountDialog(QDialog):
         # 图片预览区域
         self.lbl_preview = QLabel("未选择图片")
         self.lbl_preview.setFixedHeight(150)
-        self.lbl_preview.setStyleSheet("""
-            QLabel {
-                background-color: #f5f5f5;
-                border: 2px dashed #ccc;
+        self.lbl_preview.setStyleSheet(f"""
+            QLabel {{
+                background-color: {colors.bg_secondary};
+                border: 2px dashed {colors.border_medium};
                 border-radius: 8px;
-                color: #999;
+                color: {colors.text_tertiary};
                 font-size: 16px;
-            }
+            }}
         """)
         self.lbl_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.lbl_preview)
@@ -754,17 +761,17 @@ class AccountDialog(QDialog):
         # 识别状态
         self.lbl_ocr_status = QLabel("")
         self.lbl_ocr_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_ocr_status.setStyleSheet("color: #2196F3; font-weight: bold;")
+        self.lbl_ocr_status.setStyleSheet(f"color: {colors.accent_blue}; font-weight: bold;")
         layout.addWidget(self.lbl_ocr_status)
         
         # 识别结果预览
         self.frame_ocr_result = QFrame()
-        self.frame_ocr_result.setStyleSheet("""
-            QFrame {
-                background-color: #f9f9f9;
-                border: 1px solid #e0e0e0;
+        self.frame_ocr_result.setStyleSheet(f"""
+            QFrame {{
+                background-color: {colors.bg_card};
+                border: 1px solid {colors.border_light};
                 border-radius: 8px;
-            }
+            }}
         """)
         result_layout = QVBoxLayout(self.frame_ocr_result)
         
@@ -779,17 +786,17 @@ class AccountDialog(QDialog):
         # 添加分隔线
         line = QFrame()
         line.setFrameShape(QFrame.Shape.HLine)
-        line.setStyleSheet("background-color: #ddd;")
+        line.setStyleSheet(f"background-color: {colors.border_default};")
         line.setFixedHeight(1)
         result_layout.addWidget(line)
         
         # 显示所有识别的文字
         lbl_all_texts_title = QLabel("识别到的所有文字：")
-        lbl_all_texts_title.setStyleSheet("padding: 5px; font-size: 11px; color: #666;")
+        lbl_all_texts_title.setStyleSheet(f"padding: 5px; font-size: 11px; color: {colors.text_secondary};")
         result_layout.addWidget(lbl_all_texts_title)
         
         self.lbl_all_texts = QLabel("-")
-        self.lbl_all_texts.setStyleSheet("padding: 5px; font-size: 10px; color: #888;")
+        self.lbl_all_texts.setStyleSheet(f"padding: 5px; font-size: 10px; color: {colors.text_tertiary};")
         self.lbl_all_texts.setWordWrap(True)
         result_layout.addWidget(self.lbl_all_texts)
         
@@ -799,14 +806,14 @@ class AccountDialog(QDialog):
         # 应用识别结果按钮
         self.btn_apply_ocr = QPushButton("应用识别结果")
         self.btn_apply_ocr.setFixedHeight(40)
-        self.btn_apply_ocr.setStyleSheet("""
-            QPushButton {
-                background-color: #2196F3;
-                color: white;
+        self.btn_apply_ocr.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_blue};
+                color: {colors.text_on_accent};
                 border: none;
                 border-radius: 4px;
                 font-weight: bold;
-            }
+            }}
         """)
         self.btn_apply_ocr.clicked.connect(self.on_apply_ocr_result)
         self.btn_apply_ocr.hide()  # 初始隐藏
@@ -1141,25 +1148,27 @@ class AccountDialog(QDialog):
     
     def _get_strength_color(self, level: str) -> str:
         """根据安全等级文本获取颜色"""
+        colors = ThemeManager.instance().colors
         color_map = {
-            "弱": "#f44336",
-            "中": "#FF9800",
-            "强": "#4CAF50",
-            "极强": "#2196F3"
+            "弱": colors.accent_red,
+            "中": colors.accent_orange,
+            "强": colors.accent_green,
+            "极强": colors.accent_blue
         }
-        return color_map.get(level, "#999")
+        return color_map.get(level, colors.text_tertiary)
     
     def _show_strength_label(self, level: str, color: str):
         """显示指定等级的强度标签"""
+        colors = ThemeManager.instance().colors
         self.lbl_password_strength.show()
         self.lbl_password_strength.setText(f"  密码强度：{level}  ")
         bg_color = {
-            "#f44336": "#ffebee",
-            "#FF9800": "#fff3e0",
-            "#4CAF50": "#e8f5e9",
-            "#2196F3": "#e3f2fd",
-            "#999": "#f5f5f5"
-        }.get(color, "#f5f5f5")
+            colors.accent_red: colors.accent_red_bg,
+            colors.accent_orange: colors.accent_orange_bg,
+            colors.accent_green: colors.accent_green_bg,
+            colors.accent_blue: colors.accent_blue_bg,
+            colors.text_tertiary: colors.bg_secondary
+        }.get(color, colors.bg_secondary)
         self.lbl_password_strength.setStyleSheet(f"""
             QLabel {{
                 color: {color};
@@ -1318,6 +1327,7 @@ class AccountDialog(QDialog):
     
     def refresh_tags_display(self):
         """刷新标签显示"""
+        colors = ThemeManager.instance().colors
         # 清除现有标签
         while self.tags_layout.count():
             item = self.tags_layout.takeAt(0)
@@ -1328,21 +1338,21 @@ class AccountDialog(QDialog):
         
         if not tags:
             lbl_empty = QLabel("暂无标签")
-            lbl_empty.setStyleSheet("color: #999; font-style: italic; font-size: 11px;")
+            lbl_empty.setStyleSheet(f"color: {colors.text_tertiary}; font-style: italic; font-size: 11px;")
             self.tags_layout.addWidget(lbl_empty)
             return
         
         for tag in tags:
             lbl_tag = QLabel(f"  {tag}  ")
-            lbl_tag.setStyleSheet("""
-                QLabel {
-                    background-color: #e3f2fd;
-                    color: #1976D2;
-                    border: 1px solid #90caf9;
+            lbl_tag.setStyleSheet(f"""
+                QLabel {{
+                    background-color: {colors.accent_blue_bg};
+                    color: {colors.accent_blue};
+                    border: 1px solid {colors.accent_blue_light};
                     border-radius: 10px;
                     font-size: 11px;
                     padding: 2px 8px;
-                }
+                }}
             """)
             self.tags_layout.addWidget(lbl_tag)
         

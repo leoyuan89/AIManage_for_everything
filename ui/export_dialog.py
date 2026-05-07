@@ -15,6 +15,7 @@ from PyQt6.QtGui import QFont
 
 from core.database import DatabaseManager
 from core.crypto import CryptoManager
+from core.theme_manager import ThemeManager, ThemeColors
 from services.account_service import AccountService
 from services.export_service import ExportService
 from models.account import Account
@@ -36,6 +37,7 @@ class ExportDialog(QDialog):
     
     def setup_ui(self):
         """设置界面"""
+        colors = ThemeManager.instance().colors
         self.setWindowTitle(f"导出{'账号' if self.vault_type == 'accounts' else '网址'}")
         self.setMinimumSize(600, 800)
         
@@ -79,7 +81,7 @@ class ExportDialog(QDialog):
         category_select_layout.addWidget(self.cmb_parent)
         
         lbl_sep = QLabel(">")
-        lbl_sep.setStyleSheet("color: #999; font-size: 14px; font-weight: bold;")
+        lbl_sep.setStyleSheet(f"color: {colors.text_tertiary}; font-size: 14px; font-weight: bold;")
         lbl_sep.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lbl_sep.setFixedWidth(20)
         category_select_layout.addWidget(lbl_sep)
@@ -127,13 +129,13 @@ class ExportDialog(QDialog):
             excel_layout.addWidget(self.chk_include_password)
             
             lbl_warning = QLabel("警告：导出包含密码的 Excel 文件存在安全风险，请妥善保管！")
-            lbl_warning.setStyleSheet("color: #f44336; font-size: 11px;")
+            lbl_warning.setStyleSheet(f"color: {colors.accent_red}; font-size: 11px;")
             lbl_warning.setWordWrap(True)
             excel_layout.addWidget(lbl_warning)
         else:
             self.chk_include_password = None
             lbl_warning = QLabel("提示：网址导出不包含敏感信息，可直接使用。")
-            lbl_warning.setStyleSheet("color: #2196F3; font-size: 11px;")
+            lbl_warning.setStyleSheet(f"color: {colors.accent_blue}; font-size: 11px;")
             lbl_warning.setWordWrap(True)
             excel_layout.addWidget(lbl_warning)
         
@@ -200,17 +202,17 @@ class ExportDialog(QDialog):
         btn_export = QPushButton("导出")
         btn_export.setFixedHeight(40)
         btn_export.setFixedWidth(100)
-        btn_export.setStyleSheet("""
-            QPushButton {
-                background-color: #4CAF50;
-                color: white;
+        btn_export.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_green};
+                color: {colors.text_on_accent};
                 border: none;
                 border-radius: 4px;
                 font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #45a049;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_green_dark};
+            }}
         """)
         btn_export.clicked.connect(self.on_export_clicked)
         button_layout.addWidget(btn_export)

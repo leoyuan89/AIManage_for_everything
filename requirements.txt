@@ -4,6 +4,7 @@
 # ==================== GUI 框架 ====================
 PyQt6>=6.4.0
 qt-material>=2.14
+qtawesome>=1.2.0
 
 # 应用方式：
 # from qt_material import apply_stylesheet

@@ -9,6 +9,8 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 from typing import Optional
 
+from core.theme_manager import ThemeManager, ThemeColors
+
 
 class RecycleBinDialog(QDialog):
     """回收站对话框"""
@@ -23,6 +25,7 @@ class RecycleBinDialog(QDialog):
         self.load_items()
 
     def setup_ui(self):
+        colors = ThemeManager.instance().colors
         layout = QVBoxLayout(self)
 
         # 标题栏
@@ -36,7 +39,7 @@ class RecycleBinDialog(QDialog):
 
         # 清空按钮
         btn_empty = QPushButton("清空回收站")
-        btn_empty.setStyleSheet("color: #f44336;")
+        btn_empty.setStyleSheet(f"color: {colors.accent_red};")
         btn_empty.clicked.connect(self.on_empty)
         header_layout.addWidget(btn_empty)
         layout.addLayout(header_layout)
@@ -63,7 +66,7 @@ class RecycleBinDialog(QDialog):
         btn_layout.addWidget(btn_restore)
 
         btn_delete = QPushButton("永久删除")
-        btn_delete.setStyleSheet("color: #f44336;")
+        btn_delete.setStyleSheet(f"color: {colors.accent_red};")
         btn_delete.clicked.connect(self.on_permanent_delete)
         btn_layout.addWidget(btn_delete)
 

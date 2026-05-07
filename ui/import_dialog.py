@@ -19,6 +19,7 @@ from PyQt6.QtGui import QFont, QColor
 from models.account import Account
 from services.import_service import parse_import_file, ImportItem
 from services.account_service import AccountService
+from core.theme_manager import ThemeManager, ThemeColors
 
 
 class CategoryCascadeCell(QWidget):
@@ -26,6 +27,7 @@ class CategoryCascadeCell(QWidget):
     
     def __init__(self, tree_data: dict, current_path: str = "", parent=None):
         super().__init__(parent)
+        colors = ThemeManager.instance().colors
         self._tree_data = tree_data
         
         layout = QHBoxLayout(self)
@@ -39,7 +41,7 @@ class CategoryCascadeCell(QWidget):
         self.cmb_parent.setFixedHeight(28)
         
         lbl_sep = QLabel(">")
-        lbl_sep.setStyleSheet("color: #999; font-size: 12px;")
+        lbl_sep.setStyleSheet(f"color: {colors.text_tertiary}; font-size: 12px;")
         lbl_sep.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lbl_sep.setFixedWidth(15)
         
@@ -98,6 +100,7 @@ class ImportDialog(QDialog):
     
     def setup_ui(self):
         """设置界面"""
+        colors = ThemeManager.instance().colors
         self.setWindowTitle("批量导入账号")
         self.setMinimumSize(900, 700)
         
@@ -132,7 +135,7 @@ class ImportDialog(QDialog):
         
         # ===== 统计信息 =====
         self.lbl_stats = QLabel("请选择要导入的文件")
-        self.lbl_stats.setStyleSheet("color: #666; padding: 5px;")
+        self.lbl_stats.setStyleSheet(f"color: {colors.text_secondary}; padding: 5px;")
         layout.addWidget(self.lbl_stats)
         
         # ===== 预览表格 =====
@@ -193,20 +196,20 @@ class ImportDialog(QDialog):
         self.btn_import = QPushButton("确认导入")
         self.btn_import.setFixedHeight(40)
         self.btn_import.setFixedWidth(120)
-        self.btn_import.setStyleSheet("""
-            QPushButton {
-                background-color: #2196F3;
-                color: white;
+        self.btn_import.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_blue};
+                color: {colors.text_on_accent};
                 border: none;
                 border-radius: 4px;
                 font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #1976D2;
-            }
-            QPushButton:disabled {
-                background-color: #BDBDBD;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_blue_dark};
+            }}
+            QPushButton:disabled {{
+                background-color: {colors.text_disabled};
+            }}
         """)
         self.btn_import.clicked.connect(self.on_import)
         self.btn_import.setEnabled(False)
@@ -297,6 +300,7 @@ class ImportDialog(QDialog):
     
     def refresh_table(self):
         """刷新表格"""
+        colors = ThemeManager.instance().colors
         self.table.setRowCount(len(self.import_items))
         
         # 获取分类树（用于级联下拉）
@@ -315,19 +319,19 @@ class ImportDialog(QDialog):
             # 应用名
             cell = QTableWidgetItem(item.app_name)
             if not item.app_name:
-                cell.setBackground(QColor(255, 200, 200))
+                cell.setBackground(QColor(colors.accent_red_bg))
             self.table.setItem(row, 1, cell)
             
             # 账号
             cell = QTableWidgetItem(item.username)
             if not item.username:
-                cell.setBackground(QColor(255, 200, 200))
+                cell.setBackground(QColor(colors.accent_red_bg))
             self.table.setItem(row, 2, cell)
             
             # 密码
             cell = QTableWidgetItem(item.password)
             if not item.password:
-                cell.setBackground(QColor(255, 200, 200))
+                cell.setBackground(QColor(colors.accent_red_bg))
             self.table.setItem(row, 3, cell)
             
             # 网址
@@ -425,7 +429,8 @@ class ImportDialog(QDialog):
         if import_item.app_name and import_item.username and import_item.password:
             import_item.valid = True
             import_item.error_msg = ""
-            item.setBackground(QColor(255, 255, 255))
+            colors = ThemeManager.instance().colors
+            item.setBackground(QColor(colors.bg_primary))
         else:
             import_item.valid = False
             missing = []
@@ -437,7 +442,8 @@ class ImportDialog(QDialog):
                 missing.append('密码')
             import_item.error_msg = f"缺少字段：{', '.join(missing)}"
             if col in [1, 2, 3] and not value:
-                item.setBackground(QColor(255, 200, 200))
+                colors = ThemeManager.instance().colors
+                item.setBackground(QColor(colors.accent_red_bg))
     
     def on_import(self):
         """执行导入"""

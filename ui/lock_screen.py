@@ -12,6 +12,7 @@ from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
 from PyQt6.QtGui import QFont
 
 from core.crypto import CryptoManager
+from core.theme_manager import ThemeManager, ThemeColors
 
 
 class LockScreen(QWidget):
@@ -35,6 +36,7 @@ class LockScreen(QWidget):
     
     def setup_ui(self):
         """设置UI布局"""
+        colors = ThemeManager.instance().colors
         # 填充父窗口
         if self.parent():
             self.setGeometry(self.parent().rect())
@@ -68,13 +70,13 @@ class LockScreen(QWidget):
         title_font.setBold(True)
         lbl_title.setFont(title_font)
         lbl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lbl_title.setStyleSheet("color: white;")
+        lbl_title.setStyleSheet(f"color: {colors.text_on_dark};")
         content_layout.addWidget(lbl_title)
         
         # 说明文字
         lbl_desc = QLabel("请输入主密码解锁")
         lbl_desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lbl_desc.setStyleSheet("color: #aaaaaa; font-size: 13px;")
+        lbl_desc.setStyleSheet(f"color: {colors.text_secondary}; font-size: 13px;")
         content_layout.addWidget(lbl_desc)
         
         # 密码输入框
@@ -82,18 +84,18 @@ class LockScreen(QWidget):
         self.txt_password.setEchoMode(QLineEdit.EchoMode.Password)
         self.txt_password.setPlaceholderText("主密码")
         self.txt_password.setFixedHeight(44)
-        self.txt_password.setStyleSheet("""
-            QLineEdit {
+        self.txt_password.setStyleSheet(f"""
+            QLineEdit {{
                 background-color: rgba(255, 255, 255, 0.1);
                 border: 1px solid rgba(255, 255, 255, 0.3);
                 border-radius: 6px;
-                color: white;
+                color: {colors.text_on_dark};
                 padding: 0 12px;
                 font-size: 14px;
-            }
-            QLineEdit:focus {
-                border: 1px solid #2196F3;
-            }
+            }}
+            QLineEdit:focus {{
+                border: 1px solid {colors.accent_blue_light};
+            }}
         """)
         self.txt_password.returnPressed.connect(self.on_unlock)
         content_layout.addWidget(self.txt_password)
@@ -101,7 +103,7 @@ class LockScreen(QWidget):
         # 错误提示标签
         self.lbl_error = QLabel("")
         self.lbl_error.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_error.setStyleSheet("color: #f44336; font-size: 12px;")
+        self.lbl_error.setStyleSheet(f"color: {colors.accent_red}; font-size: 12px;")
         self.lbl_error.hide()
         content_layout.addWidget(self.lbl_error)
         
@@ -109,25 +111,25 @@ class LockScreen(QWidget):
         self.btn_unlock = QPushButton("解锁")
         self.btn_unlock.setFixedHeight(44)
         self.btn_unlock.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_unlock.setStyleSheet("""
-            QPushButton {
-                background-color: #2196F3;
-                color: white;
+        self.btn_unlock.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_blue_light};
+                color: {colors.text_on_dark};
                 border: none;
                 border-radius: 6px;
                 font-size: 14px;
                 font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #1976D2;
-            }
-            QPushButton:pressed {
-                background-color: #1565C0;
-            }
-            QPushButton:disabled {
-                background-color: #555555;
-                color: #888888;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_blue};
+            }}
+            QPushButton:pressed {{
+                background-color: {colors.accent_blue_dark};
+            }}
+            QPushButton:disabled {{
+                background-color: {colors.text_disabled};
+                color: {colors.text_tertiary};
+            }}
         """)
         self.btn_unlock.clicked.connect(self.on_unlock)
         content_layout.addWidget(self.btn_unlock)

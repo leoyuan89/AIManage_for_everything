@@ -15,6 +15,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QModelIndex, QAbstractTableMode
 from PyQt6.QtGui import QColor
 
 from core.repositories import BatchItem, VaultRepository
+from core.theme_manager import ThemeManager, ThemeColors
 
 
 class CategoryDelegate(QStyledItemDelegate):
@@ -116,14 +117,15 @@ class BatchItemTableModel(QAbstractTableModel):
         return mapping.get(col, '')
 
     def _get_status_color(self, status: str):
+        colors = ThemeManager.instance().colors
         if status == "就绪":
-            return QColor("#4CAF50")
+            return QColor(colors.accent_green)
         elif status.startswith("重复"):
-            return QColor("#FF9800")
+            return QColor(colors.accent_orange)
         elif status.startswith("格式错误"):
-            return QColor("#f44336")
+            return QColor(colors.accent_red)
         elif "已归入" in status or "已推断分类" in status:
-            return QColor("#2196F3")
+            return QColor(colors.accent_blue)
         return None
 
     def setData(self, index, value, role=Qt.ItemDataRole.EditRole):
@@ -263,13 +265,14 @@ class BatchAddPreviewWidget(QWidget):
         self._setup_ui()
 
     def _setup_ui(self):
+        colors = ThemeManager.instance().colors
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
         # 统计标签（顶部）
         self._lbl_stats = QLabel("共 0 条 | 已勾选 0 条")
-        self._lbl_stats.setStyleSheet("color: #666; font-size: 12px;")
+        self._lbl_stats.setStyleSheet(f"color: {colors.text_secondary}; font-size: 12px;")
         layout.addWidget(self._lbl_stats)
 
         # 表格
@@ -278,14 +281,14 @@ class BatchAddPreviewWidget(QWidget):
         self._table.setAlternatingRowColors(True)
         self._table.horizontalHeader().setStretchLastSection(True)
         self._table.verticalHeader().setVisible(False)
-        self._table.setStyleSheet("""
-            QTableView {
-                border: 1px solid #ddd;
-                gridline-color: #eee;
-            }
-            QTableView::item {
+        self._table.setStyleSheet(f"""
+            QTableView {{
+                border: 1px solid {colors.border_default};
+                gridline-color: {colors.bg_hover};
+            }}
+            QTableView::item {{
                 padding: 4px;
-            }
+            }}
         """)
         layout.addWidget(self._table)
 

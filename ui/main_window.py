@@ -21,6 +21,10 @@ from PyQt6.QtGui import QIcon, QFont, QColor
 
 from core.database import DatabaseManager
 from core.clipboard import ClipboardManager
+from core.theme_manager import (
+    ThemeManager, ThemeColors, style_button_primary, style_button_danger,
+    style_bar, style_panel, style_input, style_scrollbar, get_icon
+)
 from services.account_service import AccountService
 from services.category_service import CategoryService
 from services.ai_classification_service import AIClassificationService
@@ -50,6 +54,7 @@ class AIQueryThread(QThread):
     result_token = pyqtSignal(str)    # 最终结果 token
     
     def __init__(self, ai_assistant, query: str, accounts: list, mode: str = 'plan', vault_type: str = 'accounts'):
+        colors = ThemeManager.instance().colors
         super().__init__()
         self.ai_assistant = ai_assistant
         self.query = query
@@ -226,6 +231,7 @@ class AccountListItem(QWidget):
     """自定义账号列表项（支持标识徽章、选择模式）"""
     
     def __init__(self, account: Account, badges: list = None, selection_mode: bool = False, parent=None):
+        colors = ThemeManager.instance().colors
         super().__init__(parent)
         self.setObjectName("accountListItem")
         self.account = account
@@ -233,6 +239,7 @@ class AccountListItem(QWidget):
         self.setup_ui(selection_mode)
     
     def setup_ui(self, selection_mode: bool):
+        colors = ThemeManager.instance().colors
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 0, 10, 0)
         layout.setSpacing(10)
@@ -251,7 +258,7 @@ class AccountListItem(QWidget):
         self.icon_label.setStyleSheet(f"""
             QLabel {{
                 background-color: {color};
-                color: white;
+                color: {colors.text_on_accent};
                 border-radius: 18px;
                 font-size: 14px;
                 font-weight: bold;
@@ -269,7 +276,7 @@ class AccountListItem(QWidget):
         title_layout.setSpacing(4)
         
         self.lbl_name = QLabel(self.account.app_name)
-        self.lbl_name.setStyleSheet("color: #1a1a1a; font-size: 15px; font-weight: 600;")
+        self.lbl_name.setStyleSheet(f"color: {colors.text_primary}; font-size: 15px; font-weight: 600;")
         title_layout.addWidget(self.lbl_name)
         
         # 徽章标签（如 炽阳推荐）
@@ -293,7 +300,7 @@ class AccountListItem(QWidget):
                 "强": "#4CAF50",
                 "极强": "#2196F3"
             }
-            level_color = level_colors.get(self.account.security_level, "#999")
+            level_color = level_colors.get(self.account.security_level, colors.text_tertiary)
             lbl_sec = QLabel(self.account.security_level)
             lbl_sec.setStyleSheet(f"""
                 color: {level_color};
@@ -310,17 +317,17 @@ class AccountListItem(QWidget):
         
         # 副标题：脱敏账号
         self.lbl_account = QLabel(self.account.mask_username())
-        self.lbl_account.setStyleSheet("color: #888888; font-size: 12px;")
+        self.lbl_account.setStyleSheet(f"color: {colors.text_tertiary}; font-size: 12px;")
         text_layout.addWidget(self.lbl_account)
         
         layout.addLayout(text_layout, 1)
         
         # 分类标签 Pill
         self.lbl_category = QLabel(self.account.category or '其他')
-        self.lbl_category.setStyleSheet("""
-            color: #666666;
+        self.lbl_category.setStyleSheet(f"""
+            color: {colors.text_secondary};
             font-size: 11px;
-            background-color: #f5f5f5;
+            background-color: {colors.bg_secondary};
             border-radius: 10px;
             padding: 2px 8px;
         """)
@@ -328,16 +335,16 @@ class AccountListItem(QWidget):
         
         # 右箭头
         self.lbl_arrow = QLabel("›")
-        self.lbl_arrow.setStyleSheet("color: #cccccc; font-size: 18px;")
+        self.lbl_arrow.setStyleSheet(f"color: {colors.text_disabled}; font-size: 18px;")
         layout.addWidget(self.lbl_arrow)
         
         self.setFixedHeight(56)
-        self.setStyleSheet("""
-            #accountListItem {
-                background-color: white;
+        self.setStyleSheet(f"""
+            #accountListItem {{
+                background-color: {colors.bg_primary};
                 border: none;
-                border-bottom: 1px solid #e0e0e0;
-            }
+                border-bottom: 1px solid {colors.border_light};
+            }}
         """)
     
     def set_selection_mode(self, enabled: bool):
@@ -366,6 +373,7 @@ class URLListItem(QWidget):
     """自定义网址列表项（支持标识徽章、选择模式）"""
     
     def __init__(self, url_item, badges: list = None, selection_mode: bool = False, parent=None):
+        colors = ThemeManager.instance().colors
         super().__init__(parent)
         self.setObjectName("urlListItem")
         self.url_item = url_item
@@ -373,6 +381,7 @@ class URLListItem(QWidget):
         self.setup_ui(selection_mode)
     
     def setup_ui(self, selection_mode: bool):
+        colors = ThemeManager.instance().colors
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 0, 10, 0)
         layout.setSpacing(10)
@@ -392,7 +401,7 @@ class URLListItem(QWidget):
         self.icon_label.setStyleSheet(f"""
             QLabel {{
                 background-color: {color};
-                color: white;
+                color: {colors.text_on_accent};
                 border-radius: 18px;
                 font-size: 14px;
                 font-weight: bold;
@@ -410,7 +419,7 @@ class URLListItem(QWidget):
         title_layout.setSpacing(4)
         
         self.lbl_name = QLabel(title)
-        self.lbl_name.setStyleSheet("color: #1a1a1a; font-size: 15px; font-weight: 600;")
+        self.lbl_name.setStyleSheet(f"color: {colors.text_primary}; font-size: 15px; font-weight: 600;")
         title_layout.addWidget(self.lbl_name)
         
         # 徽章标签（如 匹配）
@@ -432,7 +441,7 @@ class URLListItem(QWidget):
         url = self.url_item.get('url', '') if isinstance(self.url_item, dict) else getattr(self.url_item, 'url', '')
         display_url = url[:40] if len(url) <= 40 else url[:40] + '...'
         self.lbl_url = QLabel(display_url)
-        self.lbl_url.setStyleSheet("color: #888888; font-size: 12px;")
+        self.lbl_url.setStyleSheet(f"color: {colors.text_tertiary}; font-size: 12px;")
         self.lbl_url.setToolTip(url)
         text_layout.addWidget(self.lbl_url)
         
@@ -441,10 +450,10 @@ class URLListItem(QWidget):
         # 分类标签 Pill
         category = self.url_item.get('category', '') if isinstance(self.url_item, dict) else getattr(self.url_item, 'category', '')
         self.lbl_category = QLabel(category or '其他')
-        self.lbl_category.setStyleSheet("""
-            color: #666666;
+        self.lbl_category.setStyleSheet(f"""
+            color: {colors.text_secondary};
             font-size: 11px;
-            background-color: #f5f5f5;
+            background-color: {colors.bg_secondary};
             border-radius: 10px;
             padding: 2px 8px;
         """)
@@ -452,16 +461,16 @@ class URLListItem(QWidget):
         
         # 右箭头
         self.lbl_arrow = QLabel("›")
-        self.lbl_arrow.setStyleSheet("color: #cccccc; font-size: 18px;")
+        self.lbl_arrow.setStyleSheet(f"color: {colors.text_disabled}; font-size: 18px;")
         layout.addWidget(self.lbl_arrow)
         
         self.setFixedHeight(56)
-        self.setStyleSheet("""
-            #urlListItem {
-                background-color: white;
+        self.setStyleSheet(f"""
+            #urlListItem {{
+                background-color: {colors.bg_primary};
                 border: none;
-                border-bottom: 1px solid #e0e0e0;
-            }
+                border-bottom: 1px solid {colors.border_light};
+            }}
         """)
     
     def set_selection_mode(self, enabled: bool):
@@ -502,6 +511,7 @@ class ActionPreviewWidget(QFrame):
     cancelled = pyqtSignal()
     
     def __init__(self, action: str = 'explain', params: dict = None, parent=None):
+        colors = ThemeManager.instance().colors
         super().__init__(parent)
         self.action = action
         self.params = params or {}
@@ -512,16 +522,17 @@ class ActionPreviewWidget(QFrame):
         self.setup_ui()
     
     def setup_ui(self):
+        colors = ThemeManager.instance().colors
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
         
-        self.setStyleSheet("""
-            ActionPreviewWidget {
-                background-color: #FFF8F0;
-                border: 2px solid #FF9800;
+        self.setStyleSheet(f"""
+            ActionPreviewWidget {{
+                background-color: {colors.ai_thinking_bg};
+                border: 2px solid {colors.accent_orange};
                 border-radius: 8px;
-            }
+            }}
         """)
         
         # 标题
@@ -530,12 +541,12 @@ class ActionPreviewWidget(QFrame):
         font.setBold(True)
         font.setPointSize(12)
         title.setFont(font)
-        title.setStyleSheet("color: #E65100;")
+        title.setStyleSheet(f"color: {colors.accent_orange_text};")
         layout.addWidget(title)
         
         # 空数据提示（默认隐藏）
         self._empty_label = QLabel("⚠️ 未找到符合条件的条目")
-        self._empty_label.setStyleSheet("color: #f44336; font-size: 14px; padding: 20px;")
+        self._empty_label.setStyleSheet(f"color: {colors.accent_red}; font-size: 14px; padding: 20px;")
         self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._empty_label.hide()
         layout.addWidget(self._empty_label)
@@ -544,24 +555,24 @@ class ActionPreviewWidget(QFrame):
         self.table = QTableWidget()
         self.table.setEditTriggers(QTableWidget.EditTrigger.DoubleClicked)
         self.table.setWordWrap(True)
-        self.table.setStyleSheet("""
-            QTableWidget {
-                border: 1px solid #FFE0B2;
-                background-color: white;
-            }
-            QHeaderView::section {
-                background-color: #FFF3E0;
+        self.table.setStyleSheet(f"""
+            QTableWidget {{
+                border: 1px solid {colors.border_light};
+                background-color: {colors.bg_primary};
+            }}
+            QHeaderView::section {{
+                background-color: {colors.accent_orange_bg};
                 padding: 6px;
-                border: 1px solid #FFE0B2;
+                border: 1px solid {colors.border_light};
                 font-weight: bold;
-            }
+            }}
         """)
         self.table.verticalHeader().setDefaultSectionSize(36)
         self.table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         
         # 影响范围（必须先创建，避免 setCheckState 触发 itemChanged 时访问不到）
         self.lbl_scope = QLabel("")
-        self.lbl_scope.setStyleSheet("color: #666; font-size: 11px;")
+        self.lbl_scope.setStyleSheet(f"color: {colors.text_secondary}; font-size: 11px;")
         
         self.table.itemChanged.connect(self._on_item_check_changed)
         self.table.cellChanged.connect(self._on_cell_edited)
@@ -570,7 +581,7 @@ class ActionPreviewWidget(QFrame):
         
         # 警告
         lbl_warning = QLabel("⚠️ 此操作不可撤销")
-        lbl_warning.setStyleSheet("color: #f44336; font-size: 11px; font-weight: bold;")
+        lbl_warning.setStyleSheet(f"color: {colors.accent_red}; font-size: 11px; font-weight: bold;")
         layout.addWidget(lbl_warning)
         
         # 按钮
@@ -586,17 +597,17 @@ class ActionPreviewWidget(QFrame):
         btn_confirm = QPushButton("✅ 确认执行")
         btn_confirm.setFixedHeight(32)
         btn_confirm.setFixedWidth(110)
-        btn_confirm.setStyleSheet("""
-            QPushButton {
-                background-color: #FF9800;
-                color: white;
+        btn_confirm.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_orange};
+                color: {colors.text_on_accent};
                 border: none;
                 border-radius: 4px;
                 font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #F57C00;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_orange_dark};
+            }}
         """)
         btn_confirm.clicked.connect(self.confirmed.emit)
         btn_layout.addWidget(btn_confirm)
@@ -605,6 +616,7 @@ class ActionPreviewWidget(QFrame):
     
     def set_preview_data(self, preview_data: dict):
         """接收标准化 preview_data，动态构建表格"""
+        colors = ThemeManager.instance().colors
         self._preview_data = preview_data
         self._is_build_mode = True
         operation_type = preview_data.get("operation_type", "add")
@@ -654,7 +666,7 @@ class ActionPreviewWidget(QFrame):
                     cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 
                 if operation_type == 'delete':
-                    cell.setForeground(QColor("#d32f2f"))
+                    cell.setForeground(QColor(colors.accent_red_dark))
                 
                 text = str(val)
                 cell.setToolTip(text)
@@ -786,6 +798,7 @@ class ActionPreviewWidget(QFrame):
     
     def _fill_table(self):
         """根据 action 和 params 填充预览表格（兼容旧代码）"""
+        colors = ThemeManager.instance().colors
         rows = []
         delete_mode = self.action == 'delete'
         source = self.preview_items if self.preview_items else None
@@ -866,7 +879,7 @@ class ActionPreviewWidget(QFrame):
             for j, val in enumerate(row):
                 cell = QTableWidgetItem(str(val))
                 if delete_mode:
-                    cell.setForeground(QColor("#d32f2f"))
+                    cell.setForeground(QColor(colors.accent_red_dark))
                 if j == 0:
                     cell.setFlags(cell.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                     cell.setCheckState(Qt.CheckState.Checked)
@@ -967,60 +980,64 @@ class DropZoneWidget(QLabel):
     dropped = pyqtSignal(str)  # (source_path)
     
     def __init__(self, parent=None):
+        colors = ThemeManager.instance().colors
         super().__init__("📌 将类别拖至此处成为一级类别", parent)
         self.setFixedHeight(40)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setStyleSheet("""
-            DropZoneWidget {
-                background-color: #f0f0f0;
-                color: #888888;
-                border: 2px dashed #cccccc;
+        self.setStyleSheet(f"""
+            DropZoneWidget {{
+                background-color: {colors.bg_tertiary};
+                color: {colors.text_tertiary};
+                border: 2px dashed {colors.border_medium};
                 border-radius: 6px;
                 font-size: 12px;
                 margin: 4px 6px;
-            }
+            }}
         """)
         self.setAcceptDrops(True)
     
     def dragEnterEvent(self, event):
+        colors = ThemeManager.instance().colors
         source = event.source()
         if isinstance(source, CategoryTreeWidget) and source._dragging_item:
             event.acceptProposedAction()
-            self.setStyleSheet("""
-                DropZoneWidget {
-                    background-color: #e3f2fd;
-                    color: #1976D2;
-                    border: 2px dashed #90CAF9;
+            self.setStyleSheet(f"""
+                DropZoneWidget {{
+                    background-color: {colors.accent_blue_bg};
+                    color: {colors.accent_blue};
+                    border: 2px dashed {colors.accent_blue_light};
                     border-radius: 6px;
                     font-size: 12px;
                     margin: 4px 6px;
-                }
+                }}
             """)
         else:
             event.ignore()
     
     def dragLeaveEvent(self, event):
-        self.setStyleSheet("""
-            DropZoneWidget {
-                background-color: #f0f0f0;
-                color: #888888;
-                border: 2px dashed #cccccc;
+        colors = ThemeManager.instance().colors
+        self.setStyleSheet(f"""
+            DropZoneWidget {{
+                background-color: {colors.bg_tertiary};
+                color: {colors.text_tertiary};
+                border: 2px dashed {colors.border_medium};
                 border-radius: 6px;
                 font-size: 12px;
                 margin: 4px 6px;
-            }
+            }}
         """)
     
     def dropEvent(self, event):
-        self.setStyleSheet("""
-            DropZoneWidget {
-                background-color: #f0f0f0;
-                color: #888888;
-                border: 2px dashed #cccccc;
+        colors = ThemeManager.instance().colors
+        self.setStyleSheet(f"""
+            DropZoneWidget {{
+                background-color: {colors.bg_tertiary};
+                color: {colors.text_tertiary};
+                border: 2px dashed {colors.border_medium};
                 border-radius: 6px;
                 font-size: 12px;
                 margin: 4px 6px;
-            }
+            }}
         """)
         source = event.source()
         if isinstance(source, CategoryTreeWidget) and source._dragging_item:
@@ -1043,6 +1060,7 @@ class CategoryTreeWidget(QTreeWidget):
     reorganize_requested = pyqtSignal(str, str)  # (source_path, target_parent)
     
     def __init__(self, parent=None):
+        colors = ThemeManager.instance().colors
         super().__init__(parent)
         self._dragging_item = None
         self._edit_mode = False
@@ -1069,6 +1087,7 @@ class CategoryTreeWidget(QTreeWidget):
             self.setStyleSheet(style)
     
     def set_edit_mode(self, enabled: bool):
+        colors = ThemeManager.instance().colors
         self._edit_mode = enabled
         if enabled:
             self.setDragEnabled(True)
@@ -1077,27 +1096,27 @@ class CategoryTreeWidget(QTreeWidget):
             self.setDragDropMode(QTreeWidget.DragDropMode.InternalMove)
             self.setDefaultDropAction(Qt.DropAction.MoveAction)
             # 编辑模式样式：拖拽指示器更明显
-            self.setStyleSheet("""
-                QTreeWidget {
-                    background-color: #f5f5f5;
+            self.setStyleSheet(f"""
+                QTreeWidget {{
+                    background-color: {colors.bg_secondary};
                     border: none;
                     outline: none;
-                }
-                QTreeWidget::item {
+                }}
+                QTreeWidget::item {{
                     height: 38px;
                     padding-left: 12px;
                     border-radius: 6px;
                     margin: 2px 6px;
                     border: 1px dashed transparent;
-                }
-                QTreeWidget::item:selected {
-                    background-color: #e3f2fd;
-                    color: #1976D2;
-                    border: 1px dashed #90CAF9;
-                }
-                QTreeWidget::item:hover {
-                    background-color: #eeeeee;
-                }
+                }}
+                QTreeWidget::item:selected {{
+                    background-color: {colors.accent_blue_bg};
+                    color: {colors.accent_blue};
+                    border: 1px dashed {colors.accent_blue_light};
+                }}
+                QTreeWidget::item:hover {{
+                    background-color: {colors.bg_hover};
+                }}
             """)
         else:
             self.setDragEnabled(False)
@@ -1109,6 +1128,7 @@ class CategoryTreeWidget(QTreeWidget):
             self.setStyleSheet(self._normal_style)
     
     def set_reorganize_mode(self, enabled: bool):
+        colors = ThemeManager.instance().colors
         self._reorganize_mode = enabled
         if enabled:
             self.setDragEnabled(True)
@@ -1116,27 +1136,27 @@ class CategoryTreeWidget(QTreeWidget):
             self.viewport().setAcceptDrops(True)
             self.setDragDropMode(QTreeWidget.DragDropMode.InternalMove)
             self.setDefaultDropAction(Qt.DropAction.MoveAction)
-            self.setStyleSheet("""
-                QTreeWidget {
-                    background-color: #f5f5f5;
+            self.setStyleSheet(f"""
+                QTreeWidget {{
+                    background-color: {colors.bg_secondary};
                     border: none;
                     outline: none;
-                }
-                QTreeWidget::item {
+                }}
+                QTreeWidget::item {{
                     height: 38px;
                     padding-left: 12px;
                     border-radius: 6px;
                     margin: 2px 6px;
                     border: 1px dashed transparent;
-                }
-                QTreeWidget::item:selected {
-                    background-color: #e3f2fd;
-                    color: #1976D2;
-                    border: 1px dashed #90CAF9;
-                }
-                QTreeWidget::item:hover {
-                    background-color: #eeeeee;
-                }
+                }}
+                QTreeWidget::item:selected {{
+                    background-color: {colors.accent_blue_bg};
+                    color: {colors.accent_blue};
+                    border: 1px dashed {colors.accent_blue_light};
+                }}
+                QTreeWidget::item:hover {{
+                    background-color: {colors.bg_hover};
+                }}
             """)
         else:
             self.setDragEnabled(False)
@@ -1276,11 +1296,13 @@ class CategoryTreeWidget(QTreeWidget):
         event.acceptProposedAction()
 
     def dragLeaveEvent(self, event):
+        colors = ThemeManager.instance().colors
         self._auto_scroll_timer.stop()
         self._auto_scroll_direction = 0
         super().dragLeaveEvent(event)
 
     def dropEvent(self, event):
+        colors = ThemeManager.instance().colors
         self._auto_scroll_timer.stop()
         self._auto_scroll_direction = 0
         if not self._dragging_item:
@@ -1480,6 +1502,7 @@ class MainWindow(QMainWindow):
     """主窗口"""
     
     def __init__(self, db_manager: DatabaseManager, config_path: str = None):
+        colors = ThemeManager.instance().colors
         super().__init__()
         self.db = db_manager
         self.config_path = config_path
@@ -1585,12 +1608,17 @@ class MainWindow(QMainWindow):
         self._context_expiry_timer = QTimer(self)
         self._context_expiry_timer.timeout.connect(self._check_conversation_context_expiry)
         self._context_expiry_timer.start(30000)
+
+        # 初始化完成后主动同步一次样式（确保初始主题正确）
+        self._reapply_styles(ThemeManager.instance().colors)
     
     def setup_ui(self):
         """设置界面"""
+        colors = ThemeManager.instance().colors
         self.setWindowTitle("本地密码保险箱")
         self.setMinimumSize(900, 600)
         self.showMaximized()
+        ThemeManager.instance().theme_changed.connect(self._on_theme_changed)
         
         # 中央部件
         central_widget = QWidget()
@@ -1601,10 +1629,10 @@ class MainWindow(QMainWindow):
         main_layout.setSpacing(0)
         
         # ==================== 顶部工具栏 ====================
-        top_bar = QWidget()
-        top_bar.setStyleSheet("background-color: #f5f5f5; border-bottom: 1px solid #ddd;")
-        top_bar.setFixedHeight(60)
-        top_layout = QHBoxLayout(top_bar)
+        self.top_bar = QWidget()
+        self.top_bar.setStyleSheet(f"background-color: {colors.bg_secondary}; border-bottom: 1px solid {colors.border_default};")
+        self.top_bar.setFixedHeight(60)
+        top_layout = QHBoxLayout(self.top_bar)
         top_layout.setContentsMargins(15, 10, 15, 10)
         
         # 搜索框（按回车搜索）
@@ -1619,43 +1647,43 @@ class MainWindow(QMainWindow):
         # 库切换按钮组
         from PyQt6.QtWidgets import QButtonGroup
         self.tab_group = QButtonGroup(self)
-        btn_vault_accounts = QPushButton("密码库")
-        btn_vault_urls = QPushButton("网址库")
-        btn_vault_accounts.setCheckable(True)
-        btn_vault_urls.setCheckable(True)
-        btn_vault_accounts.setChecked(True)
-        btn_vault_accounts.setFixedHeight(36)
-        btn_vault_urls.setFixedHeight(36)
+        self.btn_vault_accounts = QPushButton("密码库")
+        self.btn_vault_urls = QPushButton("网址库")
+        self.btn_vault_accounts.setCheckable(True)
+        self.btn_vault_urls.setCheckable(True)
+        self.btn_vault_accounts.setChecked(True)
+        self.btn_vault_accounts.setFixedHeight(36)
+        self.btn_vault_urls.setFixedHeight(36)
         # 统一样式：checked 时白字深色背景，unchecked 时深色字浅色背景
-        tab_style = """
-            QPushButton {
-                background-color: #f0f0f0;
-                color: #333;
-                border: 1px solid #ccc;
+        tab_style = f"""
+            QPushButton {{
+                background-color: {colors.bg_tertiary};
+                color: {colors.text_primary};
+                border: 1px solid {colors.border_medium};
                 border-radius: 4px;
                 font-weight: bold;
                 padding: 0 14px;
-            }
-            QPushButton:checked {
-                background-color: #1976D2;
-                color: white;
-                border: 1px solid #1976D2;
-            }
-            QPushButton:hover {
-                background-color: #e3f2fd;
-            }
-            QPushButton:checked:hover {
-                background-color: #1565C0;
-            }
+            }}
+            QPushButton:checked {{
+                background-color: {colors.accent_blue};
+                color: {colors.text_on_accent};
+                border: 1px solid {colors.accent_blue};
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_blue_bg};
+            }}
+            QPushButton:checked:hover {{
+                background-color: {colors.accent_blue_dark};
+            }}
         """
-        btn_vault_accounts.setStyleSheet(tab_style)
-        btn_vault_urls.setStyleSheet(tab_style)
-        self.tab_group.addButton(btn_vault_accounts, 0)
-        self.tab_group.addButton(btn_vault_urls, 1)
+        self.btn_vault_accounts.setStyleSheet(tab_style)
+        self.btn_vault_urls.setStyleSheet(tab_style)
+        self.tab_group.addButton(self.btn_vault_accounts, 0)
+        self.tab_group.addButton(self.btn_vault_urls, 1)
         self.tab_group.idClicked.connect(self._on_vault_tab_changed)
         
-        top_layout.addWidget(btn_vault_accounts)
-        top_layout.addWidget(btn_vault_urls)
+        top_layout.addWidget(self.btn_vault_accounts)
+        top_layout.addWidget(self.btn_vault_urls)
         top_layout.addSpacing(10)
         
         # 添加按钮（文字随当前库动态变化）
@@ -1671,17 +1699,17 @@ class MainWindow(QMainWindow):
         self.btn_ai_toggle = QPushButton("炽阳")
         self.btn_ai_toggle.setFixedHeight(36)
         self.btn_ai_toggle.setFixedWidth(80)
-        self.btn_ai_toggle.setStyleSheet("""
-            QPushButton {
-                background-color: #FF6B35;
-                color: white;
+        self.btn_ai_toggle.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_orange};
+                color: {colors.text_on_accent};
                 border: none;
                 border-radius: 4px;
                 font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #E55A2B;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_orange_dark};
+            }}
         """)
         self.btn_ai_toggle.setToolTip("打开/关闭 炽阳 面板")
         self.btn_ai_toggle.clicked.connect(self.on_ai_toggle_panel)
@@ -1696,16 +1724,16 @@ class MainWindow(QMainWindow):
         btn_settings.clicked.connect(self.on_settings)
         top_layout.addWidget(btn_settings)
         
-        main_layout.addWidget(top_bar)
+        main_layout.addWidget(self.top_bar)
         
         # ==================== 中间内容区 ====================
         splitter = QSplitter(Qt.Orientation.Horizontal)
         
         # ---- 左侧分类导航 ----
-        left_panel = QWidget()
-        left_panel.setStyleSheet("background-color: #fafafa; border-right: 1px solid #ddd;")
-        left_panel.setFixedWidth(230)
-        left_layout = QVBoxLayout(left_panel)
+        self.left_panel = QWidget()
+        self.left_panel.setStyleSheet(f"background-color: {colors.bg_surface}; border-right: 1px solid {colors.border_default};")
+        self.left_panel.setFixedWidth(230)
+        left_layout = QVBoxLayout(self.left_panel)
         left_layout.setContentsMargins(0, 10, 0, 10)
         left_layout.setSpacing(0)
         
@@ -1715,32 +1743,32 @@ class MainWindow(QMainWindow):
         category_header.setSpacing(5)
         
         lbl_category = QLabel("类别")
-        lbl_category.setStyleSheet("""
-            QLabel {
+        lbl_category.setStyleSheet(f"""
+            QLabel {{
                 font-weight: bold;
-                color: #1976D2;
+                color: {colors.accent_blue};
                 font-size: 13px;
                 padding-left: 4px;
-                border-left: 3px solid #2196F3;
-            }
+                border-left: 3px solid {colors.accent_blue_light};
+            }}
         """)
         category_header.addWidget(lbl_category)
         category_header.addStretch()
         
         self.btn_category_sort = QPushButton("排序")
         self.btn_category_sort.setFixedSize(56, 26)
-        self.btn_category_sort.setStyleSheet("""
-            QPushButton {
-                background-color: #E3F2FD;
-                color: #1976D2;
-                border: 1px solid #90CAF9;
+        self.btn_category_sort.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_blue_bg};
+                color: {colors.accent_blue};
+                border: 1px solid {colors.accent_blue_light};
                 border-radius: 4px;
                 font-size: 11px;
                 font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #BBDEFB;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_blue_bg_hover};
+            }}
         """)
         self.btn_category_sort.setToolTip("编辑类别顺序")
         self.btn_category_sort.clicked.connect(self._on_category_edit_toggle)
@@ -1749,18 +1777,18 @@ class MainWindow(QMainWindow):
         # 类别重组按钮
         self.btn_category_reorganize = QPushButton("重组")
         self.btn_category_reorganize.setFixedSize(56, 26)
-        self.btn_category_reorganize.setStyleSheet("""
-            QPushButton {
-                background-color: #E3F2FD;
-                color: #1976D2;
-                border: 1px solid #90CAF9;
+        self.btn_category_reorganize.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_blue_bg};
+                color: {colors.accent_blue};
+                border: 1px solid {colors.accent_blue_light};
                 border-radius: 4px;
                 font-size: 11px;
                 font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #BBDEFB;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_blue_bg_hover};
+            }}
         """)
         self.btn_category_reorganize.setToolTip("重组分类结构")
         self.btn_category_reorganize.clicked.connect(self._on_category_reorganize_toggle)
@@ -1769,18 +1797,18 @@ class MainWindow(QMainWindow):
         # 类别批量删除按钮
         self.btn_category_batch_delete = QPushButton("删除")
         self.btn_category_batch_delete.setFixedSize(56, 26)
-        self.btn_category_batch_delete.setStyleSheet("""
-            QPushButton {
-                background-color: #FFEBEE;
-                color: #d32f2f;
-                border: 1px solid #EF9A9A;
+        self.btn_category_batch_delete.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_red_bg};
+                color: {colors.accent_red_dark};
+                border: 1px solid {colors.accent_red};
                 border-radius: 4px;
                 font-size: 11px;
                 font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #FFCDD2;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_red_bg};
+            }}
         """)
         self.btn_category_batch_delete.setToolTip("批量删除类别")
         self.btn_category_batch_delete.clicked.connect(self._on_category_batch_delete_toggle)
@@ -1801,52 +1829,52 @@ class MainWindow(QMainWindow):
         # 新增：占满父容器高度
         from PyQt6.QtWidgets import QSizePolicy
         self.category_tree.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self._category_tree_normal_style = """
-            QTreeWidget {
-                background-color: #fafafa;
+        self._category_tree_normal_style = f"""
+            QTreeWidget {{
+                background-color: {colors.bg_surface};
                 border: none;
-            }
-            QTreeWidget::item {
+            }}
+            QTreeWidget::item {{
                 padding: 12px 15px;
                 border-radius: 0;
-            }
-            QTreeWidget::item:selected {
-                background-color: #e3f2fd;
-                color: #1976D2;
-                border-left: 3px solid #2196F3;
-            }
-            QTreeWidget::item:hover {
-                background-color: #d0d0d0;
-                border-left: 3px solid #64B5F6;
-            }
+            }}
+            QTreeWidget::item:selected {{
+                background-color: {colors.accent_blue_bg};
+                color: {colors.accent_blue};
+                border-left: 3px solid {colors.accent_blue_light};
+            }}
+            QTreeWidget::item:hover {{
+                background-color: {colors.bg_hover};
+                border-left: 3px solid {colors.accent_blue_light};
+            }}
         """
-        self._category_tree_checkbox_style = """
-            QTreeWidget {
-                background-color: #fafafa;
+        self._category_tree_checkbox_style = f"""
+            QTreeWidget {{
+                background-color: {colors.bg_surface};
                 border: none;
-            }
-            QTreeWidget::item {
+            }}
+            QTreeWidget::item {{
                 padding: 12px 15px;
                 border-radius: 0;
-            }
-            QTreeWidget::item:selected {
-                background-color: #e3f2fd;
-                color: #1976D2;
-                border-left: 3px solid #2196F3;
-            }
-            QTreeWidget::indicator {
+            }}
+            QTreeWidget::item:selected {{
+                background-color: {colors.accent_blue_bg};
+                color: {colors.accent_blue};
+                border-left: 3px solid {colors.accent_blue_light};
+            }}
+            QTreeWidget::indicator {{
                 width: 16px;
                 height: 16px;
-            }
-            QTreeWidget::indicator:unchecked {
-                border: 2px solid #90CAF9;
-                background-color: white;
+            }}
+            QTreeWidget::indicator:unchecked {{
+                border: 2px solid {colors.accent_blue_light};
+                background-color: {colors.bg_primary};
                 border-radius: 3px;
-            }
-            QTreeWidget::indicator:checked {
-                background-color: #2196F3;
-                border: 2px solid #2196F3;
-            }
+            }}
+            QTreeWidget::indicator:checked {{
+                background-color: {colors.accent_blue_light};
+                border: 2px solid {colors.accent_blue_light};
+            }}
         """
         self.category_tree.set_normal_style(self._category_tree_normal_style)
         self.category_tree.setStyleSheet(self._category_tree_normal_style)
@@ -1861,7 +1889,7 @@ class MainWindow(QMainWindow):
         
         # 类别批量删除底部操作栏
         self.category_sel_bar = QWidget()
-        self.category_sel_bar.setStyleSheet("background-color: #f5f5f5; border-top: 1px solid #ddd;")
+        self.category_sel_bar.setStyleSheet(f"background-color: {colors.bg_secondary}; border-top: 1px solid {colors.border_default};")
         self.category_sel_bar.setFixedHeight(44)
         cat_sel_layout = QHBoxLayout(self.category_sel_bar)
         cat_sel_layout.setContentsMargins(10, 5, 10, 5)
@@ -1869,36 +1897,36 @@ class MainWindow(QMainWindow):
         
         self.btn_cat_sel_all = QPushButton("全选")
         self.btn_cat_sel_all.setFixedHeight(32)
-        self.btn_cat_sel_all.setStyleSheet("""
-            QPushButton {
-                background-color: #E3F2FD;
-                color: #1976D2;
-                border: 1px solid #90CAF9;
+        self.btn_cat_sel_all.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_blue_bg};
+                color: {colors.accent_blue};
+                border: 1px solid {colors.accent_blue_light};
                 border-radius: 4px;
                 font-size: 12px;
                 font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #BBDEFB;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_blue_bg_hover};
+            }}
         """)
         self.btn_cat_sel_all.clicked.connect(self._toggle_category_select_all)
         cat_sel_layout.addWidget(self.btn_cat_sel_all)
         
         self.btn_cat_sel_delete = QPushButton("删除(0)")
         self.btn_cat_sel_delete.setFixedHeight(32)
-        self.btn_cat_sel_delete.setStyleSheet("""
-            QPushButton {
-                background-color: #f44336;
-                color: white;
+        self.btn_cat_sel_delete.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_red};
+                color: {colors.text_on_accent};
                 border: none;
                 border-radius: 4px;
                 font-size: 12px;
                 font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #d32f2f;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_red_dark};
+            }}
         """)
         self.btn_cat_sel_delete.clicked.connect(self._execute_category_batch_delete)
         cat_sel_layout.addWidget(self.btn_cat_sel_delete)
@@ -1906,7 +1934,7 @@ class MainWindow(QMainWindow):
         self.category_sel_bar.hide()
         left_layout.addWidget(self.category_sel_bar)
         
-        splitter.addWidget(left_panel)
+        splitter.addWidget(self.left_panel)
         
         # ---- 中间账号列表 ----
         center_panel = QWidget()
@@ -1920,39 +1948,39 @@ class MainWindow(QMainWindow):
         font.setPointSize(14)
         font.setBold(True)
         self.lbl_list_title.setFont(font)
-        self.lbl_list_title.setStyleSheet("color: #333; padding-bottom: 10px;")
+        self.lbl_list_title.setStyleSheet(f"color: {colors.text_primary}; padding-bottom: 10px;")
         center_layout.addWidget(self.lbl_list_title)
         
         # AI 筛选横幅
         self.ai_filter_banner = QWidget()
-        self.ai_filter_banner.setStyleSheet("""
-            QWidget {
-                background-color: #E3F2FD;
+        self.ai_filter_banner.setStyleSheet(f"""
+            QWidget {{
+                background-color: {colors.accent_blue_bg};
                 border: none;
                 border-radius: 4px;
-            }
+            }}
         """)
         filter_banner_layout = QHBoxLayout(self.ai_filter_banner)
         filter_banner_layout.setContentsMargins(10, 6, 10, 6)
         
         self.lbl_ai_filter = QLabel("")
-        self.lbl_ai_filter.setStyleSheet("color: #1565C0; font-size: 12px;")
+        self.lbl_ai_filter.setStyleSheet(f"color: {colors.accent_blue_dark}; font-size: 12px;")
         filter_banner_layout.addWidget(self.lbl_ai_filter, 1)
         
         btn_clear_filter = QPushButton("清除筛选")
         btn_clear_filter.setFixedHeight(24)
         btn_clear_filter.setFixedWidth(90)
-        btn_clear_filter.setStyleSheet("""
-            QPushButton {
-                background-color: #2196F3;
-                color: white;
+        btn_clear_filter.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_blue_light};
+                color: {colors.text_on_accent};
                 border: none;
                 border-radius: 3px;
                 font-size: 11px;
-            }
-            QPushButton:hover {
-                background-color: #1976D2;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_blue};
+            }}
         """)
         btn_clear_filter.clicked.connect(self.clear_account_highlight)
         filter_banner_layout.addWidget(btn_clear_filter)
@@ -1968,16 +1996,16 @@ class MainWindow(QMainWindow):
         
         self.account_list = QListWidget()
         self.account_list.setFrameShape(QFrame.Shape.NoFrame)
-        self.account_list.setStyleSheet("""
-            QListWidget {
-                background-color: #f5f5f5;
+        self.account_list.setStyleSheet(f"""
+            QListWidget {{
+                background-color: {colors.bg_secondary};
                 border: none;
-            }
-            QListWidget::item {
+            }}
+            QListWidget::item {{
                 background-color: transparent;
                 border: none;
                 padding: 0px;
-            }
+            }}
         """)
         self.account_list.setSpacing(0)
         self.account_list.itemClicked.connect(self.on_account_clicked)
@@ -1994,7 +2022,7 @@ class MainWindow(QMainWindow):
         
         # ---- 右侧 炽阳 面板 ----
         self.ai_panel = QWidget()
-        self.ai_panel.setStyleSheet("background-color: #fafafa; border-left: 1px solid #ddd;")
+        self.ai_panel.setStyleSheet(f"background-color: {colors.bg_surface}; border-left: 1px solid {colors.border_default};")
         self.ai_panel.setMinimumWidth(0)
         self.ai_panel.setMaximumWidth(0)  # 默认隐藏
         ai_layout = QVBoxLayout(self.ai_panel)
@@ -2008,15 +2036,15 @@ class MainWindow(QMainWindow):
         font.setPointSize(13)
         font.setBold(True)
         lbl_ai_title.setFont(font)
-        lbl_ai_title.setStyleSheet("""
-            QLabel {
-                color: #E55A2B;
+        lbl_ai_title.setStyleSheet(f"""
+            QLabel {{
+                color: {colors.accent_orange_dark};
                 padding: 2px 4px;
-            }
-            QLabel:hover {
-                color: #c94d22;
+            }}
+            QLabel:hover {{
+                color: {colors.accent_orange_dark};
                 text-decoration: underline;
-            }
+            }}
         """)
         lbl_ai_title.setCursor(Qt.CursorShape.PointingHandCursor)
         lbl_ai_title.setToolTip("点击查看 炽阳 使用说明")
@@ -2040,20 +2068,20 @@ class MainWindow(QMainWindow):
         self.btn_mode_plan.setFixedHeight(28)
         self.btn_mode_plan.setCheckable(True)
         self.btn_mode_plan.setChecked(True)
-        self.btn_mode_plan.setStyleSheet("""
-            QPushButton {
-                background-color: #e3f2fd;
-                color: #1976D2;
-                border: 1px solid #1976D2;
+        self.btn_mode_plan.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_blue_bg};
+                color: {colors.accent_blue};
+                border: 1px solid {colors.accent_blue};
                 border-radius: 4px;
                 font-size: 11px;
                 font-weight: bold;
                 padding: 0 10px;
-            }
-            QPushButton:checked {
-                background-color: #1976D2;
-                color: white;
-            }
+            }}
+            QPushButton:checked {{
+                background-color: {colors.accent_blue};
+                color: {colors.text_on_accent};
+            }}
         """)
         self.btn_mode_plan.clicked.connect(lambda: self._on_ai_mode_changed('plan'))
         mode_layout.addWidget(self.btn_mode_plan)
@@ -2062,26 +2090,26 @@ class MainWindow(QMainWindow):
         self.btn_mode_build.setFixedHeight(28)
         self.btn_mode_build.setCheckable(True)
         self.btn_mode_build.setChecked(False)
-        self.btn_mode_build.setStyleSheet("""
-            QPushButton {
-                background-color: #fff3e0;
-                color: #e65100;
-                border: 1px solid #e65100;
+        self.btn_mode_build.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_orange_bg};
+                color: {colors.accent_orange_text};
+                border: 1px solid {colors.accent_orange_text};
                 border-radius: 4px;
                 font-size: 11px;
                 font-weight: bold;
                 padding: 0 10px;
-            }
-            QPushButton:checked {
-                background-color: #e65100;
-                color: white;
-            }
+            }}
+            QPushButton:checked {{
+                background-color: {colors.accent_orange_text};
+                color: {colors.text_on_accent};
+            }}
         """)
         self.btn_mode_build.clicked.connect(lambda: self._on_ai_mode_changed('build'))
         mode_layout.addWidget(self.btn_mode_build)
         
         self.lbl_mode_hint = QLabel("只提供建议，不操作数据")
-        self.lbl_mode_hint.setStyleSheet("color: #999; font-size: 10px;")
+        self.lbl_mode_hint.setStyleSheet(f"color: {colors.text_tertiary}; font-size: 10px;")
         mode_layout.addWidget(self.lbl_mode_hint)
         mode_layout.addStretch()
         ai_layout.addLayout(mode_layout)
@@ -2090,14 +2118,14 @@ class MainWindow(QMainWindow):
         self.ai_mode_banner = QLabel("🔍 规划模式 — 只读查询")
         self.ai_mode_banner.setFixedHeight(32)
         self.ai_mode_banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.ai_mode_banner.setStyleSheet("""
-            QLabel {
-                background-color: #2196F3;
-                color: white;
+        self.ai_mode_banner.setStyleSheet(f"""
+            QLabel {{
+                background-color: {colors.accent_blue_light};
+                color: {colors.text_on_accent};
                 border-radius: 4px;
                 font-weight: bold;
                 font-size: 12px;
-            }
+            }}
         """)
         ai_layout.addWidget(self.ai_mode_banner)
         
@@ -2111,16 +2139,16 @@ class MainWindow(QMainWindow):
         self.thinking_area = QTextEdit()
         self.thinking_area.setPlaceholderText("思考过程...")
         self.thinking_area.setReadOnly(True)
-        self.thinking_area.setStyleSheet("""
-            QTextEdit {
-                background-color: #f5f5f5;
-                border: 1px solid #e0e0e0;
+        self.thinking_area.setStyleSheet(f"""
+            QTextEdit {{
+                background-color: {colors.bg_secondary};
+                border: 1px solid {colors.border_light};
                 border-radius: 6px;
                 padding: 8px;
                 font-family: 'Consolas', 'Courier New', monospace;
                 font-size: 12px;
-                color: #666;
-            }
+                color: {colors.text_secondary};
+            }}
         """)
         self.thinking_area.setMaximumHeight(180)
         self.thinking_area.hide()
@@ -2130,15 +2158,16 @@ class MainWindow(QMainWindow):
         self.result_area = QTextBrowser()
         self.result_area.setOpenLinks(False)
         self.result_area.anchorClicked.connect(self._on_ai_anchor_clicked)
-        self.result_area.setStyleSheet("""
-            QTextBrowser {
-                background-color: white;
-                border: 1px solid #e0e0e0;
+        self.result_area.setStyleSheet(f"""
+            QTextBrowser {{
+                background-color: {colors.bg_primary};
+                color: {colors.text_primary};
+                border: 1px solid {colors.border_light};
                 border-radius: 6px;
                 padding: 8px;
                 font-size: 13px;
                 line-height: 1.6;
-            }
+            }}
         """)
         self.result_area.setPlaceholderText("炽阳 对话将显示在这里...")
         chat_layout.addWidget(self.result_area, 3)
@@ -2181,6 +2210,7 @@ class MainWindow(QMainWindow):
         class AIInputEdit(QTextEdit):
             """AI 输入框：Enter 发送，Shift+Enter 换行，最多显示5行"""
             def __init__(self, parent=None, send_callback=None):
+                colors = ThemeManager.instance().colors
                 super().__init__(parent)
                 self.send_callback = send_callback
                 self.setPlaceholderText("输入指令，如：查找支付类账号")
@@ -2188,18 +2218,21 @@ class MainWindow(QMainWindow):
                 self.setMinimumHeight(40)
                 self.setMaximumHeight(110)
                 self.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
-                self.setStyleSheet("""
-                    QTextEdit {
-                        border: 1px solid #ddd;
+                self.setStyleSheet(f"""
+                    QTextEdit {{
+                        background-color: {colors.bg_primary};
+                        color: {colors.text_primary};
+                        border: 1px solid {colors.border_default};
                         border-radius: 6px;
                         padding: 6px 10px;
                         font-size: 13px;
                         line-height: 1.4;
-                    }
+                    }}
                 """)
                 self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
             
             def keyPressEvent(self, event):
+                colors = ThemeManager.instance().colors
                 if event.key() == Qt.Key.Key_Return and not event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
                     # Enter（不带Shift）→ 发送
                     if self.send_callback:
@@ -2222,12 +2255,12 @@ class MainWindow(QMainWindow):
         
         # 确认执行区域（Build 模式下，危险操作需要用户确认）
         self.ai_confirm_widget = QWidget()
-        self.ai_confirm_widget.setStyleSheet("""
-            QWidget {
-                background-color: #FFF8F0;
-                border: 1px solid #FFE0B2;
+        self.ai_confirm_widget.setStyleSheet(f"""
+            QWidget {{
+                background-color: {colors.ai_thinking_bg};
+                border: 1px solid {colors.border_light};
                 border-radius: 6px;
-            }
+            }}
         """)
         self.ai_confirm_widget.hide()
         confirm_layout = QHBoxLayout(self.ai_confirm_widget)
@@ -2235,7 +2268,7 @@ class MainWindow(QMainWindow):
         confirm_layout.setSpacing(8)
         
         self.lbl_confirm_desc = QLabel("")
-        self.lbl_confirm_desc.setStyleSheet("color: #E65100; font-size: 11px;")
+        self.lbl_confirm_desc.setStyleSheet(f"color: {colors.accent_orange_text}; font-size: 11px;")
         confirm_layout.addWidget(self.lbl_confirm_desc, 1)
         
         btn_confirm_cancel = QPushButton("取消")
@@ -2248,18 +2281,18 @@ class MainWindow(QMainWindow):
         btn_confirm_ok = QPushButton("✅ 确认执行")
         btn_confirm_ok.setFixedHeight(28)
         btn_confirm_ok.setFixedWidth(80)
-        btn_confirm_ok.setStyleSheet("""
-            QPushButton {
-                background-color: #4CAF50;
-                color: white;
+        btn_confirm_ok.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_green};
+                color: {colors.text_on_accent};
                 border: none;
                 border-radius: 4px;
                 font-size: 11px;
                 font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #388E3C;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_green_dark};
+            }}
         """)
         btn_confirm_ok.clicked.connect(self._on_ai_confirm_execute)
         confirm_layout.addWidget(btn_confirm_ok)
@@ -2276,7 +2309,7 @@ class MainWindow(QMainWindow):
         
         # ==================== 底部工具栏 ====================
         self.bottom_bar = QWidget()
-        self.bottom_bar.setStyleSheet("background-color: #f5f5f5; border-top: 1px solid #ddd;")
+        self.bottom_bar.setStyleSheet(f"background-color: {colors.bg_secondary}; border-top: 1px solid {colors.border_default};")
         self.bottom_bar.setFixedHeight(50)
         bottom_layout = QHBoxLayout(self.bottom_bar)
         bottom_layout.setContentsMargins(15, 5, 15, 5)
@@ -2291,7 +2324,7 @@ class MainWindow(QMainWindow):
         
         # Ollama状态显示（可点击刷新）
         self.lbl_ollama_status = QLabel("AI模型: 检测中...")
-        self.lbl_ollama_status.setStyleSheet("color: #666; font-size: 11px;")
+        self.lbl_ollama_status.setStyleSheet(f"color: {colors.text_secondary}; font-size: 11px;")
         self.lbl_ollama_status.setToolTip("点击刷新AI模型状态")
         self.lbl_ollama_status.setCursor(Qt.CursorShape.PointingHandCursor)
         self.lbl_ollama_status.mousePressEvent = lambda event: self._ai_manager.request_refresh()
@@ -2345,7 +2378,7 @@ class MainWindow(QMainWindow):
         
         # ==================== 选择模式底部工具栏 ====================
         self.selection_bottom_bar = QWidget()
-        self.selection_bottom_bar.setStyleSheet("background-color: #f5f5f5; border-top: 1px solid #ddd;")
+        self.selection_bottom_bar.setStyleSheet(f"background-color: {colors.bg_secondary}; border-top: 1px solid {colors.border_default};")
         self.selection_bottom_bar.setFixedHeight(50)
         selection_layout = QHBoxLayout(self.selection_bottom_bar)
         selection_layout.setContentsMargins(15, 5, 15, 5)
@@ -2366,17 +2399,17 @@ class MainWindow(QMainWindow):
         
         self.btn_sel_delete = QPushButton("删除(0)")
         self.btn_sel_delete.setFixedHeight(36)
-        self.btn_sel_delete.setStyleSheet("""
-            QPushButton {
-                background-color: #f44336;
-                color: white;
+        self.btn_sel_delete.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_red};
+                color: {colors.text_on_accent};
                 border: none;
                 border-radius: 4px;
                 font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #d32f2f;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_red_dark};
+            }}
         """)
         self.btn_sel_delete.clicked.connect(self._execute_batch_delete)
         selection_layout.addWidget(self.btn_sel_delete)
@@ -2386,6 +2419,7 @@ class MainWindow(QMainWindow):
     
     def _build_alpha_nav(self):
         """构建右侧字母索引导航条"""
+        colors = ThemeManager.instance().colors
         nav = QWidget()
         nav.setFixedWidth(40)
         nav_layout = QVBoxLayout(nav)
@@ -2397,18 +2431,18 @@ class MainWindow(QMainWindow):
         for letter in letters:
             lbl = QLabel(letter)
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl.setStyleSheet("""
-                QLabel {
-                    color: #2196F3;
+            lbl.setStyleSheet(f"""
+                QLabel {{
+                    color: {colors.accent_blue_light};
                     font-size: 12px;
                     font-weight: bold;
                     padding: 2px 4px;
-                }
-                QLabel:hover {
-                    color: #1976D2;
-                    background-color: #e3f2fd;
+                }}
+                QLabel:hover {{
+                    color: {colors.accent_blue};
+                    background-color: {colors.accent_blue_bg};
                     border-radius: 10px;
-                }
+                }}
             """)
             lbl.setCursor(Qt.CursorShape.PointingHandCursor)
             lbl.setFixedSize(28, 20)
@@ -3486,6 +3520,7 @@ class MainWindow(QMainWindow):
     
     def _display_search_results(self, exact_results, all_accounts):
         """展示搜索结果：精确匹配 + 拼音匹配"""
+        colors = ThemeManager.instance().colors
         self.account_list.clear()
         
         total_displayed = 0
@@ -3498,8 +3533,8 @@ class MainWindow(QMainWindow):
             font.setBold(True)
             font.setPointSize(11)
             header.setFont(font)
-            header.setBackground(QColor("#e3f2fd"))
-            header.setForeground(QColor("#1976D2"))
+            header.setBackground(QColor(colors.accent_blue_bg))
+            header.setForeground(QColor(colors.accent_blue))
             self.account_list.addItem(header)
             
             for result in exact_results[:30]:
@@ -3600,11 +3635,287 @@ class MainWindow(QMainWindow):
     
     def _apply_theme(self, theme_name: str):
         """应用主题（由设置对话框触发）"""
-        from core.theme_manager import apply_theme_to_app
-        app = QApplication.instance()
-        if app:
-            apply_theme_to_app(app, theme_name)
-    
+        ThemeManager.instance().apply_theme(theme_name)
+        # 在模态弹窗链中直接触发重绘，绕过信号可能被延迟的问题
+        self._reapply_styles(ThemeManager.instance().colors)
+        self.repaint()
+        QApplication.processEvents()
+
+    def _on_theme_changed(self, theme_name: str):
+        """主题切换后重建 UI 样式（由 ThemeManager 信号触发）"""
+
+    def _reapply_styles(self, colors: ThemeColors):
+        """重新应用所有静态样式（主题切换时调用）"""
+        # === 栏和面板 ===
+        self.top_bar.setStyleSheet(style_bar(colors, 'bottom'))
+        self.left_panel.setStyleSheet(style_panel(colors, 'right'))
+        self.category_sel_bar.setStyleSheet(style_bar(colors, 'top'))
+        self.ai_panel.setStyleSheet(style_panel(colors, 'left'))
+        self.bottom_bar.setStyleSheet(style_bar(colors, 'top'))
+        self.selection_bottom_bar.setStyleSheet(style_bar(colors, 'top'))
+
+        # === 分类树样式（重新生成 + 重新应用） ===
+        self._category_tree_normal_style = f"""
+            QTreeWidget {{
+                background-color: {colors.bg_surface};
+                border: none;
+            }}
+            QTreeWidget::item {{
+                padding: 12px 15px;
+                border-radius: 0;
+            }}
+            QTreeWidget::item:selected {{
+                background-color: {colors.accent_blue_bg};
+                color: {colors.accent_blue};
+                border-left: 3px solid {colors.accent_blue_light};
+            }}
+            QTreeWidget::item:hover {{
+                background-color: {colors.bg_hover};
+                border-left: 3px solid {colors.accent_blue_light};
+            }}
+        """
+        self._category_tree_checkbox_style = f"""
+            QTreeWidget {{
+                background-color: {colors.bg_surface};
+                border: none;
+            }}
+            QTreeWidget::item {{
+                padding: 12px 15px;
+                border-radius: 0;
+            }}
+            QTreeWidget::item:selected {{
+                background-color: {colors.accent_blue_bg};
+                color: {colors.accent_blue};
+                border-left: 3px solid {colors.accent_blue_light};
+            }}
+            QTreeWidget::indicator {{
+                width: 16px;
+                height: 16px;
+            }}
+            QTreeWidget::indicator:unchecked {{
+                border: 2px solid {colors.accent_blue_light};
+                background-color: {colors.bg_primary};
+                border-radius: 3px;
+            }}
+            QTreeWidget::indicator:checked {{
+                background-color: {colors.accent_blue_light};
+                border: 2px solid {colors.accent_blue_light};
+            }}
+        """
+        self.category_tree.set_normal_style(self._category_tree_normal_style)
+        if self._category_selection_mode:
+            self.category_tree.setStyleSheet(self._category_tree_checkbox_style)
+        elif getattr(self, '_category_edit_mode', False):
+            self.category_tree.set_edit_mode(True)
+        elif getattr(self, '_category_reorganize_mode', False):
+            self.category_tree.set_reorganize_mode(True)
+        else:
+            self.category_tree.setStyleSheet(self._category_tree_normal_style)
+
+        # === 分类栏按钮 ===
+        self.btn_category_sort.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.bg_secondary};
+                border: 1px solid {colors.border_default};
+                border-radius: 4px;
+                font-size: 12px;
+                padding: 4px 8px;
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_blue_bg};
+                color: {colors.accent_blue};
+            }}
+        """)
+        self.btn_category_reorganize.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.bg_secondary};
+                border: 1px solid {colors.border_default};
+                border-radius: 4px;
+                font-size: 12px;
+                padding: 4px 8px;
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_orange_bg};
+                color: {colors.accent_orange};
+            }}
+        """)
+        self.btn_category_batch_delete.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_red_bg};
+                color: {colors.accent_red};
+                border: 1px solid {colors.accent_red};
+                border-radius: 4px;
+                font-size: 12px;
+                font-weight: bold;
+                padding: 4px 8px;
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_red};
+                color: {colors.text_on_accent};
+            }}
+        """)
+
+        # === 分类选择栏按钮 ===
+        self.btn_cat_sel_all.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_blue_bg};
+                color: {colors.accent_blue};
+                border: 1px solid {colors.accent_blue_light};
+                border-radius: 4px;
+                font-size: 12px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_blue_bg_hover};
+            }}
+        """)
+        self.btn_cat_sel_delete.setStyleSheet(style_button_danger(colors))
+
+        # === 选择工具栏删除按钮 ===
+        self.btn_sel_delete.setStyleSheet(style_button_danger(colors))
+
+        # === 重新应用炽阳按钮样式（不切换面板状态） ===
+        colors2 = colors
+        if self._ai_panel_visible:
+            self.btn_ai_toggle.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {colors2.accent_orange_dark};
+                    color: {colors2.text_on_accent};
+                    border: none;
+                    border-radius: 4px;
+                    font-weight: bold;
+                }}
+                QPushButton:hover {{
+                    background-color: {colors2.accent_orange_dark};
+                }}
+            """)
+        else:
+            self.btn_ai_toggle.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {colors2.accent_orange};
+                    color: {colors2.text_on_accent};
+                    border: none;
+                    border-radius: 4px;
+                    font-weight: bold;
+                }}
+                QPushButton:hover {{
+                    background-color: {colors2.accent_orange_dark};
+                }}
+            """)
+
+        # === 库切换按钮 ===
+        tab_style = f"""
+            QPushButton {{
+                background-color: {colors.bg_tertiary};
+                color: {colors.text_primary};
+                border: 1px solid {colors.border_medium};
+                border-radius: 4px;
+                font-weight: bold;
+                padding: 0 14px;
+            }}
+            QPushButton:checked {{
+                background-color: {colors.accent_blue};
+                color: {colors.text_on_accent};
+                border: 1px solid {colors.accent_blue};
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_blue_bg};
+            }}
+            QPushButton:checked:hover {{
+                background-color: {colors.accent_blue_dark};
+            }}
+        """
+        self.btn_vault_accounts.setStyleSheet(tab_style)
+        self.btn_vault_urls.setStyleSheet(tab_style)
+
+        # === AI 面板内部控件 ===
+        self.thinking_area.setStyleSheet(f"""
+            QTextEdit {{
+                background-color: {colors.bg_secondary};
+                border: 1px solid {colors.border_light};
+                border-radius: 6px;
+                padding: 8px;
+                font-family: 'Consolas', 'Courier New', monospace;
+                font-size: 12px;
+                color: {colors.text_secondary};
+            }}
+        """)
+        self.result_area.setStyleSheet(f"""
+            QTextBrowser {{
+                background-color: {colors.bg_primary};
+                color: {colors.text_primary};
+                border: 1px solid {colors.border_light};
+                border-radius: 6px;
+                padding: 8px;
+                font-size: 13px;
+                line-height: 1.6;
+            }}
+        """)
+        # AI 输入框
+        self.ai_input.setStyleSheet(f"""
+            QTextEdit {{
+                background-color: {colors.bg_primary};
+                color: {colors.text_primary};
+                border: 1px solid {colors.border_default};
+                border-radius: 6px;
+                padding: 6px 10px;
+                font-size: 13px;
+                line-height: 1.4;
+            }}
+        """)
+        # AI 模式横幅和提示文字
+        self._on_ai_mode_changed(self._ai_mode)
+        self._update_send_button_style(self._ai_query_running)
+        self._on_ai_state_changed(self._ai_manager.get_state())
+
+        # === 列表区域样式 ===
+        self.account_list.setStyleSheet(f"""
+            QListWidget {{
+                background-color: {colors.bg_secondary};
+                border: none;
+            }}
+            QListWidget::item {{
+                background-color: transparent;
+                border: none;
+                padding: 0px;
+            }}
+        """)
+        self.lbl_list_title.setStyleSheet(f"color: {colors.text_primary}; padding-bottom: 10px;")
+        self.ai_filter_banner.setStyleSheet(f"""
+            QWidget {{
+                background-color: {colors.accent_blue_bg};
+                border: none;
+                border-radius: 4px;
+            }}
+        """)
+        self.lbl_ai_filter.setStyleSheet(f"color: {colors.accent_blue_text}; font-size: 12px;")
+
+        # === 字母导航条 ===
+        for i in range(self.alpha_nav.layout().count()):
+            w = self.alpha_nav.layout().itemAt(i)
+            if w and w.widget():
+                lbl = w.widget()
+                if isinstance(lbl, QLabel):
+                    lbl.setStyleSheet(f"""
+                        QLabel {{
+                            color: {colors.accent_blue_light};
+                            font-size: 12px;
+                            font-weight: bold;
+                            padding: 2px 4px;
+                        }}
+                        QLabel:hover {{
+                            color: {colors.accent_blue};
+                            background-color: {colors.accent_blue_bg};
+                            border-radius: 10px;
+                        }}
+                    """)
+
+        # === 重建账号/网址列表（列表项使用新主题色） ===
+        if self.current_vault == 'accounts':
+            self.load_accounts()
+        else:
+            self.load_urls()
+
     def on_settings(self):
         """打开设置对话框"""
         if not self.config_path:
@@ -3625,21 +3936,26 @@ class MainWindow(QMainWindow):
         result = dialog.exec()
         t2 = time.perf_counter()
         print(f"[Perf] SettingsDialog exec: {(t2-t1)*1000:.1f} ms")
+
+        # 弹窗关闭后无条件重绘，确保主题彻底生效（解决嵌套模态弹窗的 paint 延迟）
+        self._reapply_styles(ThemeManager.instance().colors)
+        self.repaint()
     
     def _on_ai_state_changed(self, state):
         """AI 状态变化回调：更新底部状态栏"""
+        colors = ThemeManager.instance().colors
         if state.status == AIStatus.ONLINE:
             self.lbl_ollama_status.setText(f"AI模型: {state.model_name} 运行中")
-            self.lbl_ollama_status.setStyleSheet("color: #4CAF50; font-size: 11px;")
+            self.lbl_ollama_status.setStyleSheet(f"color: {colors.accent_green}; font-size: 11px;")
         elif state.status == AIStatus.OFFLINE:
             self.lbl_ollama_status.setText("AI模型: 未连接")
-            self.lbl_ollama_status.setStyleSheet("color: #f44336; font-size: 11px;")
+            self.lbl_ollama_status.setStyleSheet(f"color: {colors.accent_red}; font-size: 11px;")
         elif state.status == AIStatus.ERROR:
             self.lbl_ollama_status.setText("AI模型: 错误")
-            self.lbl_ollama_status.setStyleSheet("color: #f44336; font-size: 11px;")
+            self.lbl_ollama_status.setStyleSheet(f"color: {colors.accent_red}; font-size: 11px;")
         else:
             self.lbl_ollama_status.setText("AI模型: 检测中...")
-            self.lbl_ollama_status.setStyleSheet("color: #666; font-size: 11px;")
+            self.lbl_ollama_status.setStyleSheet(f"color: {colors.text_secondary}; font-size: 11px;")
 
     def _show_ollama_warning(self, feature_name: str = "此功能"):
         """显示Ollama未启动的警告"""
@@ -3663,6 +3979,7 @@ class MainWindow(QMainWindow):
     
     def _on_ai_mode_changed(self, mode: str):
         """切换 AI 模式：plan / build"""
+        colors = ThemeManager.instance().colors
         if getattr(self, '_mode_change_guard', False):
             return
         self._mode_change_guard = True
@@ -3688,34 +4005,34 @@ class MainWindow(QMainWindow):
                 self.btn_mode_plan.setChecked(True)
                 self.btn_mode_build.setChecked(False)
                 self.lbl_mode_hint.setText("只提供建议，不操作数据")
-                self.lbl_mode_hint.setStyleSheet("color: #1976D2; font-size: 10px;")
+                self.lbl_mode_hint.setStyleSheet(f"color: {colors.accent_blue}; font-size: 10px;")
                 # 更新横幅
                 self.ai_mode_banner.setText("🔍 规划模式 — 只读查询")
-                self.ai_mode_banner.setStyleSheet("""
-                    QLabel {
-                        background-color: #2196F3;
-                        color: white;
+                self.ai_mode_banner.setStyleSheet(f"""
+                    QLabel {{
+                        background-color: {colors.accent_blue_light};
+                        color: {colors.text_on_accent};
                         border-radius: 4px;
                         font-weight: bold;
                         font-size: 12px;
-                    }
+                    }}
                 """)
                 self.ai_input.setPlaceholderText("输入指令，如：查找支付类账号")
             else:
                 self.btn_mode_plan.setChecked(False)
                 self.btn_mode_build.setChecked(True)
                 self.lbl_mode_hint.setText("可执行操作，危险操作需确认")
-                self.lbl_mode_hint.setStyleSheet("color: #e65100; font-size: 10px;")
+                self.lbl_mode_hint.setStyleSheet(f"color: {colors.accent_orange_text}; font-size: 10px;")
                 # 更新横幅
                 self.ai_mode_banner.setText("🔧 构建模式 — 可执行写操作（整理 / 备注 / 删除 / 新增）")
-                self.ai_mode_banner.setStyleSheet("""
-                    QLabel {
-                        background-color: #FF9800;
-                        color: white;
+                self.ai_mode_banner.setStyleSheet(f"""
+                    QLabel {{
+                        background-color: {colors.accent_orange};
+                        color: {colors.text_on_accent};
                         border-radius: 4px;
                         font-weight: bold;
                         font-size: 12px;
-                    }
+                    }}
                 """)
                 self.ai_input.setPlaceholderText("Build 模式：可以执行增删改操作，所有变更需确认后生效")
         finally:
@@ -3766,22 +4083,23 @@ class MainWindow(QMainWindow):
     
     def on_ai_toggle_panel(self):
         """展开/收起 炽阳 面板"""
+        colors = ThemeManager.instance().colors
         self._ai_panel_visible = not self._ai_panel_visible
         
         if self._ai_panel_visible:
             self.ai_panel.setMaximumWidth(600)
             self.ai_panel.setMinimumWidth(400)
-            self.btn_ai_toggle.setStyleSheet("""
-                QPushButton {
-                    background-color: #E55A2B;
-                    color: white;
+            self.btn_ai_toggle.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {colors.accent_orange_dark};
+                    color: {colors.text_on_accent};
                     border: none;
                     border-radius: 4px;
                     font-weight: bold;
-                }
-                QPushButton:hover {
-                    background-color: #D84315;
-                }
+                }}
+                QPushButton:hover {{
+                    background-color: {colors.accent_orange_dark};
+                }}
             """)
             # 如果对话区为空，显示欢迎语
             if not self.result_area.toPlainText().strip():
@@ -3789,17 +4107,17 @@ class MainWindow(QMainWindow):
         else:
             self.ai_panel.setMaximumWidth(0)
             self.ai_panel.setMinimumWidth(0)
-            self.btn_ai_toggle.setStyleSheet("""
-                QPushButton {
-                    background-color: #FF6B35;
-                    color: white;
+            self.btn_ai_toggle.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {colors.accent_orange};
+                    color: {colors.text_on_accent};
                     border: none;
                     border-radius: 4px;
                     font-weight: bold;
-                }
-                QPushButton:hover {
-                    background-color: #E55A2B;
-                }
+                }}
+                QPushButton:hover {{
+                    background-color: {colors.accent_orange_dark};
+                }}
             """)
     
     def _ai_show_welcome(self):
@@ -3825,33 +4143,34 @@ class MainWindow(QMainWindow):
     
     def _update_send_button_style(self, is_stop: bool):
         """切换发送按钮样式：发送(橙色) / 停止(灰色)"""
+        colors = ThemeManager.instance().colors
         if is_stop:
             self.btn_ai_send.setText("停止")
-            self.btn_ai_send.setStyleSheet("""
-                QPushButton {
-                    background-color: #9E9E9E;
-                    color: white;
+            self.btn_ai_send.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {colors.border_medium};
+                    color: {colors.text_on_accent};
                     border: none;
                     border-radius: 4px;
                     font-weight: bold;
-                }
-                QPushButton:hover {
-                    background-color: #757575;
-                }
+                }}
+                QPushButton:hover {{
+                    background-color: {colors.text_tertiary};
+                }}
             """)
         else:
             self.btn_ai_send.setText("发送")
-            self.btn_ai_send.setStyleSheet("""
-                QPushButton {
-                    background-color: #FF6B35;
-                    color: white;
+            self.btn_ai_send.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {colors.accent_orange};
+                    color: {colors.text_on_accent};
                     border: none;
                     border-radius: 4px;
                     font-weight: bold;
-                }
-                QPushButton:hover {
-                    background-color: #E55A2B;
-                }
+                }}
+                QPushButton:hover {{
+                    background-color: {colors.accent_orange_dark};
+                }}
             """)
     
     def _on_ai_send_or_stop(self):
@@ -4090,12 +4409,10 @@ class MainWindow(QMainWindow):
         import json
         from services.ai_assistant_service import ConversationMessage
         
-        print("[DEBUG] _on_react_result: step 1 - mark running=false")
         self._ai_query_running = False
-        print("[DEBUG] _on_react_result: step 2 - update button")
         self._update_send_button_style(False)
         
-        print("[DEBUG] _on_react_result: step 3 - disconnect thread signals")
+        # 断开流式信号，使用 deleteLater 安全销毁，避免在信号处理中直接回收 C++ 对象
         # 断开流式信号，使用 deleteLater 安全销毁，避免在信号处理中直接回收 C++ 对象
         if self._ai_thread is not None:
             try:
@@ -4109,26 +4426,20 @@ class MainWindow(QMainWindow):
             self._ai_thread.deleteLater()
             self._ai_thread = None
         
-        print("[DEBUG] _on_react_result: step 4 - parse json")
         try:
             result = json.loads(result_json)
         except json.JSONDecodeError:
             result = {"success": False, "response": "ReAct 返回数据解析失败", "done": True}
         
-        print("[DEBUG] _on_react_result: step 5 - get time")
         now_str = datetime.now().strftime("%H:%M:%S")
         
-        print("[DEBUG] _on_react_result: step 6 - clear result_area")
         # 安全清理 UI
         self.result_area.clear()
-        print("[DEBUG] _on_react_result: step 7 - clear thinking_area")
         self.thinking_area.clear()
-        print("[DEBUG] _on_react_result: step 8 - hide thinking_area")
         self.thinking_area.hide()
-        print("[DEBUG] _on_react_result: step 9 - update chat display")
         self._ai_update_chat_display()
         
-        print("[DEBUG] _on_react_result: step 10 - check result state")
+        
         if result.get('awaiting_confirm'):
             # 暂停循环，展示预览组件
             self._react_state = ReActState.AWAITING_PREVIEW
@@ -4170,32 +4481,22 @@ class MainWindow(QMainWindow):
                 ))
                 self._ai_update_chat_display()
         elif result.get('done'):
-            print("[DEBUG] _on_react_result: step 11a - done branch")
             self._react_state = ReActState.IDLE
             self._pending_tool = None
             self._react_turns_used = result.get('turns_used', self._react_turns_used)
             
             response = result.get('response', '操作完成')
-            print(f"[DEBUG] _on_react_result: step 11b - response len={len(response)}")
             self.ai_assistant._history.append(ConversationMessage(
                 role='assistant', content=response, timestamp=now_str
             ))
-            print("[DEBUG] _on_react_result: step 11c - update chat display")
             self._ai_update_chat_display()
-            print("[DEBUG] _on_react_result: step 11d - show action buttons")
             self.ai_action_buttons.show()
             
             # ReAct 模式：如果返回了匹配ID，高亮左侧列表
             matched_ids = result.get('matched_ids', [])
-            print(f"[DEBUG] _on_react_result: step 11e - matched_ids={matched_ids}")
             if matched_ids:
-                print("[DEBUG] _on_react_result: step 11f-1 - get method")
-                method = self.highlight_matched_accounts
-                print("[DEBUG] _on_react_result: step 11f-2 - get query")
                 q = getattr(self, '_current_ai_query', '')
-                print("[DEBUG] _on_react_result: step 11f-3 - call method")
                 self.highlight_matched_accounts(matched_ids, query_text=q)
-                print("[DEBUG] _on_react_result: step 11g - highlight done")
         else:
             # 中间状态，继续循环
             self._react_turns_used = result.get('turns_used', self._react_turns_used)
@@ -4367,6 +4668,7 @@ class MainWindow(QMainWindow):
     
     def _show_batch_add_dialog(self, batch_items, vault_type, query, action_preview):
         """显示批量导入预览对话框"""
+        colors = ThemeManager.instance().colors
         from core.repositories import RepositoryFactory
         
         repo = RepositoryFactory.get_repository(vault_type)
@@ -4390,18 +4692,18 @@ class MainWindow(QMainWindow):
         btn_layout.addWidget(btn_cancel)
         
         btn_confirm = QPushButton("✅ 确认导入")
-        btn_confirm.setStyleSheet("""
-            QPushButton {
-                background-color: #4CAF50;
-                color: white;
+        btn_confirm.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_green};
+                color: {colors.text_on_accent};
                 border: none;
                 border-radius: 4px;
                 font-weight: bold;
                 padding: 4px 16px;
-            }
-            QPushButton:hover {
-                background-color: #388E3C;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_green_dark};
+            }}
         """)
         btn_layout.addWidget(btn_confirm)
         layout.addLayout(btn_layout)
@@ -4803,6 +5105,7 @@ class MainWindow(QMainWindow):
     
     def _ai_update_chat_display(self):
         """根据对话历史重新渲染整个聊天区域为 HTML"""
+        colors = ThemeManager.instance().colors
         try:
             history = self.ai_assistant.get_history()
         except Exception as e:
@@ -4832,7 +5135,7 @@ class MainWindow(QMainWindow):
                     html_parts.append(f'<div style="margin:8px 0;">{assistant_html}</div>')
                 elif msg.role == 'system':
                     html_parts.append(
-                        f'<div style="margin:8px 0;padding:6px 10px;background:#f5f5f5;border-radius:4px;color:#999;font-size:12px;">'
+                        f'<div style="margin:8px 0;padding:6px 10px;background:{colors.bg_secondary};border-radius:4px;color:{colors.text_tertiary};font-size:12px;">'
                         f'{self._escape_html(msg.content)}</div>'
                     )
             except Exception as e:
@@ -4843,7 +5146,7 @@ class MainWindow(QMainWindow):
         # 如果正在处理（最后一条是用户消息，没有 assistant 回复），显示"思考中"
         if history and history[-1].role == 'user':
             html_parts.append(
-                '<div style="margin:8px 0;padding:10px;color:#999;font-style:italic;">'
+                f'<div style="margin:8px 0;padding:10px;color:{colors.text_tertiary};font-style:italic;">'
                 '🤔 炽阳正在思考...</div>'
             )
         
@@ -4923,6 +5226,7 @@ class MainWindow(QMainWindow):
     
     def _ai_display_results_in_list(self, accounts, query_text):
         """将 炽阳 搜索结果展示在左侧账号列表中"""
+        colors = ThemeManager.instance().colors
         self.account_list.clear()
         
         if not accounts:
@@ -4939,8 +5243,8 @@ class MainWindow(QMainWindow):
         font.setBold(True)
         font.setPointSize(11)
         header.setFont(font)
-        header.setBackground(QColor("#E3F2FD"))
-        header.setForeground(QColor("#1565C0"))
+        header.setBackground(QColor(colors.accent_blue_bg))
+        header.setForeground(QColor(colors.accent_blue_text))
         self.account_list.addItem(header)
         
         for account in accounts:
@@ -4959,22 +5263,18 @@ class MainWindow(QMainWindow):
     
     def highlight_matched_accounts(self, matched_ids: list, query_text: str = ""):
         """Plan 模式：高亮左侧列表中的匹配条目（支持密码库和网址库）"""
-        print(f"[DEBUG-HL] start, matched_ids={matched_ids}")
+        colors = ThemeManager.instance().colors
         if not matched_ids:
-            print("[DEBUG-HL] empty matched_ids, return")
             return
         
         # 统一转为字符串集合，避免 LLM 返回的字符串 ID 与 SQLite 整数 ID 类型不匹配
         self._highlight_matched_ids = {str(m) for m in matched_ids}
         
         # 禁用更新避免大量 paint/layout 事件阻塞事件循环
-        print("[DEBUG-HL] setUpdatesEnabled(False)")
         self.account_list.setUpdatesEnabled(False)
-        print("[DEBUG-HL] clear list")
         self.account_list.clear()
         
         # 根据当前 vault 选择数据源和 Widget 类型
-        print("[DEBUG-HL] get all_items")
         if self.current_vault == 'accounts':
             all_items = self._cached_accounts if self._cached_accounts else self.account_service.get_all_accounts()
             item_name = "账号"
@@ -4986,41 +5286,33 @@ class MainWindow(QMainWindow):
             ItemWidget = URLListItem
             use_badges = False
         
-        print(f"[DEBUG-HL] all_items={len(all_items)}")
         matched_items = [item for item in all_items if str(getattr(item, 'id', None)) in self._highlight_matched_ids]
         unmatched_items = [item for item in all_items if str(getattr(item, 'id', None)) not in self._highlight_matched_ids]
-        print(f"[DEBUG-HL] matched={len(matched_items)}, unmatched={len(unmatched_items)}")
         
         # 隐藏列表标题（筛选信息已在横幅中显示）
-        print("[DEBUG-HL] hide title")
         self.lbl_list_title.hide()
         
         # 显示匹配项（置顶，蓝色边框）
         if matched_items:
-            print("[DEBUG-HL] build matched header")
             header = QListWidgetItem(f"  匹配{item_name}")
             header.setFlags(Qt.ItemFlag.NoItemFlags)
             font = QFont()
             font.setBold(True)
             font.setPointSize(11)
             header.setFont(font)
-            header.setBackground(QColor("#E3F2FD"))
-            header.setForeground(QColor("#1565C0"))
+            header.setBackground(QColor(colors.accent_blue_bg))
+            header.setForeground(QColor(colors.accent_blue_text))
             self.account_list.addItem(header)
             
-            print("[DEBUG-HL] loop matched_items")
             for idx, item_obj in enumerate(matched_items):
-                print(f"[DEBUG-HL] matched item {idx}/{len(matched_items)} id={getattr(item_obj, 'id', None)}")
                 item = QListWidgetItem()
                 w = max(self.account_list.width() - 20, 50)
-                print(f"[DEBUG-HL]   setSizeHint width={w}")
                 item.setSizeHint(QSize(w, 56))
                 item.setData(Qt.ItemDataRole.UserRole, item_obj)
-                item.setBackground(QColor("#E3F2FD"))
+                item.setBackground(QColor(colors.accent_blue_bg))
                 self.account_list.addItem(item)
                 
                 badges = [("匹配", "#2196F3")]
-                print(f"[DEBUG-HL]   create ItemWidget")
                 if use_badges:
                     widget = ItemWidget(item_obj, badges=badges, selection_mode=self._selection_mode)
                 else:
@@ -5029,40 +5321,44 @@ class MainWindow(QMainWindow):
                 if self._selection_mode and str(getattr(item_obj, 'id', None)) in {str(s) for s in self._selected_ids}:
                     if hasattr(widget, 'set_checked'):
                         widget.set_checked(True)
-                # 增强边框高亮
-                if hasattr(widget, 'styleSheet'):
-                    enhanced_style = widget.styleSheet().replace(
-                        'border: none;',
-                        'border: 2px solid #2196F3;'
+                # 匹配条目高亮：用容器包裹，容器设背景色
+                hl_color = "#BBDEFB" if not ThemeManager.instance().is_dark else "#2A3D55"
+                container = QWidget()
+                container.setStyleSheet(f"background-color: {hl_color};")
+                container_layout = QVBoxLayout(container)
+                container_layout.setContentsMargins(0, 0, 0, 0)
+                container_layout.addWidget(widget)
+                # 让原 widget 背景透明
+                widget.setStyleSheet("background-color: transparent;")
+                widget.setAutoFillBackground(False)
+                # 分类标签背景也透明
+                if hasattr(widget, 'lbl_category'):
+                    widget.lbl_category.setStyleSheet(
+                        f"color: {colors.text_secondary}; font-size: 11px; background-color: transparent; border-radius: 10px; padding: 2px 8px;"
                     )
-                    widget.setStyleSheet(enhanced_style)
-                print(f"[DEBUG-HL]   setItemWidget")
-                self.account_list.setItemWidget(item, widget)
+                # 用容器代替原 widget 放入列表
+                self.account_list.setItemWidget(item, container)
         
         # 显示未匹配项（灰色）
         if unmatched_items:
-            print(f"[DEBUG-HL] build unmatched header")
             header = QListWidgetItem(f"  其他{item_name}")
             header.setFlags(Qt.ItemFlag.NoItemFlags)
             font = QFont()
             font.setBold(True)
             font.setPointSize(11)
             header.setFont(font)
-            header.setBackground(QColor("#f5f5f5"))
-            header.setForeground(QColor("#999"))
+            header.setBackground(QColor(colors.bg_secondary))
+            header.setForeground(QColor(colors.text_tertiary))
             self.account_list.addItem(header)
             
-            print(f"[DEBUG-HL] loop unmatched_items")
             for idx, item_obj in enumerate(unmatched_items):
-                print(f"[DEBUG-HL] unmatched item {idx}/{len(unmatched_items)} id={getattr(item_obj, 'id', None)}")
                 item = QListWidgetItem()
                 w = max(self.account_list.width() - 20, 50)
                 item.setSizeHint(QSize(w, 56))
                 item.setData(Qt.ItemDataRole.UserRole, item_obj)
-                item.setForeground(QColor(150, 150, 150))
+                item.setForeground(QColor(colors.text_disabled))
                 self.account_list.addItem(item)
                 
-                print(f"[DEBUG-HL]   create ItemWidget")
                 widget = ItemWidget(item_obj, selection_mode=self._selection_mode)
                 
                 if self._selection_mode and str(getattr(item_obj, 'id', None)) in {str(s) for s in self._selected_ids}:
@@ -5071,13 +5367,12 @@ class MainWindow(QMainWindow):
                 # 降低可见度
                 if hasattr(widget, 'styleSheet'):
                     widget.setStyleSheet(widget.styleSheet() + """
-                        QLabel { color: #aaa; }
+                        colors = ThemeManager.instance().colors
+                        QLabel { color: {colors.text_disabled}; }
                     """)
-                print(f"[DEBUG-HL]   setItemWidget")
                 self.account_list.setItemWidget(item, widget)
         
         # 横幅显示用户原始查询和匹配数量
-        print("[DEBUG-HL] set banner")
         if query_text == "AI本次修改":
             banner_text = f"🔥 炽阳本次已修改 {len(matched_items)} 个{item_name}"
         else:
@@ -5086,11 +5381,8 @@ class MainWindow(QMainWindow):
         self.ai_filter_banner.show()
         
         # 恢复更新，一次性重绘
-        print("[DEBUG-HL] setUpdatesEnabled(True)")
         self.account_list.setUpdatesEnabled(True)
-        print("[DEBUG-HL] viewport update")
         self.account_list.viewport().update()
-        print("[DEBUG-HL] DONE")
     
     def clear_account_highlight(self):
         """清除左侧列表的高亮筛选"""
@@ -5107,6 +5399,7 @@ class MainWindow(QMainWindow):
     
     def _markdown_to_html(self, text: str) -> str:
         """将 Markdown 转为 HTML（安全可控，避免 Qt setMarkdown 崩溃）"""
+        colors = ThemeManager.instance().colors
         import re
         
         # 安全清理：移除 NULL 字节和控制字符（这些可能导致 Qt 解析器崩溃）
@@ -5121,12 +5414,13 @@ class MainWindow(QMainWindow):
         
         # 代码块 ```code```
         def code_block_repl(m):
+            colors = ThemeManager.instance().colors
             code = m.group(1)
-            return f'<pre style="background:#f5f5f5;padding:8px;border-radius:4px;overflow-x:auto;font-size:12px;"><code>{code}</code></pre>'
+            return f'<pre style="background:{colors.bg_secondary};padding:8px;border-radius:4px;overflow-x:auto;font-size:12px;"><code>{code}</code></pre>'
         text = re.sub(r'```(.*?)```', code_block_repl, text, flags=re.DOTALL)
         
         # 行内代码 `code`
-        text = re.sub(r'`([^`]+)`', r'<code style="background:#f5f5f5;padding:2px 4px;border-radius:3px;font-size:12px;">\1</code>', text)
+        text = re.sub(r'`([^`]+)`', r'<code style="background:{colors.bg_secondary};padding:2px 4px;border-radius:3px;font-size:12px;">\1</code>', text)
         
         # 加粗 **text**
         text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
@@ -5135,15 +5429,15 @@ class MainWindow(QMainWindow):
         text = re.sub(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)', r'<i>\1</i>', text)
         
         # 标题
-        text = re.sub(r'^###\s+(.+)$', r'<h4 style="margin:6px 0;color:#333;">\1</h4>', text, flags=re.MULTILINE)
-        text = re.sub(r'^##\s+(.+)$', r'<h3 style="margin:8px 0;color:#333;">\1</h3>', text, flags=re.MULTILINE)
-        text = re.sub(r'^#\s+(.+)$', r'<h2 style="margin:10px 0;color:#333;">\1</h2>', text, flags=re.MULTILINE)
+        text = re.sub(r'^###\s+(.+)$', r'<h4 style="margin:6px 0;color:{colors.text_primary};">\1</h4>', text, flags=re.MULTILINE)
+        text = re.sub(r'^##\s+(.+)$', r'<h3 style="margin:8px 0;color:{colors.text_primary};">\1</h3>', text, flags=re.MULTILINE)
+        text = re.sub(r'^#\s+(.+)$', r'<h2 style="margin:10px 0;color:{colors.text_primary};">\1</h2>', text, flags=re.MULTILINE)
         
         # 分隔线 ---
-        text = re.sub(r'^---+\s*$', r'<hr style="border:none;border-top:1px solid #ddd;margin:8px 0;">', text, flags=re.MULTILINE)
+        text = re.sub(r'^---+\s*$', r'<hr style="border:none;border-top:1px solid {colors.border_default};margin:8px 0;">', text, flags=re.MULTILINE)
         
         # 链接 [text](url)
-        text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2" style="color:#FF9800;text-decoration:none;">\1</a>', text)
+        text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2" style="color:{colors.accent_orange};text-decoration:none;">\1</a>', text)
         
         # 列表项 - item
         def list_repl(m):
@@ -5154,9 +5448,10 @@ class MainWindow(QMainWindow):
         
         # 引用块 > text
         def quote_repl(m):
+            colors = ThemeManager.instance().colors
             lines = m.group(0).strip().split('\n')
             content = '<br>'.join(line.lstrip('> ').strip() for line in lines)
-            return f'<blockquote style="margin:6px 0;padding:6px 10px;border-left:3px solid #FF9800;color:#666;background:#FFF8F0;border-radius:0 4px 4px 0;">{content}</blockquote>'
+            return f'<blockquote style="margin:6px 0;padding:6px 10px;border-left:3px solid {colors.accent_orange};color:{colors.text_secondary};background:{colors.ai_thinking_bg};border-radius:0 4px 4px 0;">{content}</blockquote>'
         text = re.sub(r'(?:^>\s*.+\n?)+', quote_repl, text, flags=re.MULTILINE)
         
         # 段落处理：保留换行
@@ -5218,6 +5513,7 @@ class MainWindow(QMainWindow):
     
     def on_ai_show_help(self):
         """显示 炽阳 使用说明对话框"""
+        colors = ThemeManager.instance().colors
         from PyQt6.QtWidgets import (
             QDialog, QVBoxLayout, QHBoxLayout, QLabel,
             QPushButton, QScrollArea, QFrame, QWidget
@@ -5227,6 +5523,7 @@ class MainWindow(QMainWindow):
         # 排查：局部类 vs 模块级类
         class LocalHelpDialog(QDialog):
             def __init__(self, parent=None):
+                colors = ThemeManager.instance().colors
                 super().__init__(parent)
                 self.setWindowTitle("炽阳 使用说明")
                 self.setMinimumSize(540, 620)
@@ -5241,17 +5538,17 @@ class MainWindow(QMainWindow):
                 h_layout.setContentsMargins(32, 24, 32, 16)
                 h_layout.setSpacing(4)
                 lbl_title = QLabel("炽阳")
-                lbl_title.setStyleSheet("color: #1d1d1f; font-size: 22px; font-weight: 600;")
+                lbl_title.setStyleSheet(f"color: {colors.text_primary}; font-size: 22px; font-weight: 600;")
                 h_layout.addWidget(lbl_title)
                 lbl_sub = QLabel("你的本地密码库 AI 助手")
-                lbl_sub.setStyleSheet("color: #86868b; font-size: 14px;")
+                lbl_sub.setStyleSheet(f"color: {colors.welcome_sub}; font-size: 14px;")
                 h_layout.addWidget(lbl_sub)
                 main_layout.addWidget(header)
 
                 sep = QFrame()
                 sep.setFrameShape(QFrame.Shape.HLine)
                 sep.setFixedHeight(1)
-                sep.setStyleSheet("background-color: #e5e5e5;")
+                sep.setStyleSheet(f"background-color: {colors.border_light};")
                 main_layout.addWidget(sep)
 
                 scroll = QScrollArea()
@@ -5267,16 +5564,16 @@ class MainWindow(QMainWindow):
                 intro = QLabel("基于 Ollama + gemma4:4b 本地运行，数据不会上传云端。\n"
                                "支持 Plan（只读查询）与 Build（确认后执行）两种模式。")
                 intro.setWordWrap(True)
-                intro.setStyleSheet("color: #86868b; font-size: 13px; line-height: 1.7; padding-bottom: 24px;")
+                intro.setStyleSheet(f"color: {colors.welcome_sub}; font-size: 13px; line-height: 1.7; padding-bottom: 24px;")
                 c_layout.addWidget(intro)
 
                 # Plan
                 plan_header = QHBoxLayout()
                 plan_header.setSpacing(10)
                 plan_badge = QLabel("Plan")
-                plan_badge.setStyleSheet("color: #0071e3; background-color: #e8f4fd; font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 12px;")
+                plan_badge.setStyleSheet(f"color: {colors.accent_blue}; background-color: {colors.accent_blue_bg_light}; font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 12px;")
                 plan_name = QLabel("规划模式")
-                plan_name.setStyleSheet("color: #1d1d1f; font-size: 17px; font-weight: 600;")
+                plan_name.setStyleSheet(f"color: {colors.text_primary}; font-size: 17px; font-weight: 600;")
                 plan_header.addWidget(plan_badge)
                 plan_header.addWidget(plan_name)
                 plan_header.addStretch()
@@ -5284,7 +5581,7 @@ class MainWindow(QMainWindow):
 
                 desc_plan = QLabel("仅查询和分析现有数据，不会修改、添加或删除任何内容。")
                 desc_plan.setWordWrap(True)
-                desc_plan.setStyleSheet("color: #86868b; font-size: 13px; padding-top: 4px; padding-bottom: 18px;")
+                desc_plan.setStyleSheet(f"color: {colors.welcome_sub}; font-size: 13px; padding-top: 4px; padding-bottom: 18px;")
                 c_layout.addWidget(desc_plan)
 
                 features_plan = [
@@ -5299,20 +5596,20 @@ class MainWindow(QMainWindow):
                 ]
                 for title, desc, examples in features_plan:
                     lbl_title = QLabel(title)
-                    lbl_title.setStyleSheet("color: #1d1d1f; font-size: 15px; font-weight: 500; padding-bottom: 4px; padding-top: 2px;")
+                    lbl_title.setStyleSheet(f"color: {colors.text_primary}; font-size: 15px; font-weight: 500; padding-bottom: 4px; padding-top: 2px;")
                     c_layout.addWidget(lbl_title)
                     lbl_desc = QLabel(desc)
                     lbl_desc.setWordWrap(True)
-                    lbl_desc.setStyleSheet("color: #86868b; font-size: 13px; padding-bottom: 8px;")
+                    lbl_desc.setStyleSheet(f"color: {colors.welcome_sub}; font-size: 13px; padding-bottom: 8px;")
                     c_layout.addWidget(lbl_desc)
                     card = QWidget()
                     card.setObjectName("helpCard")
-                    card.setStyleSheet("""
-                        #helpCard {
-                            background-color: #ffffff;
+                    card.setStyleSheet(f"""
+                        #helpCard {{
+                            background-color: {colors.bg_primary};
                             border-radius: 10px;
-                            border: 1px solid #e8e8ed;
-                        }
+                            border: 1px solid {colors.border_subtle};
+                        }}
                     """)
                     card_layout = QVBoxLayout(card)
                     card_layout.setContentsMargins(14, 12, 14, 12)
@@ -5320,7 +5617,7 @@ class MainWindow(QMainWindow):
                     for ex in examples:
                         ex_lbl = QLabel(f'"{ex}"')
                         ex_lbl.setWordWrap(True)
-                        ex_lbl.setStyleSheet("color: #515154; font-size: 13px; line-height: 1.7;")
+                        ex_lbl.setStyleSheet(f"color: {colors.text_primary}; font-size: 13px; line-height: 1.7;")
                         card_layout.addWidget(ex_lbl)
                     c_layout.addWidget(card)
                     c_layout.addSpacing(18)
@@ -5329,7 +5626,7 @@ class MainWindow(QMainWindow):
                 div = QFrame()
                 div.setFrameShape(QFrame.Shape.HLine)
                 div.setFixedHeight(1)
-                div.setStyleSheet("background-color: #e5e5e5;")
+                div.setStyleSheet(f"background-color: {colors.border_light};")
                 c_layout.addWidget(div)
                 c_layout.addSpacing(24)
 
@@ -5337,9 +5634,9 @@ class MainWindow(QMainWindow):
                 build_header = QHBoxLayout()
                 build_header.setSpacing(10)
                 build_badge = QLabel("Build")
-                build_badge.setStyleSheet("color: #d9531e; background-color: #fef2ea; font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 12px;")
+                build_badge.setStyleSheet(f"color: {colors.accent_orange_text}; background-color: {colors.accent_orange_bg}; font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 12px;")
                 build_name = QLabel("构建模式")
-                build_name.setStyleSheet("color: #1d1d1f; font-size: 17px; font-weight: 600;")
+                build_name.setStyleSheet(f"color: {colors.text_primary}; font-size: 17px; font-weight: 600;")
                 build_header.addWidget(build_badge)
                 build_header.addWidget(build_name)
                 build_header.addStretch()
@@ -5347,7 +5644,7 @@ class MainWindow(QMainWindow):
 
                 desc_build = QLabel("执行增删改操作前会展示预览，经你确认后才会生效。")
                 desc_build.setWordWrap(True)
-                desc_build.setStyleSheet("color: #86868b; font-size: 13px; padding-top: 4px; padding-bottom: 18px;")
+                desc_build.setStyleSheet(f"color: {colors.welcome_sub}; font-size: 13px; padding-top: 4px; padding-bottom: 18px;")
                 c_layout.addWidget(desc_build)
 
                 features_build = [
@@ -5366,20 +5663,20 @@ class MainWindow(QMainWindow):
                 ]
                 for title, desc, examples in features_build:
                     lbl_title = QLabel(title)
-                    lbl_title.setStyleSheet("color: #1d1d1f; font-size: 15px; font-weight: 500; padding-bottom: 4px; padding-top: 2px;")
+                    lbl_title.setStyleSheet(f"color: {colors.text_primary}; font-size: 15px; font-weight: 500; padding-bottom: 4px; padding-top: 2px;")
                     c_layout.addWidget(lbl_title)
                     lbl_desc = QLabel(desc)
                     lbl_desc.setWordWrap(True)
-                    lbl_desc.setStyleSheet("color: #86868b; font-size: 13px; padding-bottom: 8px;")
+                    lbl_desc.setStyleSheet(f"color: {colors.welcome_sub}; font-size: 13px; padding-bottom: 8px;")
                     c_layout.addWidget(lbl_desc)
                     card = QWidget()
                     card.setObjectName("helpCard")
-                    card.setStyleSheet("""
-                        #helpCard {
-                            background-color: #ffffff;
+                    card.setStyleSheet(f"""
+                        #helpCard {{
+                            background-color: {colors.bg_primary};
                             border-radius: 10px;
-                            border: 1px solid #e8e8ed;
-                        }
+                            border: 1px solid {colors.border_subtle};
+                        }}
                     """)
                     card_layout = QVBoxLayout(card)
                     card_layout.setContentsMargins(14, 12, 14, 12)
@@ -5387,7 +5684,7 @@ class MainWindow(QMainWindow):
                     for ex in examples:
                         ex_lbl = QLabel(f'"{ex}"')
                         ex_lbl.setWordWrap(True)
-                        ex_lbl.setStyleSheet("color: #515154; font-size: 13px; line-height: 1.7;")
+                        ex_lbl.setStyleSheet(f"color: {colors.text_primary}; font-size: 13px; line-height: 1.7;")
                         card_layout.addWidget(ex_lbl)
                     c_layout.addWidget(card)
                     c_layout.addSpacing(18)
@@ -5396,25 +5693,25 @@ class MainWindow(QMainWindow):
                 div2 = QFrame()
                 div2.setFrameShape(QFrame.Shape.HLine)
                 div2.setFixedHeight(1)
-                div2.setStyleSheet("background-color: #e5e5e5;")
+                div2.setStyleSheet(f"background-color: {colors.border_light};")
                 c_layout.addWidget(div2)
                 c_layout.addSpacing(20)
 
                 # 小贴士
                 tips_card = QWidget()
                 tips_card.setObjectName("helpTipsCard")
-                tips_card.setStyleSheet("""
-                    #helpTipsCard {
-                        background-color: #ffffff;
+                tips_card.setStyleSheet(f"""
+                    #helpTipsCard {{
+                        background-color: {colors.bg_primary};
                         border-radius: 12px;
-                        border: 1px solid #e8e8ed;
-                    }
+                        border: 1px solid {colors.border_subtle};
+                    }}
                 """)
                 tips_layout = QVBoxLayout(tips_card)
                 tips_layout.setContentsMargins(18, 16, 18, 16)
                 tips_layout.setSpacing(10)
                 tips_title = QLabel("使用小贴士")
-                tips_title.setStyleSheet("color: #1d1d1f; font-size: 15px; font-weight: 500;")
+                tips_title.setStyleSheet(f"color: {colors.text_primary}; font-size: 15px; font-weight: 500;")
                 tips_layout.addWidget(tips_title)
                 tips = [
                     "首次使用请发送任意消息完成「神经连接预热」。",
@@ -5427,11 +5724,11 @@ class MainWindow(QMainWindow):
                     row.setSpacing(8)
                     row.setContentsMargins(0, 0, 0, 0)
                     dot = QLabel("\u2022")
-                    dot.setStyleSheet("color: #c7c7cc; font-size: 14px;")
+                    dot.setStyleSheet(f"color: {colors.text_disabled}; font-size: 14px;")
                     dot.setAlignment(Qt.AlignmentFlag.AlignTop)
                     txt = QLabel(tip)
                     txt.setWordWrap(True)
-                    txt.setStyleSheet("color: #515154; font-size: 13px; line-height: 1.6;")
+                    txt.setStyleSheet(f"color: {colors.text_primary}; font-size: 13px; line-height: 1.6;")
                     row.addWidget(dot)
                     row.addWidget(txt, 1)
                     tips_layout.addLayout(row)
@@ -5447,13 +5744,13 @@ class MainWindow(QMainWindow):
                 f_layout.addStretch()
                 btn = QPushButton("完成")
                 btn.setFixedSize(120, 34)
-                btn.setStyleSheet("""
-                    QPushButton {
-                        background-color: #E55A2B; color: white; border: none;
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {colors.accent_orange_dark}; color: {colors.text_on_accent}; border: none;
                         border-radius: 17px; font-size: 14px; font-weight: 500;
-                    }
-                    QPushButton:hover { background-color: #d04d20; }
-                    QPushButton:pressed { background-color: #b5431c; }
+                    }}
+                    QPushButton:hover {{ background-color: {colors.accent_orange_dark}; }}
+                    QPushButton:pressed {{ background-color: {colors.accent_orange_dark}; }}
                 """)
                 btn.clicked.connect(self.accept)
                 f_layout.addWidget(btn)

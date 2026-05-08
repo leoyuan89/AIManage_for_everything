@@ -26,13 +26,22 @@ class ClipboardManager:
     def copy_text(self, text: str, is_password: bool = False):
         """
         复制文本到剪贴板
-        
+
         Args:
             text: 要复制的文本
             is_password: 是否是密码（密码会启动定时清空）
         """
-        pyperclip.copy(text)
-        
+        try:
+            pyperclip.copy(text)
+        except pyperclip.PyperclipException as e:
+            import logging
+            logging.getLogger(__name__).warning(f"剪贴板复制失败（可能被占用）: {e}")
+            raise RuntimeError("剪贴板被占用，请稍后重试") from e
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"复制到剪贴板时发生未知错误: {e}")
+            raise RuntimeError(f"复制失败: {e}") from e
+
         if is_password and text:
             with self._password_lock:
                 self._last_password = text

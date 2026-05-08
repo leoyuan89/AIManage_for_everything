@@ -75,7 +75,7 @@ class DatabaseManager:
     def _commit(self):
         """提交事务，支持嵌套事务（事务期间自动跳过）"""
         if self._transaction_depth == 0:
-            self._commit()
+            self.conn.commit()
 
     def transaction(self):
         """返回事务上下文管理器"""
@@ -476,6 +476,25 @@ class DatabaseManager:
         
             return [self._decrypt_row(dict(row)) for row in rows]
     
+
+    def get_accounts_by_category_prefix(self, prefix: str) -> List[Dict[str, Any]]:
+        """
+        按分类前缀获取账号（用于一级分类筛选，匹配自身及所有子类）
+        
+        Args:
+            prefix: 分类前缀（如 "工作"）
+            
+        Returns:
+            账号数据列表（明文）
+        """
+        with self._lock:
+            self.cursor.execute(
+                "SELECT * FROM accounts WHERE category = ? OR category LIKE ? ORDER BY app_name",
+                (prefix, prefix + '>%')
+            )
+            rows = self.cursor.fetchall()
+            return [self._decrypt_row(dict(row)) for row in rows]
+
     def get_categories(self) -> List[str]:
         """
         获取所有账号分类（去重，排除空值）。
@@ -758,8 +777,7 @@ class DatabaseManager:
                 )
                 self._commit()
                 return row['category']
-        
-            self._commit()
+
             return None
     
     def cache_category(self, app_name_hash: str, category: str):
@@ -906,13 +924,18 @@ class DatabaseManager:
                 encrypted = self._encrypt_field(data_json)
             
                 username = account_data.get('username', '')
-                if len(username) > 4:
+                if username:
                     if '@' in username:
                         local, domain = username.split('@', 1)
-                        if len(local) > 2:
+                        if len(local) <= 2:
+                            username = '**@' + domain
+                        else:
                             username = local[0] + '***' + local[-1] + '@' + domain
                     else:
-                        username = username[:3] + '****' + username[-3:]
+                        if len(username) <= 4:
+                            username = username[0] + '***' + username[-1] if len(username) >= 2 else '****'
+                        else:
+                            username = username[:3] + '****' + username[-3:]
             
                 app_name = account_data.get('app_name', '')
                 url = account_data.get('url', '')

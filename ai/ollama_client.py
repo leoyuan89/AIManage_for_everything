@@ -85,8 +85,8 @@ class OllamaClient:
         # 去除可能的前缀，如 "输出："、"JSON:" 等
         text = re.sub(r'^(?:输出[:：]|JSON[:：]|Response[:：])\s*', '', text, flags=re.IGNORECASE)
         # 2. 中文引号 → 英文引号（注意保留 JSON 字符串内的中文内容）
-        text = text.replace('"', '"').replace('"', '"')
-        text = text.replace("'", "'").replace("'", "'")
+        text = text.replace('\u201c', '"').replace('\u201d', '"')
+        text = text.replace('\u2018', "'").replace('\u2019', "'")
         # 3. 字符串内未转义的换行符/回车 → \\n
         # 使用状态机修复字符串内的原始换行
         result = []
@@ -438,18 +438,22 @@ class OllamaClient:
                         confidence = max(0.0, min(1.0, confidence))
                     except ValueError:
                         pass
-                
+
                 # 确保应用名在原始列表中（精确或模糊匹配）
                 if app_name in app_list:
                     matched_apps.append((app_name, confidence))
                     logger.debug("Matched exact: %s (%s)", app_name, confidence)
                 else:
-                    # 尝试子串匹配
+                    # 尝试子串匹配：收集所有匹配后按置信度排序取最佳
+                    fuzzy_matches = []
                     for orig in app_list:
                         if app_name in orig or orig in app_name:
-                            matched_apps.append((orig, confidence))
-                            logger.debug("Matched fuzzy: %s via '%s' (%s)", orig, app_name, confidence)
-                            break
+                            fuzzy_matches.append((orig, confidence))
+                    if fuzzy_matches:
+                        fuzzy_matches.sort(key=lambda x: x[1], reverse=True)
+                        best = fuzzy_matches[0]
+                        matched_apps.append(best)
+                        logger.debug("Matched fuzzy: %s via '%s' (%s)", best[0], app_name, best[1])
             
             logger.info("Total matched: %d", len(matched_apps))
             return matched_apps
@@ -739,7 +743,7 @@ class OllamaClient:
         """
         tools_text = json.dumps(tools, ensure_ascii=False, indent=2)
         vault_label = '密码库（账号）' if vault_type == 'accounts' else '网址库'
-        tool_suffix_hint = '以 "_accounts" 或 "_accounts" 结尾' if vault_type == 'accounts' else '以 "_urls" 结尾'
+        tool_suffix_hint = '以 "_accounts" 结尾' if vault_type == 'accounts' else '以 "_urls" 结尾'
 
         prompt = f"""你是密码管理软件的AI助手。请根据用户请求、当前分类体系和可用工具，决定下一步操作。
 

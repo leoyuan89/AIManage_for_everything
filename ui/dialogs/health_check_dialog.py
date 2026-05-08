@@ -60,6 +60,8 @@ Keep it concise, each recommendation on one line starting with a number.
             
             full_response = ""
             for token in ollama.generate_stream(prompt, temperature=0.5):
+                if self.isInterruptionRequested():
+                    return
                 full_response += token
             
             # Convert to simple HTML

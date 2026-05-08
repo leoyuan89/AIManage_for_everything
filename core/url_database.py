@@ -125,6 +125,7 @@ class URLDatabaseManager:
                     category TEXT,
                     tags TEXT,
                     password TEXT DEFAULT '',
+                    is_favorite INTEGER DEFAULT 0,
                     ai_remark TEXT,
                     remark TEXT,
                     deleted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -174,6 +175,8 @@ class URLDatabaseManager:
             rb_columns = {row['name'] for row in self.cursor.fetchall()}
             if 'password' not in rb_columns:
                 self.cursor.execute("ALTER TABLE url_recycle_bin ADD COLUMN password TEXT DEFAULT ''")
+            if 'is_favorite' not in rb_columns:
+                self.cursor.execute("ALTER TABLE url_recycle_bin ADD COLUMN is_favorite INTEGER DEFAULT 0")
         
             self._commit()
     
@@ -292,8 +295,8 @@ class URLDatabaseManager:
                 from datetime import datetime, timedelta
                 expires_at = datetime.now() + timedelta(days=30)
                 self.cursor.execute("""
-                    INSERT INTO url_recycle_bin (original_id, title, url, category, tags, password, ai_remark, remark, expires_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO url_recycle_bin (original_id, title, url, category, tags, password, is_favorite, ai_remark, remark, expires_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     url_id,
                     url_data.get('title', ''),
@@ -301,6 +304,7 @@ class URLDatabaseManager:
                     url_data.get('category', '其他'),
                     url_data.get('tags', '[]'),
                     url_data.get('password', ''),
+                    url_data.get('is_favorite', 0),
                     url_data.get('ai_remark', ''),
                     url_data.get('remark', ''),
                     expires_at
@@ -515,6 +519,25 @@ class URLDatabaseManager:
                 )
             self._commit()
     
+
+    def get_urls_by_category_prefix(self, prefix: str) -> List[Dict[str, Any]]:
+        """
+        按分类前缀获取网址（用于一级分类筛选）
+        
+        Args:
+            prefix: 分类前缀
+            
+        Returns:
+            网址数据列表（明文）
+        """
+        with self._lock:
+            self.cursor.execute(
+                "SELECT * FROM urls WHERE category = ? OR category LIKE ? ORDER BY title",
+                (prefix, prefix + '>%')
+            )
+            rows = self.cursor.fetchall()
+            return [self._decrypt_row(dict(row)) for row in rows]
+
     def get_categories(self) -> List[str]:
         """
         获取所有网址分类（去重，排除空值）。

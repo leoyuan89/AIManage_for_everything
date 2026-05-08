@@ -1274,6 +1274,7 @@ class MainWindow(QMainWindow):
         
         # AI 查询状态
         self._ai_query_start_time = None  # 查询开始时间
+        self._ai_refresh_timer = None     # 聊天区域防抖定时器
         self._ai_last_elapsed = 0.0    # 上次回答用时（秒）
         self._ai_query_cancelled = False  # 用户是否取消了本次查询
         
@@ -5148,22 +5149,26 @@ class MainWindow(QMainWindow):
     
     def _on_result_token(self, segment: str):
         """接收 result 段落，追加到对话历史并刷新 UI
-        
+
         分段输出模式：将段落追加到历史最后一条 assistant 消息，
-        然后调用 _ai_update_chat_display() 重新渲染（使用 setHtml，避免 insertPlainText 冲突）。
+        使用防抖定时器延迟刷新，避免高频 setHtml 导致 CPU 飙升。
         """
         if not getattr(self, '_ai_query_running', False):
             return
         try:
-            # 将段落追加到历史最后一条 assistant 消息
-            if (self.ai_assistant._history and 
+            if (self.ai_assistant._history and
                 self.ai_assistant._history[-1].role == 'assistant'):
                 self.ai_assistant._history[-1].content += segment
-                # 重新渲染 UI（setHtml 全量刷新，安全）
-                self._ai_update_chat_display()
+                # 防抖刷新：重启定时器，150ms 内无新 token 才执行全量刷新
+                if self._ai_refresh_timer is None:
+                    from PyQt6.QtCore import QTimer
+                    self._ai_refresh_timer = QTimer(self)
+                    self._ai_refresh_timer.setSingleShot(True)
+                    self._ai_refresh_timer.timeout.connect(self._ai_update_chat_display)
+                self._ai_refresh_timer.stop()
+                self._ai_refresh_timer.start(150)
             else:
-                # 如果没有 assistant 消息（异常情况），直接忽略
-                logger.info(f" _on_result_token: no assistant msg to append")
+                logger.info(" _on_result_token: no assistant msg to append")
         except Exception as e:
             logger.info(f" _on_result_token error: {e}")
     

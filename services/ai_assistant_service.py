@@ -293,14 +293,14 @@ class AIAssistantService:
         
         # 指代消解
         from services.conversation_context import ReferenceResolver
-        enhanced_query, inherited_ids = ReferenceResolver.resolve(query, self.conversation_context)
-        
+        enhanced_query, _ = ReferenceResolver.resolve(query, self.conversation_context)
+
         # 根据查询筛选目标分类下的账号（局部操作时不传全部数据）
         filtered_accounts, scope_hint = self._filter_items_by_query(accounts or [], enhanced_query)
-        
+
         # 构建数据库摘要（32K 上下文窗口，500 个账号约占用 15K-18K tokens）
         db_summary = self.build_db_summary(filtered_accounts, vault_type=vault_type, max_items=500)
-        
+
         # 构建对话历史（不含当前查询，供模型理解上下文）
         if self.conversation_context.history:
             history = []
@@ -451,14 +451,14 @@ class AIAssistantService:
         
         # 指代消解
         from services.conversation_context import ReferenceResolver
-        enhanced_query, inherited_ids = ReferenceResolver.resolve(query, self.conversation_context)
-        
+        enhanced_query, _ = ReferenceResolver.resolve(query, self.conversation_context)
+
         # 根据查询筛选目标分类下的账号（局部操作时不传全部数据）
         filtered_accounts, scope_hint = self._filter_items_by_query(accounts or [], enhanced_query)
-        
+
         # 构建数据库摘要
         db_summary = self.build_db_summary(filtered_accounts, vault_type=vault_type, max_items=500)
-        
+
         # 构建历史上下文字符串
         if self.conversation_context.history:
             history_str = "\n\n之前的对话：\n" + self.conversation_context.get_compressed_history() + "\n"

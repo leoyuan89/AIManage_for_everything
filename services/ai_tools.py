@@ -1294,9 +1294,10 @@ class SmartClassifyAccountsTool(AITool):
         
         # 第二轮：处理重复，保留路径最长的分类（长度相同保留首次出现的）
         resolved = {}
+        cat_rank = {c: i for i, c in enumerate(cat_order)}
         for tid, cats in id_to_cats.items():
             if len(cats) > 1:
-                best_cat = max(cats, key=lambda c: (len(c), cat_order.index(c)))
+                best_cat = max(cats, key=lambda c: (len(c), cat_rank.get(c, float('inf'))))
                 logger.debug("RESOLVE duplicate id=%s: keep '%s', drop %s", tid, best_cat, cats)
             else:
                 best_cat = cats[0]
@@ -1655,9 +1656,10 @@ class SmartClassifyUrlsTool(AITool):
         
         # 第二轮：处理重复，保留路径最长的分类（长度相同保留首次出现的）
         resolved = {}
+        cat_rank = {c: i for i, c in enumerate(cat_order)}
         for tid, cats in id_to_cats.items():
             if len(cats) > 1:
-                best_cat = max(cats, key=lambda c: (len(c), cat_order.index(c)))
+                best_cat = max(cats, key=lambda c: (len(c), cat_rank.get(c, float('inf'))))
                 logger.debug("RESOLVE duplicate id=%s: keep '%s', drop %s", tid, best_cat, cats)
             else:
                 best_cat = cats[0]

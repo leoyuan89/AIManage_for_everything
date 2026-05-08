@@ -208,9 +208,12 @@ class AccountRepository(VaultRepository):
         )
     
     def filter_by_category(self, category: str) -> SearchResult:
-        accounts = self.get_all()
-        matcher = get_prefix_matcher(category)
-        matched = [a for a in accounts if matcher(a.category)]
+        # 优先使用 SQL 层前缀匹配，避免全表加载到内存
+        if ">" in category:
+            rows = self.db.get_accounts_by_category(category)
+        else:
+            rows = self.db.get_accounts_by_category_prefix(category)
+        matched = [Account.from_dict(row) for row in rows]
         return SearchResult(
             items=matched, matched_ids=[a.id for a in matched],
             query_description=f"分类筛选: {category}"
@@ -404,9 +407,12 @@ class URLRepository(VaultRepository):
         )
     
     def filter_by_category(self, category: str) -> SearchResult:
-        urls = self.get_all()
-        matcher = get_prefix_matcher(category)
-        matched = [u for u in urls if matcher(u.category)]
+        # 优先使用 SQL 层前缀匹配，避免全表加载到内存
+        if ">" in category:
+            rows = self.db.get_urls_by_category(category)
+        else:
+            rows = self.db.get_urls_by_category_prefix(category)
+        matched = [URLItem.from_dict(row) for row in rows]
         return SearchResult(
             items=matched, matched_ids=[u.id for u in matched],
             query_description=f"分类筛选: {category}"

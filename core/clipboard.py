@@ -21,6 +21,7 @@ class ClipboardManager:
         self._timer = None
         self._timer_lock = threading.Lock()
         self._last_password = None
+        self._password_lock = threading.Lock()
     
     def copy_text(self, text: str, is_password: bool = False):
         """
@@ -33,7 +34,8 @@ class ClipboardManager:
         pyperclip.copy(text)
         
         if is_password and text:
-            self._last_password = text
+            with self._password_lock:
+                self._last_password = text
             self._start_timer()
     
     def _start_timer(self):
@@ -50,16 +52,19 @@ class ClipboardManager:
     
     def _clear_password(self):
         """清空剪贴板中的密码"""
+        with self._password_lock:
+            last_pwd = self._last_password
         try:
             current = pyperclip.paste()
             # 只有当剪贴板内容仍是该密码时才清空
-            if current == self._last_password:
+            if current == last_pwd:
                 pyperclip.copy('')
         except Exception:
             import logging
             logging.getLogger(__name__).debug("清空剪贴板时发生异常", exc_info=True)
         finally:
-            self._last_password = None
+            with self._password_lock:
+                self._last_password = None
     
     def clear(self):
         """立即清空剪贴板"""

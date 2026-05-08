@@ -581,14 +581,15 @@ class AIAssistantService:
                 }
             
             # 记录对话历史
-            self._add_message('user', query, mode=mode)
-            self._add_message(
-                'assistant',
-                result.get('response', ''),
-                mode=mode,
-                thinking=result.get('thinking', ''),
-                action=action
-            )
+            if record_history:
+                self._add_message('user', query, mode=mode)
+                self._add_message(
+                    'assistant',
+                    result.get('response', ''),
+                    mode=mode,
+                    thinking=result.get('thinking', ''),
+                    action=action
+                )
             
             # 追加到 ConversationContext
             if mode == 'plan':
@@ -616,7 +617,8 @@ class AIAssistantService:
         except Exception as e:
             error_msg = str(e)
             logger.exception("process_query_stream exception")
-            self._add_message('assistant', f"处理失败: {error_msg}", mode=mode)
+            if record_history:
+                self._add_message('assistant', f"处理失败: {error_msg}", mode=mode)
             return {
                 "success": False,
                 "thinking": "",

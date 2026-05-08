@@ -233,7 +233,7 @@ class OllamaClient:
                 result = self.generate(prompt, temperature=temperature, num_predict=num_predict)
                 yield result
             except Exception as fallback_e:
-                raise Exception(f"流式生成失败且降级失败: {fallback_e}")
+                raise Exception(f"流式生成失败且降级失败: {fallback_e}") from stream_e
     
     def generate_with_think_result(self, prompt: str, temperature: float = 0.1, num_predict: int = 16384) -> dict:
         """

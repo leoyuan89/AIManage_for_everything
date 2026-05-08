@@ -20,22 +20,24 @@ def setup_logging(app_name: str = "local_password_vault") -> None:
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.DEBUG)
 
-    # 控制台 handler: INFO 级别
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.INFO)
-    console_handler.setFormatter(formatter)
-    root_logger.addHandler(console_handler)
+    # 避免重复添加 handler
+    if not root_logger.handlers:
+        # 控制台 handler: INFO 级别
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(logging.INFO)
+        console_handler.setFormatter(formatter)
+        root_logger.addHandler(console_handler)
 
-    # 文件 handler: DEBUG 级别，每天轮转，保留 7 天
-    file_handler = TimedRotatingFileHandler(
-        str(log_file),
-        when="midnight",
-        interval=1,
-        backupCount=7,
-        encoding="utf-8",
-    )
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(formatter)
-    root_logger.addHandler(file_handler)
+        # 文件 handler: DEBUG 级别，每天轮转，保留 7 天
+        file_handler = TimedRotatingFileHandler(
+            str(log_file),
+            when="midnight",
+            interval=1,
+            backupCount=7,
+            encoding="utf-8",
+        )
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
 
     logging.getLogger(__name__).info("Logging initialized, log file: %s", log_file)

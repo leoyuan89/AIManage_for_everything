@@ -97,6 +97,8 @@ class AIWorkerThread(QThread):
     MAX_PROBE_INTERVAL = 300
     # 缓存有效期：ONLINE 状态下超过 2 分钟视为过期
     CACHE_TTL_ONLINE = 120
+    # 队列长度上限
+    MAX_QUEUE_SIZE = 100
 
     def __init__(self, state_cache: AIStateCache, parent=None):
         super().__init__(parent)
@@ -120,13 +122,14 @@ class AIWorkerThread(QThread):
 
     # ── 配置 ──
     def _get_client(self) -> OllamaClient:
-        """懒加载 OllamaClient（线程安全，因为只在线程内调用）"""
-        if self._ollama_client is None:
-            self._ollama_client = OllamaClient(
-                model=self._config["model"],
-                host=self._config["host"],
-            )
-        return self._ollama_client
+        """懒加载 OllamaClient（线程安全）"""
+        with QMutexLocker(self._mutex):
+            if self._ollama_client is None:
+                self._ollama_client = OllamaClient(
+                    model=self._config["model"],
+                    host=self._config["host"],
+                )
+            return self._ollama_client
 
     def update_config(self, host: str, model: str, timeout: int = 30):
         """更新连接配置，触发后台重新探测"""
@@ -141,11 +144,14 @@ class AIWorkerThread(QThread):
             self._condition.wakeOne()
 
     # ── 任务队列 ──
-    def enqueue(self, task_id: str, task_type: AITaskType, payload: Dict[str, Any]):
-        """将任务加入队列并唤醒线程"""
+    def enqueue(self, task_id: str, task_type: AITaskType, payload: Dict[str, Any]) -> bool:
+        """将任务加入队列并唤醒线程。队列满时返回 False"""
         with QMutexLocker(self._mutex):
+            if len(self._queue) >= self.MAX_QUEUE_SIZE:
+                return False
             self._queue.append(AITask(task_type=task_type, payload=payload, task_id=task_id))
             self._condition.wakeOne()
+            return True
 
     def request_refresh(self):
         """请求立即刷新状态（不阻塞 UI）"""

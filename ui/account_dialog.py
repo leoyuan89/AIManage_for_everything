@@ -346,6 +346,7 @@ class PopupComboBox(QWidget):
         # 关闭已打开的弹出框
         if self._popup:
             self._popup.close()
+            self._popup.deleteLater()
             self._popup = None
         
         # 计算列表尺寸
@@ -420,8 +421,11 @@ class PopupComboBox(QWidget):
         self.setCurrentIndex(row)
         if self._popup:
             self._popup.close()
+            self._popup.deleteLater()
             self._popup = None
-        self._list_widget = None
+        if self._list_widget:
+            self._list_widget.deleteLater()
+            self._list_widget = None
 
 
 class JustifyLabel(QLabel):
@@ -1674,8 +1678,14 @@ class AccountDialog(QDialog):
         except Exception:
             pass
         
-        # 停止后台线程
-        if self.ocr_worker and self.ocr_worker.isRunning():
-            self.ocr_worker.stop()
+        # 停止后台线程（先断开信号，再停止，避免信号发送到已销毁对象）
+        if self.ocr_worker:
+            try:
+                self.ocr_worker.ocr_finished.disconnect(self.on_ocr_finished)
+                self.ocr_worker.ocr_error.disconnect(self.on_ocr_error)
+            except Exception:
+                pass
+            if self.ocr_worker.isRunning():
+                self.ocr_worker.stop()
         
         event.accept()

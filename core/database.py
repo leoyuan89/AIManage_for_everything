@@ -1,3 +1,26 @@
+class _TransactionContext:
+    """数据库事务上下文管理器"""
+    def __init__(self, db):
+        self.db = db
+
+    def __enter__(self):
+        with self.db._lock:
+            if self.db._transaction_depth == 0:
+                self.db.conn.execute('BEGIN IMMEDIATE')
+            self.db._transaction_depth += 1
+        return self.db
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        with self.db._lock:
+            self.db._transaction_depth -= 1
+            if self.db._transaction_depth == 0:
+                if exc_type is None:
+                    self.db.conn.commit()
+                else:
+                    self.db.conn.rollback()
+        return False
+
+
 """
 数据库管理模块
 SQLite 连接管理 + 自动加解密透明处理
@@ -30,6 +53,7 @@ class DatabaseManager:
         self.conn = None
         self.cursor = None
         self._lock = threading.RLock()
+        self._transaction_depth = 0
         
         # 确保目录存在
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -48,6 +72,15 @@ class DatabaseManager:
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.cursor = self.conn.cursor()
+    def _commit(self):
+        """提交事务，支持嵌套事务（事务期间自动跳过）"""
+        if self._transaction_depth == 0:
+            self._commit()
+
+    def transaction(self):
+        """返回事务上下文管理器"""
+        return _TransactionContext(self)
+
     
     def _create_tables(self):
         """创建数据表结构"""
@@ -159,7 +192,7 @@ class DatabaseManager:
                 )
             """)
         
-            self.conn.commit()
+            self._commit()
             self._create_password_history_table()
     
     def _encrypt_field(self, plaintext: str) -> str:
@@ -174,9 +207,9 @@ class DatabaseManager:
             try:
                 return self.crypto.decrypt_from_string(ciphertext)
             except Exception as e:
-                # 解密失败：记录日志后返回原密文（避免崩溃，但UI会显示密文）
-                logger.warning("Decrypt failed: %s: %s", type(e).__name__, e)
-                return ciphertext
+                # 解密失败：记录日志后返回解密失败标记，绝不返回原始密文
+                logger.error("Decrypt failed: %s: %s", type(e).__name__, e)
+                return '[解密失败]'
         return ciphertext
     
     def _migrate_database(self):
@@ -203,7 +236,7 @@ class DatabaseManager:
                         except Exception as e:
                             logger.warning("Migration warning for %s: %s", col_name, e)
             
-                self.conn.commit()
+                self._commit()
             
             except Exception as e:
                 logger.error("Migration failed: %s", e)
@@ -222,7 +255,7 @@ class DatabaseManager:
             self.cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_pw_history_account ON password_history(account_id, changed_at DESC)
             """)
-            self.conn.commit()
+            self._commit()
 
     def add_password_history(self, account_id, encrypted_password):
         with self._lock:
@@ -230,14 +263,14 @@ class DatabaseManager:
                 "INSERT INTO password_history (account_id, encrypted_password) VALUES (?, ?)",
                 (account_id, encrypted_password)
             )
-            self.conn.commit()
+            self._commit()
             self.cursor.execute("""
                 DELETE FROM password_history WHERE id IN (
                     SELECT id FROM password_history WHERE account_id = ?
                     ORDER BY changed_at DESC LIMIT -1 OFFSET 10
                 )
             """, (account_id,))
-            self.conn.commit()
+            self._commit()
 
     def get_password_history(self, account_id):
         with self._lock:
@@ -250,7 +283,7 @@ class DatabaseManager:
     def delete_password_history(self, account_id):
         with self._lock:
             self.cursor.execute("DELETE FROM password_history WHERE account_id = ?", (account_id,))
-            self.conn.commit()
+            self._commit()
 
     def close(self):
         """关闭数据库连接"""
@@ -300,7 +333,7 @@ class DatabaseManager:
                 encrypted_data['security_level']
             ))
         
-            self.conn.commit()
+            self._commit()
             return self.cursor.lastrowid
     
     def update_account(self, account_id: int, account_data: Dict[str, Any]) -> bool:
@@ -373,7 +406,7 @@ class DatabaseManager:
         
             sql = f"UPDATE accounts SET {', '.join(fields)} WHERE id = ?"
             self.cursor.execute(sql, values)
-            self.conn.commit()
+            self._commit()
         
             return self.cursor.rowcount > 0
     
@@ -389,7 +422,7 @@ class DatabaseManager:
         """
         with self._lock:
             self.cursor.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
-            self.conn.commit()
+            self._commit()
             return self.cursor.rowcount > 0
     
     def get_account_by_id(self, account_id: int) -> Optional[Dict[str, Any]]:
@@ -488,7 +521,7 @@ class DatabaseManager:
                     "INSERT INTO category_order (category, sort_index) VALUES (?, ?)",
                     (category, sort_index)
                 )
-            self.conn.commit()
+            self._commit()
     
     def add_category_order(self, category_name: str) -> bool:
         """新增分类到排序表（如果不存在），sort_index 设为当前最大值+1"""
@@ -509,7 +542,7 @@ class DatabaseManager:
                     "INSERT INTO category_order (category, sort_index) VALUES (?, ?)",
                     (category_name, max_idx + 1)
                 )
-                self.conn.commit()
+                self._commit()
                 return True
             except Exception as e:
                 logger.error("add_category_order failed: %s", e)
@@ -522,7 +555,7 @@ class DatabaseManager:
                 "UPDATE accounts SET category = ? WHERE category = ?",
                 (new_name, old_name)
             )
-            self.conn.commit()
+            self._commit()
             return self.cursor.rowcount
     
     def rename_category_order(self, old_name: str, new_name: str) -> bool:
@@ -540,7 +573,7 @@ class DatabaseManager:
                         "UPDATE category_order SET category = ? || SUBSTR(category, ?) WHERE category LIKE ?",
                         (new_name, len(old_name) + 1, f"{old_name}>%")
                     )
-                self.conn.commit()
+                self._commit()
                 return True
             except Exception as e:
                 logger.error("rename_category_order failed: %s", e)
@@ -572,7 +605,7 @@ class DatabaseManager:
                 "DELETE FROM category_order WHERE category = ?",
                 (category_name,)
             )
-            self.conn.commit()
+            self._commit()
             return affected
 
     def promote_category(self, old_path: str) -> bool:
@@ -626,7 +659,7 @@ class DatabaseManager:
                         (new_name, max_idx + 1)
                     )
 
-                self.conn.commit()
+                self._commit()
                 return True
             except Exception as e:
                 self.conn.rollback()
@@ -678,7 +711,7 @@ class DatabaseManager:
                 # 清理 AI 分类缓存，避免缓存返回旧分类路径
                 self.cursor.execute("DELETE FROM category_cache")
 
-                self.conn.commit()
+                self._commit()
                 return updated_rows
             except Exception as e:
                 self.conn.rollback()
@@ -723,10 +756,10 @@ class DatabaseManager:
                        WHERE app_name_hash = ?""",
                     (app_name_hash,)
                 )
-                self.conn.commit()
+                self._commit()
                 return row['category']
         
-            self.conn.commit()
+            self._commit()
             return None
     
     def cache_category(self, app_name_hash: str, category: str):
@@ -738,7 +771,7 @@ class DatabaseManager:
                     VALUES (?, ?, 1, CURRENT_TIMESTAMP)""",
                 (app_name_hash, category)
             )
-            self.conn.commit()
+            self._commit()
     
     # ==================== 配置表操作 ====================
     
@@ -756,7 +789,7 @@ class DatabaseManager:
                 "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
                 (key, value)
             )
-            self.conn.commit()
+            self._commit()
     
     # ==================== 保险箱配置表操作 ====================
     
@@ -774,7 +807,7 @@ class DatabaseManager:
                 "INSERT OR REPLACE INTO vault_config (key, value) VALUES (?, ?)",
                 (key, value)
             )
-            self.conn.commit()
+            self._commit()
     
     def get_session_version(self) -> int:
         """获取当前会话版本号"""
@@ -828,7 +861,7 @@ class DatabaseManager:
         """清除泄露检测结果"""
         with self._lock:
             self.cursor.execute("DELETE FROM vault_config WHERE key = ?", (f'breach_results_{vault_type}',))
-            self.conn.commit()
+            self._commit()
     
     def insert_audit_log(self, mode: str, user_query: str, parsed_action: Optional[str] = None,
                          parsed_params: Optional[Any] = None, affected_count: int = 0,
@@ -860,7 +893,7 @@ class DatabaseManager:
                 INSERT INTO audit_log (mode, user_query, parsed_action, parsed_params, affected_count, affected_ids, result, error_message, transaction_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (mode, user_query, parsed_action, parsed_params_blob, affected_count, affected_ids_blob, result, error_message, transaction_id))
-            self.conn.commit()
+            self._commit()
             return self.cursor.lastrowid
     
     # ==================== 回收站操作 ====================
@@ -892,7 +925,7 @@ class DatabaseManager:
                 """, (account_id, 'account', encrypted, app_name, username, url, category, expires_at))
             
                 self.cursor.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
-                self.conn.commit()
+                self._commit()
                 return True
             except Exception as e:
                 self.conn.rollback()
@@ -916,7 +949,7 @@ class DatabaseManager:
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """, (url_id, 'url', encrypted, title, '', url_str, category, expires_at))
             
-                self.conn.commit()
+                self._commit()
                 return True
             except Exception as e:
                 self.conn.rollback()
@@ -979,7 +1012,7 @@ class DatabaseManager:
                     "UPDATE recycle_bin SET is_restored = 1, restored_at = CURRENT_TIMESTAMP WHERE id = ?",
                     (recycle_id,)
                 )
-                self.conn.commit()
+                self._commit()
             
                 account_data['id'] = new_id
                 return account_data
@@ -1012,7 +1045,7 @@ class DatabaseManager:
                     "UPDATE recycle_bin SET is_restored = 1, restored_at = CURRENT_TIMESTAMP WHERE id = ?",
                     (recycle_id,)
                 )
-                self.conn.commit()
+                self._commit()
             
                 return url_data
             except Exception as e:
@@ -1027,7 +1060,7 @@ class DatabaseManager:
                 self.cursor.execute(
                     "DELETE FROM recycle_bin WHERE is_restored = 0 AND expires_at < datetime('now')"
                 )
-                self.conn.commit()
+                self._commit()
                 return self.cursor.rowcount
             except Exception as e:
                 self.conn.rollback()
@@ -1039,7 +1072,7 @@ class DatabaseManager:
         with self._lock:
             try:
                 self.cursor.execute("DELETE FROM recycle_bin WHERE id = ?", (recycle_id,))
-                self.conn.commit()
+                self._commit()
                 return self.cursor.rowcount > 0
             except Exception as e:
                 self.conn.rollback()
@@ -1068,7 +1101,7 @@ class DatabaseManager:
                 "INSERT INTO snapshots (snapshot_id, item_type, before_state, changes) VALUES (?, ?, ?, ?)",
                 (snapshot_id, item_type, encrypted_before, encrypted_changes)
             )
-            self.conn.commit()
+            self._commit()
             return self.cursor.rowcount > 0
     
     def get_snapshots(self, item_type: str = None) -> List[Dict[str, Any]]:
@@ -1115,7 +1148,7 @@ class DatabaseManager:
         """
         with self._lock:
             self.cursor.execute("DELETE FROM snapshots WHERE snapshot_id = ?", (snapshot_id,))
-            self.conn.commit()
+            self._commit()
             return self.cursor.rowcount > 0
     
     def cleanup_old_snapshots(self, days: int = 30) -> int:
@@ -1134,5 +1167,5 @@ class DatabaseManager:
                 "DELETE FROM snapshots WHERE created_at < datetime('now', '-' || ? || ' days')",
                 (str(days),)
             )
-            self.conn.commit()
+            self._commit()
             return self.cursor.rowcount

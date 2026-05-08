@@ -11,6 +11,29 @@ from typing import Optional, List, Dict, Any
 logger = logging.getLogger(__name__)
 
 
+class _TransactionContext:
+    """数据库事务上下文管理器"""
+    def __init__(self, db):
+        self.db = db
+
+    def __enter__(self):
+        with self.db._lock:
+            if self.db._transaction_depth == 0:
+                self.db.conn.execute('BEGIN IMMEDIATE')
+            self.db._transaction_depth += 1
+        return self.db
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        with self.db._lock:
+            self.db._transaction_depth -= 1
+            if self.db._transaction_depth == 0:
+                if exc_type is None:
+                    self.db.conn.commit()
+                else:
+                    self.db.conn.rollback()
+        return False
+
+
 class URLDatabaseManager:
     """网址数据库管理器"""
     
@@ -25,6 +48,7 @@ class URLDatabaseManager:
         self.conn = None
         self.cursor = None
         self._lock = threading.RLock()
+        self._transaction_depth = 0
         
         # 确保目录存在
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -43,6 +67,15 @@ class URLDatabaseManager:
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.cursor = self.conn.cursor()
+    def _commit(self):
+        """提交事务，支持嵌套事务（事务期间自动跳过）"""
+        if self._transaction_depth == 0:
+            self._commit()
+
+    def transaction(self):
+        """返回事务上下文管理器"""
+        return _TransactionContext(self)
+
     
     def _create_tables(self):
         """创建数据表结构"""
@@ -112,7 +145,7 @@ class URLDatabaseManager:
                 )
             """)
         
-            self.conn.commit()
+            self._commit()
     
     def close(self):
         """关闭数据库连接"""
@@ -142,7 +175,7 @@ class URLDatabaseManager:
             if 'password' not in rb_columns:
                 self.cursor.execute("ALTER TABLE url_recycle_bin ADD COLUMN password TEXT DEFAULT ''")
         
-            self.conn.commit()
+            self._commit()
     
     # ==================== 网址表操作 ====================
     
@@ -171,7 +204,7 @@ class URLDatabaseManager:
                 url_data.get('remark', '')
             ))
         
-            self.conn.commit()
+            self._commit()
             return self.cursor.lastrowid
     
     def update_url(self, url_id: int, url_data: Dict[str, Any]) -> bool:
@@ -233,7 +266,7 @@ class URLDatabaseManager:
         
             sql = f"UPDATE urls SET {', '.join(fields)} WHERE id = ?"
             self.cursor.execute(sql, values)
-            self.conn.commit()
+            self._commit()
         
             return self.cursor.rowcount > 0
     
@@ -249,7 +282,7 @@ class URLDatabaseManager:
         """
         with self._lock:
             self.cursor.execute("DELETE FROM urls WHERE id = ?", (url_id,))
-            self.conn.commit()
+            self._commit()
             return self.cursor.rowcount > 0
     
     def soft_delete_url(self, url_id: int, url_data: dict) -> bool:
@@ -273,7 +306,7 @@ class URLDatabaseManager:
                     expires_at
                 ))
                 self.cursor.execute("DELETE FROM urls WHERE id = ?", (url_id,))
-                self.conn.commit()
+                self._commit()
                 return True
             except Exception as e:
                 self.conn.rollback()
@@ -321,7 +354,7 @@ class URLDatabaseManager:
                     "UPDATE url_recycle_bin SET is_restored = 1, restored_at = CURRENT_TIMESTAMP WHERE id = ?",
                     (recycle_id,)
                 )
-                self.conn.commit()
+                self._commit()
             
                 url_data['id'] = new_id
                 return url_data
@@ -335,7 +368,7 @@ class URLDatabaseManager:
         with self._lock:
             try:
                 self.cursor.execute("DELETE FROM url_recycle_bin WHERE id = ?", (recycle_id,))
-                self.conn.commit()
+                self._commit()
                 return self.cursor.rowcount > 0
             except Exception as e:
                 self.conn.rollback()
@@ -349,7 +382,7 @@ class URLDatabaseManager:
                 self.cursor.execute(
                     "DELETE FROM url_recycle_bin WHERE is_restored = 0 AND expires_at < datetime('now')"
                 )
-                self.conn.commit()
+                self._commit()
                 return self.cursor.rowcount
             except Exception as e:
                 self.conn.rollback()
@@ -460,7 +493,7 @@ class URLDatabaseManager:
                 "UPDATE urls SET visit_count = visit_count + 1 WHERE id = ?",
                 (url_id,)
             )
-            self.conn.commit()
+            self._commit()
     
     def get_category_orders(self) -> Dict[str, int]:
         """获取分类自定义排序（category -> sort_index）"""
@@ -480,7 +513,7 @@ class URLDatabaseManager:
                     "INSERT INTO category_order (category, sort_index) VALUES (?, ?)",
                     (category, sort_index)
                 )
-            self.conn.commit()
+            self._commit()
     
     def get_categories(self) -> List[str]:
         """
@@ -531,7 +564,7 @@ class URLDatabaseManager:
                 f"UPDATE urls SET {field} = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (value, url_id)
             )
-            self.conn.commit()
+            self._commit()
             return self.cursor.rowcount > 0
     
     def find_by_url(self, url: str) -> Optional[Dict[str, Any]]:
@@ -555,7 +588,7 @@ class URLDatabaseManager:
                 "UPDATE urls SET category = ? WHERE category = ?",
                 (new_name, old_name)
             )
-            self.conn.commit()
+            self._commit()
             return self.cursor.rowcount
     
     def rename_category_order(self, old_name: str, new_name: str) -> bool:
@@ -573,7 +606,7 @@ class URLDatabaseManager:
                         "UPDATE category_order SET category = ? || SUBSTR(category, ?) WHERE category LIKE ?",
                         (new_name, len(old_name) + 1, f"{old_name}>%")
                     )
-                self.conn.commit()
+                self._commit()
                 return True
             except Exception as e:
                 logger.error("rename_category_order failed: %s", e)
@@ -605,7 +638,7 @@ class URLDatabaseManager:
                 "DELETE FROM category_order WHERE category = ?",
                 (category_name,)
             )
-            self.conn.commit()
+            self._commit()
             return affected
 
     def promote_category(self, old_path: str) -> bool:
@@ -654,7 +687,7 @@ class URLDatabaseManager:
                         (new_name, max_idx + 1)
                     )
 
-                self.conn.commit()
+                self._commit()
                 return True
             except Exception as e:
                 self.conn.rollback()
@@ -702,7 +735,7 @@ class URLDatabaseManager:
                             (new_path, max_idx + 1)
                         )
 
-                self.conn.commit()
+                self._commit()
                 return self.cursor.rowcount
             except Exception as e:
                 self.conn.rollback()
@@ -725,7 +758,7 @@ class URLDatabaseManager:
                 "INSERT OR REPLACE INTO vault_config (key, value) VALUES (?, ?)",
                 (key, value)
             )
-            self.conn.commit()
+            self._commit()
 
     def get_breach_results(self, vault_type: str = 'urls') -> Optional[dict]:
         """读取上次泄露检测结果"""
@@ -755,4 +788,4 @@ class URLDatabaseManager:
         """清除泄露检测结果"""
         with self._lock:
             self.cursor.execute("DELETE FROM vault_config WHERE key = ?", (f'breach_results_{vault_type}',))
-            self.conn.commit()
+            self._commit()

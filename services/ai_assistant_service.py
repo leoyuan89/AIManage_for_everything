@@ -1380,110 +1380,126 @@ class AIAssistantService:
 
         logger.info("execute_build_action_with_transaction starting, items=%d, tool=%s", len(confirmed_items), tool_name)
 
-        if tool_name in ('batch_add_accounts', 'batch_add_urls'):
-            vault_type = 'accounts' if tool_name == 'batch_add_accounts' else 'urls'
-            repo = RepositoryFactory.get_repository(vault_type)
-            for item in confirmed_items:
-                try:
-                    if vault_type == 'accounts':
-                        account = Account(**item)
-                        new_id = repo.insert(account.to_dict())
-                    else:
-                        url_item = URLItem(**item)
-                        new_id = repo.insert(url_item.to_dict())
-                    affected_ids.append(new_id)
-                except Exception as e:
-                    logger.exception("Batch add item failed")
-                    fail_ids.append((item, str(e)))
-            success = len(fail_ids) == 0
-            result_msg = f"批量导入完成：成功 {len(affected_ids)} 条" + (f"，失败 {len(fail_ids)} 条" if fail_ids else "")
-            logger.info("Batch add completed, success=%d", len(affected_ids))
+        def _do_batch_add(repo, items, vault_type):
+            for item in items:
+                if vault_type == 'accounts':
+                    account = Account(**item)
+                    new_id = repo.insert(account.to_dict())
+                else:
+                    url_item = URLItem(**item)
+                    new_id = repo.insert(url_item.to_dict())
+                affected_ids.append(new_id)
 
-        elif tool_name in ('batch_update_accounts', 'batch_update_urls',
-                           'batch_reorganize_accounts', 'batch_reorganize_urls',
-                           'batch_add_remark_accounts', 'batch_add_remark_urls',
-                           'batch_add_tags_accounts', 'batch_add_tags_urls',
-                           'smart_classify_accounts', 'smart_classify_urls'):
-            vault_type = 'accounts' if tool_name.endswith('_accounts') else 'urls'
-            repo = RepositoryFactory.get_repository(vault_type)
-            for item in confirmed_items:
-                try:
-                    if 'updates' in item:
-                        target_id = item.get('target_id')
-                        for field, value in item['updates'].items():
-                            repo.update_field(target_id, field, value)
+        def _do_batch_update(repo, items):
+            for item in items:
+                if 'updates' in item:
+                    target_id = item.get('target_id')
+                    for field, value in item['updates'].items():
+                        repo.update_field(target_id, field, value)
+                    affected_ids.append(target_id)
+                elif 'field' in item and 'new_value' in item:
+                    target_id = item.get('target_id')
+                    repo.update_field(target_id, item['field'], item['new_value'])
+                    affected_ids.append(target_id)
+                elif 'remark_type' in item and 'content' in item:
+                    target_id = item.get('target_id')
+                    repo.update_field(target_id, item['remark_type'], item['content'])
+                    affected_ids.append(target_id)
+                elif 'tags' in item and 'mode' in item:
+                    target_id = item.get('target_id')
+                    existing = repo.get_by_id(target_id)
+                    if existing:
+                        old_tags = repo.get_field_value(existing, 'tags') or []
+                        if not isinstance(old_tags, list):
+                            try:
+                                old_tags = json.loads(old_tags) if old_tags else []
+                            except Exception:
+                                old_tags = []
+                        if item['mode'] == 'append':
+                            new_tags = list(set(old_tags + item['tags']))
+                        else:
+                            new_tags = item['tags']
+                        repo.update_field(target_id, 'tags', new_tags)
+                    affected_ids.append(target_id)
+                else:
+                    target_id = item.get('target_id')
+                    if target_id:
+                        for field in ['category', 'remark', 'ai_remark', 'tags']:
+                            if field in item:
+                                repo.update_field(target_id, field, item[field])
                         affected_ids.append(target_id)
-                    elif 'field' in item and 'new_value' in item:
-                        target_id = item.get('target_id')
-                        repo.update_field(target_id, item['field'], item['new_value'])
-                        affected_ids.append(target_id)
-                    elif 'remark_type' in item and 'content' in item:
-                        target_id = item.get('target_id')
-                        repo.update_field(target_id, item['remark_type'], item['content'])
-                        affected_ids.append(target_id)
-                    elif 'tags' in item and 'mode' in item:
-                        target_id = item.get('target_id')
-                        existing = repo.get_by_id(target_id)
-                        if existing:
-                            old_tags = repo.get_field_value(existing, 'tags') or []
-                            if not isinstance(old_tags, list):
-                                try:
-                                    old_tags = json.loads(old_tags) if old_tags else []
-                                except:
-                                    old_tags = []
-                            if item['mode'] == 'append':
-                                new_tags = list(set(old_tags + item['tags']))
-                            else:
-                                new_tags = item['tags']
-                            repo.update_field(target_id, 'tags', new_tags)
-                        affected_ids.append(target_id)
-                    else:
-                        # 通用 raw_data 处理
-                        target_id = item.get('target_id')
-                        if target_id:
-                            for field in ['category', 'remark', 'ai_remark', 'tags']:
-                                if field in item:
-                                    repo.update_field(target_id, field, item[field])
-                            affected_ids.append(target_id)
-                except Exception as e:
-                    logger.exception("Batch update item failed")
-                    fail_ids.append((item, str(e)))
-            success = len(fail_ids) == 0
-            result_msg = f"批量更新完成：成功 {len(affected_ids)} 条" + (f"，失败 {len(fail_ids)} 条" if fail_ids else "")
-            logger.info("Batch update completed, success=%d", len(affected_ids))
 
-        elif tool_name in ('batch_delete_accounts', 'batch_delete_urls'):
-            if len(confirmed_items) > 50 and not _force:
+        def _do_batch_delete(items, is_account):
+            for item in items:
+                target_id = item.get('target_id')
+                if is_account:
+                    original = self.db.get_account_by_id(target_id)
+                    if original:
+                        self.db.soft_delete_account(target_id, original)
+                else:
+                    original = self.db.get_url_by_id(target_id)
+                    if original:
+                        if self.url_db:
+                            self.url_db.soft_delete_url(target_id, original)
+                        else:
+                            self.db.soft_delete_url(target_id, original)
+                affected_ids.append(target_id)
+
+        try:
+            if tool_name in ('batch_add_accounts', 'batch_add_urls'):
+                vault_type = 'accounts' if tool_name == 'batch_add_accounts' else 'urls'
+                repo = RepositoryFactory.get_repository(vault_type)
+                tx_db = self.db if vault_type == 'accounts' else (self.url_db or self.db)
+                with tx_db.transaction():
+                    _do_batch_add(repo, confirmed_items, vault_type)
+                success = True
+                result_msg = f"批量导入完成：成功 {len(affected_ids)} 条"
+                logger.info("Batch add completed, success=%d", len(affected_ids))
+
+            elif tool_name in ('batch_update_accounts', 'batch_update_urls',
+                               'batch_reorganize_accounts', 'batch_reorganize_urls',
+                               'batch_add_remark_accounts', 'batch_add_remark_urls',
+                               'batch_add_tags_accounts', 'batch_add_tags_urls',
+                               'smart_classify_accounts', 'smart_classify_urls'):
+                vault_type = 'accounts' if tool_name.endswith('_accounts') else 'urls'
+                repo = RepositoryFactory.get_repository(vault_type)
+                tx_db = self.db if vault_type == 'accounts' else (self.url_db or self.db)
+                with tx_db.transaction():
+                    _do_batch_update(repo, confirmed_items)
+                success = True
+                result_msg = f"批量更新完成：成功 {len(affected_ids)} 条"
+                logger.info("Batch update completed, success=%d", len(affected_ids))
+
+            elif tool_name in ('batch_delete_accounts', 'batch_delete_urls'):
+                if len(confirmed_items) > 50 and not _force:
+                    return {
+                        "success": False,
+                        "needs_confirmation": True,
+                        "affected_count": len(confirmed_items),
+                        "message": f"即将删除 {len(confirmed_items)} 条记录，数量较多，请确认",
+                        "preview": {"items": confirmed_items}
+                    }
+                is_account = tool_name == 'batch_delete_accounts'
+                tx_db = self.db if is_account else (self.url_db or self.db)
+                with tx_db.transaction():
+                    _do_batch_delete(confirmed_items, is_account)
+                success = True
+                result_msg = f"删除完成：成功 {len(affected_ids)} 条"
+                logger.info("Delete completed, success=%d", len(affected_ids))
+
+            else:
                 return {
                     "success": False,
-                    "needs_confirmation": True,
-                    "affected_count": len(confirmed_items),
-                    "message": f"即将删除 {len(confirmed_items)} 条记录，数量较多，请确认",
-                    "preview": {"items": confirmed_items}
+                    "affected_count": 0,
+                    "affected_ids": [],
+                    "transaction_id": "",
+                    "error": f"不支持的 tool_name: {tool_name}"
                 }
-
-            for item in confirmed_items:
-                try:
-                    target_id = item.get('target_id')
-                    if tool_name == 'batch_delete_accounts':
-                        original = self.db.get_account_by_id(target_id)
-                        if original:
-                            self.db.soft_delete_account(target_id, original)
-                    else:
-                        original = self.db.get_url_by_id(target_id)
-                        if original:
-                            # 网址库独立回收站
-                            if self.url_db:
-                                self.url_db.soft_delete_url(target_id, original)
-                            else:
-                                self.db.soft_delete_url(target_id, original)
-                    affected_ids.append(target_id)
-                except Exception as e:
-                    logger.exception("Batch delete item failed")
-                    fail_ids.append((item, str(e)))
-            success = len(fail_ids) == 0
-            result_msg = f"删除完成：成功 {len(affected_ids)} 条" + (f"，失败 {len(fail_ids)} 条" if fail_ids else "")
-            logger.info("Delete completed, success=%d", len(affected_ids))
+        except Exception as e:
+            logger.exception("Transaction failed, all changes rolled back")
+            success = False
+            error_msg = str(e)
+            result_msg = f"操作失败，已回滚：{e}"
 
         else:
             return {

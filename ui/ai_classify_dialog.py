@@ -872,11 +872,11 @@ class AIClassifyDialog(QDialog):
                     QMessageBox.critical(self, "回滚失败", "无法找到指定的快照")
     
     def closeEvent(self, event):
-        """关闭时停止工作线程"""
+        """关闭时优雅停止工作线程"""
         if self.pre_analysis_worker and self.pre_analysis_worker.isRunning():
-            self.pre_analysis_worker.terminate()
-            self.pre_analysis_worker.wait(1000)
+            self.pre_analysis_worker.requestInterruption()
+            self.pre_analysis_worker.wait(3000)
         if self.worker and self.worker.isRunning():
             self.worker.stop()
-            self.worker.wait(2000)
+            self.worker.wait(3000)
         event.accept()

@@ -200,6 +200,8 @@ class AIClassificationService:
 - 只输出纯JSON，不要```json标记
 - 任何字段的值都不要包含英文双引号"，如果必须引用请使用中文引号「」"""
         
+        result = None
+        json_str = None
         try:
             from ai.ollama_client import OllamaClient
             state = ai_manager.get_state()
@@ -229,8 +231,10 @@ class AIClassificationService:
             
         except Exception as e:
             logger.exception("Pre-analysis failed")
-            logger.debug("Raw result full (%d chars): %r", len(result), result)
-            logger.debug("Extracted JSON full (%d chars): %r", len(json_str), json_str)
+            if result is not None:
+                logger.debug("Raw result full (%d chars): %r", len(result), result)
+            if json_str is not None:
+                logger.debug("Extracted JSON full (%d chars): %r", len(json_str), json_str)
             return self._heuristic_pre_analyze(accounts, existing_categories, 'account')
     
     def pre_analyze_urls(self, urls: List[URLItem], 
@@ -542,6 +546,8 @@ class AIClassificationService:
 - 不要输出 reason、confidence、tags 等额外字段
 - 只输出纯JSON，不要```json标记"""
         
+        result = None
+        json_str = None
         try:
             from services.ai_service_manager import AIServiceManager
             ai_manager = AIServiceManager.instance()
@@ -596,8 +602,10 @@ class AIClassificationService:
             
         except Exception as e:
             logger.exception("Batch classification failed")
-            logger.debug("Batch raw result preview (first 500 chars): %r", result[:500])
-            logger.debug("Batch extracted JSON preview (first 500 chars): %r", json_str[:500])
+            if result is not None:
+                logger.debug("Batch raw result preview (first 500 chars): %r", result[:500])
+            if json_str is not None:
+                logger.debug("Batch extracted JSON preview (first 500 chars): %r", json_str[:500])
             # 降级：全部归入当前分类
             changes = []
             for item in batch:

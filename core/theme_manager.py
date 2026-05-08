@@ -3,6 +3,7 @@
 提供 qt-material 主题加载 + ThemeColors 色板系统 + 图标管理
 """
 import logging
+import threading
 from dataclasses import dataclass
 from typing import Dict
 from PyQt6.QtWidgets import QApplication
@@ -201,11 +202,14 @@ class ThemeManager(QObject):
 
     theme_changed = pyqtSignal(str)
     _instance = None
+    _lock = threading.Lock()
 
     @classmethod
     def instance(cls) -> 'ThemeManager':
         if cls._instance is None:
-            cls._instance = cls()
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = cls()
         return cls._instance
 
     def __init__(self):

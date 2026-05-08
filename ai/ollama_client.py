@@ -14,17 +14,19 @@ logger = logging.getLogger(__name__)
 class OllamaClient:
     """Ollama HTTP API 客户端"""
     
-    def __init__(self, model: str = "gemma4:4b", host: str = "http://localhost:11434"):
+    def __init__(self, model: str = "gemma4:4b", host: str = "http://localhost:11434", timeout: float = 300):
         """
         初始化 Ollama 客户端
         
         Args:
             model: 模型名称
             host: Ollama 服务地址
+            timeout: 请求超时时间（秒），默认 300 秒（5 分钟）。设为 None 表示永不超时
         """
         self.model = model
         self.host = host.rstrip('/')
         self.api_url = f"{self.host}/api/generate"
+        self.timeout = timeout
     
     def is_available(self) -> bool:
         """检查 Ollama 服务是否可用"""
@@ -156,7 +158,7 @@ class OllamaClient:
             response = requests.post(
                 self.api_url,
                 json=payload,
-                timeout=None  # 不设超时限制，由用户手动控制
+                timeout=self.timeout
             )
             response.raise_for_status()
             
@@ -207,7 +209,7 @@ class OllamaClient:
                 self.api_url,
                 json=payload,
                 stream=True,
-                timeout=None
+                timeout=self.timeout
             )
             response.raise_for_status()
             

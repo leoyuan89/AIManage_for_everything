@@ -3844,6 +3844,9 @@ class MainWindow(QMainWindow):
         self._undo_banner.show()
         
         # 60 秒后自动消失
+        if hasattr(self, '_undo_timer') and self._undo_timer:
+            self._undo_timer.stop()
+            self._undo_timer.deleteLater()
         self._undo_timer = QTimer(self)
         self._undo_timer.setSingleShot(True)
         self._undo_timer.timeout.connect(self._dismiss_undo_banner)

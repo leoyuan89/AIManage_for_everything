@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
 )
 
 from core.category_utils import format_category_path
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont
 
 from core.database import DatabaseManager
@@ -19,6 +19,45 @@ from core.theme_manager import ThemeManager, ThemeColors
 from services.account_service import AccountService
 from services.export_service import ExportService
 from models.account import Account
+
+
+class _ExportWorkerThread(QThread):
+    """后台线程：执行导出操作（Excel / 加密备份 / CSV / HTML）"""
+    finished_export = pyqtSignal(bool, str)  # (success, error_msg)
+
+    def __init__(self, export_service, export_type, items, file_path, extra=None, parent=None):
+        super().__init__(parent)
+        self.export_service = export_service
+        self.export_type = export_type
+        self.items = items
+        self.file_path = file_path
+        self.extra = extra or {}
+
+    def run(self):
+        try:
+            if self.export_type == 'excel':
+                success = self.export_service.export_to_excel(
+                    self.items, self.file_path, self.extra.get('include_password', False)
+                )
+            elif self.export_type == 'excel_urls':
+                success = self.export_service.export_urls_to_excel(self.items, self.file_path)
+            elif self.export_type == 'vault':
+                success = self.export_service.export_encrypted_backup(
+                    self.items, self.file_path, self.extra.get('backup_password')
+                )
+            elif self.export_type == 'bitwarden':
+                success = self.export_service.export_bitwarden_csv(self.items, self.file_path)
+            elif self.export_type == 'html':
+                success = self.export_service.export_urls_to_html(self.items, self.file_path)
+            else:
+                success = False
+
+            if success:
+                self.finished_export.emit(True, "")
+            else:
+                self.finished_export.emit(False, "导出过程中发生错误")
+        except Exception as e:
+            self.finished_export.emit(False, str(e))
 
 
 class ExportDialog(QDialog):
@@ -294,7 +333,7 @@ class ExportDialog(QDialog):
         """导出按钮点击"""
         is_account = self.vault_type == 'accounts'
         entity_name = "账号" if is_account else "网址"
-        
+
         # 获取导出范围
         if self.rad_all.isChecked():
             if is_account:
@@ -313,90 +352,57 @@ class ExportDialog(QDialog):
                 items = self.url_service.get_urls_by_category(category) if self.url_service else []
             scope_name = category
         else:
-            # TODO: 获取当前分类
             if is_account:
                 items = self.account_service.get_all_accounts()
             else:
                 items = self.url_service.get_all_urls() if self.url_service else []
             scope_name = "当前分类"
-        
+
         if not items:
             QMessageBox.warning(self, "提示", f"{scope_name}分类下没有可导出的{entity_name}")
             return
-        
-        # 获取导出格式
+
         format_index = self.cmb_format.currentIndex()
-        
+
+        # 根据格式获取文件路径，然后启动后台线程导出
         if format_index == 0:  # Excel
             file_path, _ = QFileDialog.getSaveFileName(
-                self, "保存 Excel 文件", 
-                f"password_export_{scope_name}", 
+                self, "保存 Excel 文件",
+                f"password_export_{scope_name}",
                 "Excel 文件 (*.xlsx)"
             )
             if file_path:
                 if not file_path.endswith('.xlsx'):
                     file_path += '.xlsx'
-                
-                if is_account:
-                    include_password = self.chk_include_password.isChecked()
-                    success = self.export_service.export_to_excel(items, file_path, include_password)
-                else:
-                    success = self.export_service.export_urls_to_excel(items, file_path)
-                
-                if success:
-                    QMessageBox.information(
-                        self, "导出成功",
-                        f"成功导出 {len(items)} 个{entity_name}到：\n{file_path}"
-                    )
-                    self.accept()
-                else:
-                    QMessageBox.critical(self, "导出失败", "导出过程中发生错误")
-        
+                export_type = 'excel' if is_account else 'excel_urls'
+                extra = {'include_password': self.chk_include_password.isChecked()} if is_account else {}
+                self._start_export_thread(export_type, items, file_path, extra, entity_name)
+
         elif format_index == 1:  # 加密备份
             if not is_account:
                 QMessageBox.warning(self, "暂不支持", "网址暂不支持加密备份导出")
                 return
-            
             file_path, _ = QFileDialog.getSaveFileName(
                 self, "保存加密备份", "", "Vault 文件 (*.vault)"
             )
             if file_path:
                 if not file_path.endswith('.vault'):
                     file_path += '.vault'
-                
-                # 确定加密密码
                 use_custom_password = self.chk_custom_password.isChecked()
                 backup_password = None
-                
                 if use_custom_password:
                     pwd1 = self.txt_vault_password.text().strip()
                     pwd2 = self.txt_vault_password2.text().strip()
-                    
                     if len(pwd1) < 6:
                         QMessageBox.warning(self, "验证失败", "备份密码至少需要 6 位")
                         return
-                    
                     if pwd1 != pwd2:
                         QMessageBox.warning(self, "验证失败", "两次输入的备份密码不一致")
                         return
-                    
                     backup_password = pwd1
-                    password_hint = "独立密码"
-                else:
-                    # 使用主密码
-                    backup_password = None
-                    password_hint = "主密码"
-                
-                if self.export_service.export_encrypted_backup(items, file_path, backup_password):
-                    QMessageBox.information(
-                        self, "导出成功",
-                        f"成功导出 {len(items)} 个{entity_name}的加密备份到：\n{file_path}\n\n"
-                        f"提示：加密备份使用 {password_hint} 加密，恢复时需要输入正确的密码。"
-                    )
-                    self.accept()
-                else:
-                    QMessageBox.critical(self, "导出失败", "加密备份导出过程中发生错误")
-        
+                extra = {'backup_password': backup_password}
+                self._start_export_thread('vault', items, file_path, extra, entity_name, backup_hint="独立密码" if backup_password else "主密码")
+
         elif is_account and format_index == 2:  # Bitwarden CSV
             file_path, _ = QFileDialog.getSaveFileName(
                 self, "保存 Bitwarden CSV 文件",
@@ -406,24 +412,12 @@ class ExportDialog(QDialog):
             if file_path:
                 if not file_path.endswith('.csv'):
                     file_path += '.csv'
-                
-                success = self.export_service.export_bitwarden_csv(items, file_path)
-                
-                if success:
-                    QMessageBox.information(
-                        self, "导出成功",
-                        f"成功导出 {len(items)} 个{entity_name}到 Bitwarden CSV：\n{file_path}\n\n"
-                        f"提示：可在 Bitwarden「工具」→「导入数据」中使用此文件。"
-                    )
-                    self.accept()
-                else:
-                    QMessageBox.critical(self, "导出失败", "Bitwarden CSV 导出过程中发生错误")
-        
+                self._start_export_thread('bitwarden', items, file_path, {}, entity_name, format_hint="Bitwarden CSV")
+
         else:  # HTML 书签
             if is_account:
                 QMessageBox.warning(self, "暂不支持", "账号暂不支持 HTML 书签导出")
                 return
-            
             file_path, _ = QFileDialog.getSaveFileName(
                 self, "保存 HTML 书签",
                 f"bookmarks_{scope_name}",
@@ -432,15 +426,27 @@ class ExportDialog(QDialog):
             if file_path:
                 if not file_path.endswith('.html'):
                     file_path += '.html'
-                
-                success = self.export_service.export_urls_to_html(items, file_path)
-                
-                if success:
-                    QMessageBox.information(
-                        self, "导出成功",
-                        f"成功导出 {len(items)} 个网址到 HTML 书签：\n{file_path}\n\n"
-                        f"提示：可在 Chrome / Edge / Firefox 的「书签管理器」→「导入书签」中使用此文件。"
-                    )
-                    self.accept()
-                else:
-                    QMessageBox.critical(self, "导出失败", "HTML 书签导出过程中发生错误")
+                self._start_export_thread('html', items, file_path, {}, entity_name, format_hint="HTML 书签")
+
+    def _start_export_thread(self, export_type, items, file_path, extra, entity_name, format_hint="", backup_hint=""):
+        """启动后台导出线程"""
+        self._export_thread = _ExportWorkerThread(
+            self.export_service, export_type, items, file_path, extra, parent=self
+        )
+        self._export_thread.finished_export.connect(
+            lambda success, err: self._on_export_finished(success, err, len(items), entity_name, file_path, format_hint, backup_hint)
+        )
+        self._export_thread.start()
+
+    def _on_export_finished(self, success, error_msg, count, entity_name, file_path, format_hint="", backup_hint=""):
+        """导出完成回调（UI 线程）"""
+        if success:
+            msg = f"成功导出 {count} 个{entity_name}到：\n{file_path}"
+            if format_hint:
+                msg += f"\n\n提示：可在 {format_hint} 中导入此文件。"
+            if backup_hint:
+                msg += f"\n\n提示：加密备份使用 {backup_hint} 加密，恢复时需要输入正确的密码。"
+            QMessageBox.information(self, "导出成功", msg)
+            self.accept()
+        else:
+            QMessageBox.critical(self, "导出失败", f"导出过程中发生错误：\n{error_msg}")

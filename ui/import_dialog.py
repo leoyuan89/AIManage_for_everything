@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
     QMessageBox, QCheckBox, QAbstractItemView,
     QGroupBox, QScrollArea, QFrame, QComboBox
 )
-from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal
 from PyQt6.QtGui import QFont, QColor
 
 logger = logging.getLogger(__name__)
@@ -23,6 +23,41 @@ from models.account import Account
 from services.import_service import parse_import_file, ImportItem
 from services.account_service import AccountService
 from core.theme_manager import ThemeManager, ThemeColors
+
+
+class _VaultImportThread(QThread):
+    """后台线程：解密并解析加密备份文件"""
+    finished_import = pyqtSignal(list)   # List[ImportItem]
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, file_path, password, parent=None):
+        super().__init__(parent)
+        self.file_path = file_path
+        self.password = password
+
+    def run(self):
+        try:
+            from services.export_service import ExportService
+            export_service = ExportService(None)
+            accounts = export_service.import_from_vault(self.file_path, self.password)
+            if accounts is None:
+                self.error_occurred.emit("密码错误或文件损坏，无法解密")
+                return
+            items = []
+            for account in accounts:
+                item = ImportItem(
+                    app_name=account.app_name,
+                    username=account.username,
+                    password=account.password,
+                    url=account.url,
+                    category=account.category,
+                    tags=account.tags if isinstance(account.tags, list) else [],
+                    remark=account.remark
+                )
+                items.append(item)
+            self.finished_import.emit(items)
+        except Exception as e:
+            self.error_occurred.emit(str(e))
 
 
 class CategoryCascadeCell(QWidget):
@@ -237,15 +272,26 @@ class ImportDialog(QDialog):
         
         try:
             if file_path.endswith('.vault'):
-                # 解密并解析加密备份文件
-                self.import_items = self._parse_vault_file(file_path)
+                # 弹出密码输入对话框（必须在主线程）
+                from PyQt6.QtWidgets import QInputDialog, QLineEdit
+                password, ok = QInputDialog.getText(
+                    self, "输入主密码",
+                    "请输入导出此备份时使用的主密码：",
+                    QLineEdit.EchoMode.Password
+                )
+                if not ok or not password:
+                    return
+                # 启动后台线程解密
+                self._vault_thread = _VaultImportThread(file_path, password, parent=self)
+                self._vault_thread.finished_import.connect(self._on_vault_import_finished)
+                self._vault_thread.error_occurred.connect(self._on_vault_import_error)
+                self._vault_thread.start()
                 self.file_type = "vault"
             else:
                 self.file_type, self.import_items = parse_import_file(file_path)
-            
-            self.refresh_table()
-            self.update_stats()
-            self.btn_import.setEnabled(len(self.import_items) > 0)
+                self.refresh_table()
+                self.update_stats()
+                self.btn_import.setEnabled(len(self.import_items) > 0)
         except Exception as e:
             QMessageBox.critical(self, "解析失败", f"无法解析文件：\n{str(e)}")
     

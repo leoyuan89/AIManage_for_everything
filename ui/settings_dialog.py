@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QGroupBox, QFormLayout, QCheckBox, QFrame,
     QRadioButton, QSpinBox
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QThread
 from PyQt6.QtGui import QFont
 
 from core.database import DatabaseManager
@@ -28,6 +28,92 @@ def _perf_log(phase: str, t0: float, t1: float = None):
         t1 = time.perf_counter()
     msg = f"[Perf] {phase}: {(t1 - t0) * 1000:.1f} ms"
     logger.debug(msg)
+
+
+class _PasswordChangeThread(QThread):
+    """后台线程：执行主密码修改（逐条解密→重新加密→更新数据库）"""
+    progress = pyqtSignal(int, int)   # (current, total)
+    finished_change = pyqtSignal(bool, str)  # (success, error_msg)
+
+    def __init__(self, db_manager, config_path, old_password, new_password, parent=None):
+        super().__init__(parent)
+        self.db = db_manager
+        self.config_path = config_path
+        self.old_password = old_password
+        self.new_password = new_password
+
+    def run(self):
+        try:
+            with open(self.config_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+
+            old_salt = bytes.fromhex(config['salt'])
+            old_iterations = config.get('iterations', 600000)
+            old_crypto = CryptoManager(self.old_password, old_salt, iterations=old_iterations)
+
+            # 验证旧密码
+            self.db.cursor.execute("SELECT app_name FROM accounts LIMIT 1")
+            row = self.db.cursor.fetchone()
+            if row and row['app_name']:
+                try:
+                    old_crypto.decrypt_from_string(row['app_name'])
+                except Exception:
+                    self.finished_change.emit(False, "当前密码错误")
+                    return
+
+            new_crypto = CryptoManager(self.new_password)
+
+            self.db.cursor.execute(
+                "SELECT id, app_name, url, username, password, category, tags, remark, "
+                "ai_remark, security_level, created_at, updated_at FROM accounts"
+            )
+            rows = self.db.cursor.fetchall()
+            total = len(rows)
+
+            def _safe_re_encrypt(value):
+                if not value:
+                    return ''
+                try:
+                    plain = old_crypto.decrypt_from_string(value)
+                except Exception:
+                    plain = value
+                return new_crypto.encrypt_to_string(plain)
+
+            for idx, row in enumerate(rows):
+                encrypted_data = {
+                    'app_name': _safe_re_encrypt(row['app_name']),
+                    'url': _safe_re_encrypt(row['url']),
+                    'username': _safe_re_encrypt(row['username']),
+                    'password': _safe_re_encrypt(row['password']),
+                    'remark': _safe_re_encrypt(row['remark']),
+                    'ai_remark': _safe_re_encrypt(row['ai_remark']),
+                    'security_level': _safe_re_encrypt(row['security_level']),
+                }
+                self.db.cursor.execute(
+                    "UPDATE accounts SET app_name = ?, url = ?, username = ?, password = ?, "
+                    "remark = ?, ai_remark = ?, security_level = ?, updated_at = CURRENT_TIMESTAMP "
+                    "WHERE id = ?",
+                    (
+                        encrypted_data['app_name'], encrypted_data['url'],
+                        encrypted_data['username'], encrypted_data['password'],
+                        encrypted_data['remark'], encrypted_data['ai_remark'],
+                        encrypted_data['security_level'], row['id']
+                    )
+                )
+                self.progress.emit(idx + 1, total)
+
+            self.db.conn.commit()
+            self.db.crypto = new_crypto
+
+            config['salt'] = new_crypto.salt.hex()
+            config['iterations'] = new_crypto.iterations
+            with open(self.config_path, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=2)
+
+            self.finished_change.emit(True, "")
+        except Exception as e:
+            logger.exception("Password change thread failed")
+            self.finished_change.emit(False, str(e))
 
 
 class ChangePasswordDialog(QDialog):
@@ -163,102 +249,50 @@ class ChangePasswordDialog(QDialog):
         if reply != QMessageBox.StandardButton.Yes:
             return
         
-        try:
-            if self._do_change_password(current_password, new_password):
-                self.db.increment_session_version()
-                QMessageBox.information(
-                    self,
-                    "修改成功",
-                    "主密码已修改成功！\n\n"
-                    "请牢记新密码，遗忘后将无法恢复数据。"
-                )
-                QMessageBox.information(
-                    self,
-                    "会话提示",
-                    "密码已修改，部分敏感操作需要重新验证。"
-                )
-                self.accept()
-            else:
-                QMessageBox.critical(self, "修改失败", "密码修改失败，可能是当前密码错误。")
-        except Exception as e:
-            QMessageBox.critical(self, "修改失败", f"密码修改过程中发生错误：\n{str(e)}")
-            logger.exception("Password change failed")
+        # 使用后台线程执行密码修改，避免 UI 冻结
+        from PyQt6.QtWidgets import QProgressDialog
+        self._pwd_progress = QProgressDialog("正在重新加密所有账号...", "取消", 0, 100, self)
+        self._pwd_progress.setWindowModality(Qt.WindowModality.WindowModal)
+        self._pwd_progress.setMinimumDuration(0)
+        self._pwd_progress.setValue(0)
+        self._pwd_progress.canceled.connect(self._cancel_password_change)
+
+        self._pwd_thread = _PasswordChangeThread(self.db, self.config_path, current_password, new_password, parent=self)
+        self._pwd_thread.progress.connect(self._on_password_progress)
+        self._pwd_thread.finished_change.connect(self._on_password_finished)
+        self._pwd_thread.start()
+
+    def _cancel_password_change(self):
+        if hasattr(self, '_pwd_thread') and self._pwd_thread and self._pwd_thread.isRunning():
+            self._pwd_thread.requestInterruption()
+            self._pwd_thread.wait(5000)
+        self._pwd_progress.close()
+
+    def _on_password_progress(self, current, total):
+        if hasattr(self, '_pwd_progress') and self._pwd_progress:
+            self._pwd_progress.setMaximum(total)
+            self._pwd_progress.setValue(current)
+
+    def _on_password_finished(self, success, error_msg):
+        if hasattr(self, '_pwd_progress') and self._pwd_progress:
+            self._pwd_progress.close()
+        if success:
+            self.db.increment_session_version()
+            QMessageBox.information(
+                self,
+                "修改成功",
+                "主密码已修改成功！\n\n"
+                "请牢记新密码，遗忘后将无法恢复数据。"
+            )
+            QMessageBox.information(
+                self,
+                "会话提示",
+                "密码已修改，部分敏感操作需要重新验证。"
+            )
+            self.accept()
+        else:
+            QMessageBox.critical(self, "修改失败", f"密码修改失败：{error_msg}")
     
-    def _do_change_password(self, old_password: str, new_password: str) -> bool:
-        """执行密码修改"""
-        logger.debug("Starting password change...")
-        with open(self.config_path, 'r', encoding='utf-8') as f:
-            config = json.load(f)
-        
-        old_salt = bytes.fromhex(config['salt'])
-        old_iterations = config.get('iterations', 600000)
-        logger.debug(f"Old iterations: {old_iterations}")
-        old_crypto = CryptoManager(old_password, old_salt, iterations=old_iterations)
-        
-        try:
-            self.db.cursor.execute("SELECT app_name FROM accounts LIMIT 1")
-            row = self.db.cursor.fetchone()
-            if row and row['app_name']:
-                old_crypto.decrypt_from_string(row['app_name'])
-                logger.debug("Old password verified successfully")
-        except Exception as e:
-            logger.warning(f"Old password verification failed: {e}")
-            return False
-        
-        new_crypto = CryptoManager(new_password)
-        
-        self.db.cursor.execute("""
-            SELECT id, app_name, url, username, password, category, tags, remark, 
-                   ai_remark, security_level, created_at, updated_at
-            FROM accounts
-        """)
-        rows = self.db.cursor.fetchall()
-        
-        def _safe_re_encrypt(value):
-            """安全解密并重新加密：若解密失败则原文视为明文直接加密"""
-            if not value:
-                return ''
-            try:
-                plain = old_crypto.decrypt_from_string(value)
-            except Exception:
-                plain = value  # 可能是明文存储的旧数据
-            return new_crypto.encrypt_to_string(plain)
-        
-        for row in rows:
-            encrypted_data = {
-                'app_name': _safe_re_encrypt(row['app_name']),
-                'url': _safe_re_encrypt(row['url']),
-                'username': _safe_re_encrypt(row['username']),
-                'password': _safe_re_encrypt(row['password']),
-                'remark': _safe_re_encrypt(row['remark']),
-                'ai_remark': _safe_re_encrypt(row['ai_remark']),
-                'security_level': _safe_re_encrypt(row['security_level']),
-            }
-            
-            self.db.cursor.execute("""
-                UPDATE accounts SET
-                    app_name = ?, url = ?, username = ?, password = ?,
-                    remark = ?, ai_remark = ?, security_level = ?,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-            """, (
-                encrypted_data['app_name'], encrypted_data['url'],
-                encrypted_data['username'], encrypted_data['password'],
-                encrypted_data['remark'], encrypted_data['ai_remark'],
-                encrypted_data['security_level'], row['id']
-            ))
-        
-        self.db.conn.commit()
-        self.db.crypto = new_crypto
-        
-        config['salt'] = new_crypto.salt.hex()
-        config['iterations'] = new_crypto.iterations
-        with open(self.config_path, 'w', encoding='utf-8') as f:
-            json.dump(config, f, indent=2)
-        
-        return True
-
-
 class ThemeSettingsDialog(QDialog):
     """主题设置弹窗"""
     

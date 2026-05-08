@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QStyledItemDelegate, QMessageBox, QMenu, QAbstractItemView,
     QHeaderView
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QModelIndex, QAbstractTableModel
+from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QModelIndex, QAbstractTableModel, QThread
 from PyQt6.QtGui import QColor
 
 from core.repositories import BatchItem, VaultRepository
@@ -251,6 +251,28 @@ class BatchItemTableModel(QAbstractTableModel):
             )
 
 
+class _AutoClassifyThread(QThread):
+    """后台线程：批量推断分类"""
+    finished_classify = pyqtSignal(list)  # [(row, category), ...]
+
+    def __init__(self, repo, items_data, parent=None):
+        super().__init__(parent)
+        self.repo = repo
+        self.items_data = items_data
+
+    def run(self):
+        results = []
+        for row, key_text in self.items_data:
+            new_cat = None
+            if key_text:
+                try:
+                    new_cat = self.repo.auto_classify(key_text)
+                except Exception:
+                    pass
+            results.append((row, new_cat))
+        self.finished_classify.emit(results)
+
+
 class BatchAddPreviewWidget(QWidget):
     """批量导入预览组件"""
 
@@ -419,32 +441,39 @@ class BatchAddPreviewWidget(QWidget):
         self._btn_auto_classify.setEnabled(False)
         self._btn_auto_classify.setText("推断中...")
 
-        try:
-            for row in rows:
-                item = self._model.get_items()[row]
-                if self._vault_type == 'accounts':
-                    key_text = item.app
-                else:
-                    key_text = item.url or item.title
-                if key_text:
-                    try:
-                        new_cat = self._repo.auto_classify(key_text)
-                        item.category = new_cat
-                        if "已推断分类" not in item.status:
-                            item.status = f"已推断分类：{new_cat}"
-                    except Exception:
-                        pass
+        # 收集需要推断的条目数据（避免在线程中直接访问 model）
+        items_data = []
+        for row in rows:
+            item = self._model.get_items()[row]
+            if self._vault_type == 'accounts':
+                key_text = item.app
+            else:
+                key_text = item.url or item.title
+            items_data.append((row, key_text))
 
-            # 刷新所有变动的行
+        self._classify_thread = _AutoClassifyThread(self._repo, items_data, parent=self)
+        self._classify_thread.finished_classify.connect(self._on_classify_finished)
+        self._classify_thread.start()
+
+    def _on_classify_finished(self, results):
+        """批量推断分类完成回调（UI 线程）"""
+        for row, new_cat in results:
+            if new_cat:
+                item = self._model.get_items()[row]
+                item.category = new_cat
+                if "已推断分类" not in item.status:
+                    item.status = f"已推断分类：{new_cat}"
+
+        rows = [r for r, _ in results]
+        if rows:
             self._model.dataChanged.emit(
                 self._model.index(min(rows), 0),
                 self._model.index(max(rows), self._model.columnCount() - 1)
             )
-            self._update_stats()
-            self.items_changed.emit()
-        finally:
-            self._btn_auto_classify.setEnabled(True)
-            self._btn_auto_classify.setText("智能推断分类")
+        self._update_stats()
+        self.items_changed.emit()
+        self._btn_auto_classify.setEnabled(True)
+        self._btn_auto_classify.setText("智能推断分类")
 
     def set_preview_data(self, preview_data: dict):
         """接收标准 preview_data，转换为 BatchItem 列表后渲染

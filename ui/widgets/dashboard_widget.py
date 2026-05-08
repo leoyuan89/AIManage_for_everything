@@ -15,6 +15,43 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+class _HealthCheckThread(QThread):
+    """后台线程：执行密码强度评估和重复密码检测"""
+    finished_check = pyqtSignal(dict, dict)  # results, strength_counts
+
+    def __init__(self, accounts, parent=None):
+        super().__init__(parent)
+        self.accounts = accounts
+
+    def run(self):
+        results = {'weak': [], 'reused_groups': [], 'total': len(self.accounts)}
+        sc = {"弱": 0, "中": 0, "强": 0, "极强": 0}
+
+        pwd_map = {}
+        for acc in self.accounts:
+            try:
+                pwd = acc.password or ''
+                if not pwd:
+                    continue
+                s = evaluate_password_strength(pwd)
+                label = s['label']
+                if label in sc:
+                    sc[label] += 1
+                if label in ('弱', '中'):
+                    results['weak'].append({'account': acc, 'strength': s})
+                h = hashlib.sha256(pwd.encode()).hexdigest()
+                pwd_map.setdefault(h, []).append(acc)
+            except Exception:
+                logger.warning("密码强度评估失败", exc_info=True)
+
+        for accs in pwd_map.values():
+            if len(accs) > 1:
+                results['reused_groups'].append(accs)
+
+        self.finished_check.emit(results, sc)
+
+
+
 class DashboardWidget(QScrollArea):
     def __init__(self, account_service, url_service, vault='accounts', parent=None):
         super().__init__(parent)
@@ -214,38 +251,24 @@ class DashboardWidget(QScrollArea):
 
     def _run_health_check(self):
         accounts = self.account_service.get_all_accounts()
-        results = {'weak': [], 'reused_groups': [], 'total': len(accounts)}
-        
-        for acc in accounts:
-            try:
-                pwd = acc.password or ''
-                if not pwd: continue
-                s = evaluate_password_strength(pwd)
-                if s['label'] in ('弱', '中'):
-                    results['weak'].append({'account': acc, 'strength': s})
-            except Exception:
-                logger.warning("密码强度评估失败", exc_info=True)
-        
-        pwd_map = {}
-        for acc in accounts:
-            try:
-                pwd = acc.password or ''
-                if not pwd: continue
-                h = hashlib.sha256(pwd.encode()).hexdigest()
-                pwd_map.setdefault(h, []).append(acc)
-            except Exception:
-                logger.warning("密码哈希计算失败", exc_info=True)
-        for accs in pwd_map.values():
-            if len(accs) > 1:
-                results['reused_groups'].append(accs)
-        
-        # 保留已有的泄露检测结果（从 health_results 或 _breach_ids 恢复）
+        # 停止旧线程
+        if hasattr(self, '_health_thread') and self._health_thread and self._health_thread.isRunning():
+            self._health_thread.requestInterruption()
+            self._health_thread.wait(3000)
+        self._health_thread = _HealthCheckThread(accounts, parent=self)
+        self._health_thread.finished_check.connect(self._on_health_check_finished)
+        self._health_thread.start()
+
+    def _on_health_check_finished(self, results, strength_counts):
+        """健康检查完成回调（UI 线程）"""
+        # 保留已有的泄露检测结果
         if self._health_results and 'breached_ids' in self._health_results:
             results['breached_ids'] = self._health_results['breached_ids']
         elif self._breach_checked and self._breach_ids:
             results['breached_ids'] = self._breach_ids
-        
         self._health_results = results
+        self._strength_counts = strength_counts
+        accounts = self.account_service.get_all_accounts()
         self._render_health(accounts, ThemeManager.instance().colors, self.viewport().width() - 40)
 
     def _clear_layout(self, layout):
@@ -274,13 +297,7 @@ class DashboardWidget(QScrollArea):
         lbl.setStyleSheet(f"color:{c.text_primary};")
         lay.addWidget(lbl)
         
-        sc = {"弱": 0, "中": 0, "强": 0, "极强": 0}
-        for acc in accounts:
-            try:
-                pwd = acc.password or ''
-                if pwd: sc[evaluate_password_strength(pwd)['label']] += 1
-            except Exception:
-                logger.warning("密码强度分布统计失败", exc_info=True)
+        sc = getattr(self, '_strength_counts', None) or {"弱": 0, "中": 0, "强": 0, "极强": 0}
         
         cmap = {"弱": c.accent_red, "中": c.accent_orange, "强": c.accent_green, "极强": c.accent_blue}
         total = max(len(accounts), 1)

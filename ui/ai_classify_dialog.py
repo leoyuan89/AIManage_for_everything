@@ -2,6 +2,7 @@
 AI分类确认对话框
 显示AI生成的类别提议，支持用户确认、重命名、合并
 """
+import logging
 from typing import List, Optional
 from PyQt6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout,
@@ -18,6 +19,8 @@ from services.ai_classification_service import (
     AIClassificationService, CategoryProposal, ClassificationChange
 )
 from models.account import Account
+
+logger = logging.getLogger(__name__)
 from models.url_item import URLItem
 from core.theme_manager import ThemeManager, ThemeColors
 
@@ -840,7 +843,7 @@ class AIClassifyDialog(QDialog):
                     elif self.item_type == 'url' and self.service.url_db:
                         self.service.url_db.update_url(item_id, {'category': new_category})
                 except Exception as e:
-                    print(f"[AIClassify] Failed to persist category for item {item_id}: {e}")
+                    logger.error("Failed to persist category for item %s: %s", item_id, e)
         
         QMessageBox.information(
             self, "生效成功",

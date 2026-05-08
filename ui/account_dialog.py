@@ -2,6 +2,7 @@
 账号添加/编辑弹窗
 集成：手动输入 + 截图导入 + AI 智能分类
 """
+import logging
 import time
 from PyQt6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout,
@@ -24,13 +25,15 @@ from services.ai_service_manager import AIServiceManager
 from services.ai_worker_thread import AIStatus
 from models.account import Account
 
+logger = logging.getLogger(__name__)
+
 
 def _perf_log(phase: str, t0: float, t1: float = None):
     """Phase 0 计时日志（输出到 debug_output.txt）"""
     if t1 is None:
         t1 = time.perf_counter()
     msg = f"[Perf] {phase}: {(t1 - t0) * 1000:.1f} ms"
-    print(msg, flush=True)
+    logger.debug(msg)
     try:
         with open("debug_output.txt", "a", encoding="utf-8") as f:
             f.write(msg + "\n")
@@ -403,7 +406,7 @@ class AccountDialog(QDialog):
                 from services.ocr_service import OCRService
                 self.ocr_service = OCRService()
             except Exception as e:
-                print(f"OCR 服务初始化失败: {e}")
+                logger.error("OCR 服务初始化失败: %s", e)
                 QMessageBox.warning(self, "提示", "OCR 服务初始化失败，截图导入功能不可用")
         return self.ocr_service
     
@@ -1031,8 +1034,7 @@ class AccountDialog(QDialog):
             self.btn_apply_ocr.show()
         except Exception as e:
             import traceback
-            print(f"[OCR] on_ocr_finished ERROR: {e}")
-            traceback.print_exc()
+            logger.exception("on_ocr_finished ERROR")
         # 不在这里清理 worker，等 QThread.finished 信号触发 _on_ocr_worker_finished
     
     def on_ocr_error(self, error_msg: str):
@@ -1045,17 +1047,17 @@ class AccountDialog(QDialog):
     def on_apply_ocr_result(self):
         """应用 OCR 识别结果"""
         try:
-            print("[OCR] Step 1: setCurrentIndex")
+            logger.debug("Step 1: setCurrentIndex")
             self.tabs.setCurrentIndex(0)
-            
-            print("[OCR] Step 2: get fields")
+
+            logger.debug("Step 2: get fields")
             app_name = self.ocr_result.get('app_name', '')
             username = self.ocr_result.get('username', '')
             password = self.ocr_result.get('password', '')
             url = self.ocr_result.get('url', '')
             all_texts = self.ocr_result.get('all_texts', [])
             
-            print("[OCR] Step 3: fill fields")
+            logger.debug("Step 3: fill fields")
             if app_name:
                 self.txt_app_name.setText(app_name)
             if url:
@@ -1065,7 +1067,7 @@ class AccountDialog(QDialog):
             if password:
                 self.txt_password.setText(password)
             
-            print("[OCR] Step 4: build remark")
+            logger.debug("Step 4: build remark")
             remark_lines = []
             remark_lines.append("【OCR识别结果】")
             remark_lines.append(f"应用：{app_name or '(未识别)'}")
@@ -1080,21 +1082,19 @@ class AccountDialog(QDialog):
             
             remark_text = "\n".join(remark_lines)
             
-            print("[OCR] Step 5: set remark")
+            logger.debug("Step 5: set remark")
             current_remark = self.txt_remark.toPlainText().strip()
             if current_remark:
                 self.txt_remark.setText(current_remark + "\n\n" + remark_text)
             else:
                 self.txt_remark.setText(remark_text)
             
-            print("[OCR] Step 6: AI categorize")
+            logger.debug("Step 6: AI categorize")
             self.on_ai_categorize_parent()
-            print("[OCR] Step 7: done")
+            logger.debug("Step 7: done")
             QMessageBox.information(self, "成功", "已应用识别结果，请核对并补充信息\n\n识别详情已添加到备注区域，如有错误请手动修改。")
         except Exception as e:
-            import traceback
-            print(f"[OCR] on_apply_ocr_result ERROR: {e}")
-            traceback.print_exc()
+            logger.exception("on_apply_ocr_result ERROR")
             QMessageBox.warning(self, "应用失败", f"应用 OCR 结果时出错：{str(e)}")
     
     def load_account_data(self):

@@ -2,11 +2,14 @@
 OCR 服务模块
 集成 PaddleOCR 实现截图文字识别
 """
+import logging
 import os
 import re
 from pathlib import Path
 from typing import Dict, Optional, List
 from PIL import Image
+
+logger = logging.getLogger(__name__)
 
 # 禁用 oneDNN 加速（解决 Windows 兼容性错误）
 os.environ['FLAGS_use_mkldnn'] = 'false'
@@ -29,7 +32,7 @@ class OCRService:
                 lang='ch'
             )
         except Exception as e:
-            print(f"[ERROR] PaddleOCR init failed: {e}")
+            logger.exception("PaddleOCR init failed")
             raise
     
     def recognize_image(self, image_path: str) -> List[Dict]:
@@ -67,9 +70,7 @@ class OCRService:
             return extracted_texts
             
         except Exception as e:
-            print(f"OCR 识别失败: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.exception("OCR 识别失败")
             return []
     
     def _preprocess_ocr_texts(self, texts: List[Dict]) -> List[str]:
@@ -144,13 +145,13 @@ class OCRService:
             return {}
         
         # 调试：打印所有识别的文字
-        print(f"[OCR] Recognized {len(texts)} texts:")
+        logger.debug("Recognized %d texts:", len(texts))
         for i, t in enumerate(texts):
-            print(f"  [{i}] {t['text']}")
+            logger.debug("  [%d] %s", i, t['text'])
         
         # 预处理：智能拼接相邻行（处理 "邮箱*"、"密码*"、邮箱跨行等）
         preprocessed = self._preprocess_ocr_texts(texts)
-        print(f"[OCR] Preprocessed: {preprocessed}")
+        logger.debug("Preprocessed: %s", preprocessed)
         
         # 合并所有文本，但先过滤掉密码相关的UI文字行
         password_ui_keywords = ['找回密码', '忘记密码', '记住密码', '修改密码', 
@@ -257,7 +258,7 @@ class OCRService:
                     not re.match(r'(账号|用户名|帐号|账户|登录名|手机|电话|邮箱|密码|口令)[：:*]', text)):
                     candidates.append(text)
             
-            print(f"[OCR] Candidates: {candidates}")
+                logger.debug("Candidates: %s", candidates)
             
             # 尝试从冒号或星号分割的文本中提取
             for text in candidates:
@@ -308,7 +309,7 @@ class OCRService:
             elif len(non_app_candidates) == 1 and not extracted['username']:
                 extracted['username'] = non_app_candidates[0]
         
-        print(f"[OCR] Extracted: {extracted}")
+        logger.debug("Extracted: %s", extracted)
         return extracted
     
     def _infer_app_name_from_url(self, url: str) -> str:
@@ -384,5 +385,5 @@ class OCRService:
             return save_path
             
         except Exception as e:
-            print(f"图片预处理失败: {e}")
+            logger.error("图片预处理失败: %s", e)
             return image_path

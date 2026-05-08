@@ -1,6 +1,7 @@
 """
 本地密码保险箱 - 主入口
 """
+import logging
 import sys
 import os
 
@@ -23,6 +24,7 @@ from PyQt6.QtCore import Qt
 # 添加项目根目录到路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from core.logger import setup_logging
 from core.crypto import CryptoManager
 from core.database import DatabaseManager
 from core.theme_manager import ThemeManager, style_button_primary
@@ -198,6 +200,8 @@ class LoginDialog(QDialog):
 
 def main():
     """主函数"""
+    setup_logging()
+
     # 创建应用
     app = QApplication(sys.argv)
     app.setApplicationName("本地密码保险箱")
@@ -288,7 +292,7 @@ def main():
                         # 解密失败（返回原始密文）
                         raise ValueError("Decryption failed: password incorrect")
             except Exception as e:
-                print(f"[Login] Password verification failed: {e}")
+                logging.getLogger(__name__).warning("Password verification failed: %s", e)
                 QMessageBox.critical(
                     None, "密码错误",
                     "主密码验证失败，无法解密数据。\n\n"

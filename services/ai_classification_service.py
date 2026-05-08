@@ -3,6 +3,7 @@ AI智能分类引擎
 支持密码库和网址库的一键智能整理
 工作流：预分析 -> 人工确认 -> 执行归类 -> 差异预览 -> 生效/回滚
 """
+import logging
 import json
 import time
 import hashlib
@@ -13,6 +14,8 @@ from pathlib import Path
 
 from models.account import Account
 from models.url_item import URLItem
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -225,9 +228,9 @@ class AIClassificationService:
             return proposals
             
         except Exception as e:
-            print(f"[AI Classify] Pre-analysis failed: {e}")
-            print(f"[AI Classify] Raw result full ({len(result)} chars): {result!r}")
-            print(f"[AI Classify] Extracted JSON full ({len(json_str)} chars): {json_str!r}")
+            logger.exception("Pre-analysis failed")
+            logger.debug("Raw result full (%d chars): %r", len(result), result)
+            logger.debug("Extracted JSON full (%d chars): %r", len(json_str), json_str)
             return self._heuristic_pre_analyze(accounts, existing_categories, 'account')
     
     def pre_analyze_urls(self, urls: List[URLItem], 
@@ -309,7 +312,7 @@ class AIClassificationService:
             return proposals
             
         except Exception as e:
-            print(f"[AI Classify] URL pre-analysis failed: {e}")
+            logger.exception("URL pre-analysis failed")
             return self._heuristic_pre_analyze(urls, existing_categories, 'url')
     
     def execute_classification(self, items: List, 
@@ -389,7 +392,7 @@ class AIClassificationService:
                 )
                 self.db.insert_snapshot(snapshot_id, item_type, before_state_json, changes_json)
             except Exception as e:
-                print(f"[AI Classify] Failed to persist snapshot: {e}")
+                logger.error("Failed to persist snapshot: %s", e)
                 # 回退到内存存储
                 self._snapshots.append(snapshot)
         else:
@@ -431,7 +434,7 @@ class AIClassificationService:
                         )
                         break
             except Exception as e:
-                print(f"[AI Classify] Failed to load snapshot from DB: {e}")
+                logger.error("Failed to load snapshot from DB: %s", e)
         
         # 回退到内存
         if not snapshot:
@@ -454,12 +457,12 @@ class AIClassificationService:
                     try:
                         self.db.update_account(item_id, {'category': item.category})
                     except Exception as e:
-                        print(f"[AI Classify] Failed to update account {item_id}: {e}")
+                        logger.error("Failed to update account %s: %s", item_id, e)
                 elif snapshot.item_type == 'url' and self.url_db:
                     try:
                         self.url_db.update_url(item_id, {'category': item.category})
                     except Exception as e:
-                        print(f"[AI Classify] Failed to update url {item_id}: {e}")
+                        logger.error("Failed to update url %s: %s", item_id, e)
         
         return True
     
@@ -484,9 +487,9 @@ class AIClassificationService:
                             changes=[self._dict_to_change(c) for c in changes_data]
                         ))
                     except Exception as e:
-                        print(f"[AI Classify] Failed to parse snapshot {s['snapshot_id']}: {e}")
+                        logger.error("Failed to parse snapshot %s: %s", s['snapshot_id'], e)
             except Exception as e:
-                print(f"[AI Classify] Failed to get snapshots from DB: {e}")
+                logger.error("Failed to get snapshots from DB: %s", e)
         
         # 如果数据库为空，回退到内存中的快照
         if not snapshots and self._snapshots:
@@ -592,9 +595,9 @@ class AIClassificationService:
             return changes
             
         except Exception as e:
-            print(f"[AI Classify] Batch classification failed: {e}")
-            print(f"[AI Classify] Batch raw result preview (first 500 chars): {result[:500]!r}")
-            print(f"[AI Classify] Batch extracted JSON preview (first 500 chars): {json_str[:500]!r}")
+            logger.exception("Batch classification failed")
+            logger.debug("Batch raw result preview (first 500 chars): %r", result[:500])
+            logger.debug("Batch extracted JSON preview (first 500 chars): %r", json_str[:500])
             # 降级：全部归入当前分类
             changes = []
             for item in batch:
@@ -733,7 +736,7 @@ class AIClassificationService:
             try:
                 self.db.cleanup_old_snapshots(30)
             except Exception as e:
-                print(f"[AI Classify] Failed to cleanup DB snapshots: {e}")
+                logger.error("Failed to cleanup DB snapshots: %s", e)
         
         # 同时清理内存中的旧快照
         cutoff = datetime.now().timestamp() - 30 * 86400

@@ -2,11 +2,14 @@
 AI 助手服务
 提供自然语言指令解析、数据库摘要构建、对话历史管理
 """
+import logging
 import json
 import uuid
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 from core.database import DatabaseManager
 from models.account import Account
@@ -397,11 +400,9 @@ class AIAssistantService:
             }
             
         except Exception as e:
-            import traceback
             error_msg = str(e)
             semantic_result = None
-            print(f"[AIAssistant] process_query exception: {error_msg}")
-            traceback.print_exc()
+            logger.exception("process_query exception")
             if record_history:
                 self._add_message('assistant', f"处理失败: {error_msg}", mode=mode)
             return {
@@ -485,7 +486,7 @@ class AIAssistantService:
         seen_response_close = False
         
         try:
-            print(f"[AIAssistant] Starting generate_stream, prompt_len={len(prompt)}")
+            logger.info("Starting generate_stream, prompt_len=%d", len(prompt))
             from services.ai_service_manager import AIServiceManager
             ai_manager = AIServiceManager.instance()
             from ai.ollama_client import OllamaClient
@@ -525,9 +526,9 @@ class AIAssistantService:
                     try:
                         on_token(clean_token, section)
                     except Exception as cb_err:
-                        print(f"[AIAssistant] on_token callback error: {cb_err}")
+                        logger.error("on_token callback error: %s", cb_err)
             
-            print(f"[AIAssistant] generate_stream finished, total_tokens={token_count}, response_len={len(full_text)}")
+            logger.info("generate_stream finished, total_tokens=%d, response_len=%d", token_count, len(full_text))
             # 解析完整结果
             result = ollama._extract_command(full_text)
             
@@ -685,7 +686,7 @@ class AIAssistantService:
         item_type_name = '网址' if vault_type == 'urls' else '账号'
         total_count = len(context_items or [])
         category_tree_text = f"当前库类型：{vault_type_name}\n共{total_count}个{item_type_name}\n分类体系：\n{tree_body}"
-        print(f"[AIAssistant] category_tree length={len(category_tree_text)}, text={category_tree_text[:200]!r}")
+        logger.info("category_tree length=%d, text=%r", len(category_tree_text), category_tree_text[:200])
 
         # 3. 预决策：让大模型解析用户提到的目标分类（语义理解替代硬编码字符串匹配）
         from ai.ollama_client import OllamaClient
@@ -708,7 +709,7 @@ class AIAssistantService:
         
         pre_decision = ollama.generate_tool_call(enhanced_query, category_tree_text, "", tools, vault_type=vault_type)
         target_categories = pre_decision.get("target_categories", [])
-        print(f"[AIAssistant] target_categories={target_categories}")
+        logger.info("target_categories=%s", target_categories)
 
         # 4. 用 target_categories 筛选条目（支持多分类和二级分类）
         if target_categories:
@@ -730,7 +731,7 @@ class AIAssistantService:
                 filtered_items, scope_hint = self._filter_items_by_query(context_items or [], enhanced_query)
         else:
             filtered_items, scope_hint = self._filter_items_by_query(context_items or [], enhanced_query)
-        print(f"[AIAssistant] filtered={len(filtered_items)}, scope_hint='{scope_hint}'")
+        logger.info("filtered=%d, scope_hint='%s'", len(filtered_items), scope_hint)
 
         # 5. 更新分类树中的数量（用筛选后的结果）
         category_tree_text = f"当前库类型：{vault_type_name}\n共{len(filtered_items)}个{item_type_name}\n分类体系：\n{tree_body}"
@@ -1372,7 +1373,7 @@ class AIAssistantService:
         success = True
         result_msg = ""
 
-        print(f"[AIAssistant] execute_build_action_with_transaction starting, items={len(confirmed_items)}, tool={tool_name}")
+        logger.info("execute_build_action_with_transaction starting, items=%d, tool=%s", len(confirmed_items), tool_name)
 
         if tool_name in ('batch_add_accounts', 'batch_add_urls'):
             vault_type = 'accounts' if tool_name == 'batch_add_accounts' else 'urls'
@@ -1387,12 +1388,11 @@ class AIAssistantService:
                         new_id = repo.insert(url_item.to_dict())
                     affected_ids.append(new_id)
                 except Exception as e:
-                    import traceback
-                    traceback.print_exc()
+                    logger.exception("Batch add item failed")
                     fail_ids.append((item, str(e)))
             success = len(fail_ids) == 0
             result_msg = f"批量导入完成：成功 {len(affected_ids)} 条" + (f"，失败 {len(fail_ids)} 条" if fail_ids else "")
-            print(f"[AIAssistant] Batch add completed, success={len(affected_ids)}")
+            logger.info("Batch add completed, success=%d", len(affected_ids))
 
         elif tool_name in ('batch_update_accounts', 'batch_update_urls',
                            'batch_reorganize_accounts', 'batch_reorganize_urls',
@@ -1441,12 +1441,11 @@ class AIAssistantService:
                                     repo.update_field(target_id, field, item[field])
                             affected_ids.append(target_id)
                 except Exception as e:
-                    import traceback
-                    traceback.print_exc()
+                    logger.exception("Batch update item failed")
                     fail_ids.append((item, str(e)))
             success = len(fail_ids) == 0
             result_msg = f"批量更新完成：成功 {len(affected_ids)} 条" + (f"，失败 {len(fail_ids)} 条" if fail_ids else "")
-            print(f"[AIAssistant] Batch update completed, success={len(affected_ids)}")
+            logger.info("Batch update completed, success=%d", len(affected_ids))
 
         elif tool_name in ('batch_delete_accounts', 'batch_delete_urls'):
             if len(confirmed_items) > 50 and not _force:
@@ -1475,12 +1474,11 @@ class AIAssistantService:
                                 self.db.soft_delete_url(target_id, original)
                     affected_ids.append(target_id)
                 except Exception as e:
-                    import traceback
-                    traceback.print_exc()
+                    logger.exception("Batch delete item failed")
                     fail_ids.append((item, str(e)))
             success = len(fail_ids) == 0
             result_msg = f"删除完成：成功 {len(affected_ids)} 条" + (f"，失败 {len(fail_ids)} 条" if fail_ids else "")
-            print(f"[AIAssistant] Delete completed, success={len(affected_ids)}")
+            logger.info("Delete completed, success=%d", len(affected_ids))
 
         else:
             return {
@@ -1505,7 +1503,7 @@ class AIAssistantService:
                 transaction_id=transaction_id
             )
         except Exception as e:
-            print(f"[Audit] 写入审计日志失败: {e}")
+            logger.error("写入审计日志失败: %s", e)
 
         return {
             "success": success,
@@ -1550,7 +1548,7 @@ class AIAssistantService:
         error_msg = None
         fail_ids = []
 
-        print(f"[AIAssistant] execute_build_action_with_transaction starting, items={len(executable_items)}, vault={vault_type}")
+        logger.info("execute_build_action_with_transaction starting, items=%d, vault=%s", len(executable_items), vault_type)
 
         if action_type == 'delete':
             if not action_preview.get('_force'):
@@ -1577,7 +1575,7 @@ class AIAssistantService:
 
             success = len(fail_ids) == 0
             result_msg = f"删除完成：成功 {len(affected_ids)} 条" + (f"，失败 {len(fail_ids)} 条" if fail_ids else "")
-            print(f"[AIAssistant] Delete completed, success={len(affected_ids)}, fail={len(fail_ids)}")
+            logger.info("Delete completed, success=%d, fail=%d", len(affected_ids), len(fail_ids))
         elif action_type in ('batch_add_account', 'batch_add_url'):
             repo = RepositoryFactory.get_repository(vault_type)
             from services.batch_add_processor import BatchAddProcessor
@@ -1586,7 +1584,7 @@ class AIAssistantService:
             affected_ids = batch_result.get('inserted_ids', [])
             success = batch_result.get('success', 0) > 0 or len(affected_ids) > 0
             result_msg = f"批量导入完成：成功 {batch_result.get('success', 0)} 条，跳过 {batch_result.get('skip', 0)} 条，失败 {batch_result.get('fail', 0)} 条"
-            print(f"[AIAssistant] Batch add completed, success={batch_result.get('success', 0)}")
+            logger.info("Batch add completed, success=%s", batch_result.get('success', 0))
         else:
             repo = RepositoryFactory.get_repository(vault_type)
             item_type_name = repo.get_item_type_name()
@@ -1597,7 +1595,7 @@ class AIAssistantService:
                         target_id = item['target_id']
                         field = item['field']
                         new_value = item['new_value']
-                        print(f"[AIAssistant] UPDATE id={target_id}, field={field}, new_value={new_value}")
+                        logger.debug("UPDATE id=%s, field=%s, new_value=%s", target_id, field, new_value)
                         repo.update_field(target_id, field, new_value)
                         affected_ids.append(target_id)
 
@@ -1607,17 +1605,15 @@ class AIAssistantService:
                         affected_ids.append(new_id)
 
                 except Exception as e:
-                    import traceback
                     tid = item.get('target_id', item.get('fields', {}).get('app_name', 'unknown'))
-                    print(f"[AIAssistant] Item execution failed: {tid}, error={e}")
-                    traceback.print_exc()
+                    logger.exception("Item execution failed: %s, error=%s", tid, e)
                     fail_ids.append((tid, str(e)))
 
             success = len(fail_ids) == 0
             result_msg = f"成功执行 {action_type}，共影响 {len(affected_ids)} 个{item_type_name}"
             if fail_ids:
                 result_msg += f"，失败 {len(fail_ids)} 条"
-            print(f"[AIAssistant] Execution completed, success={len(affected_ids)}, fail={len(fail_ids)}")
+            logger.info("Execution completed, success=%d, fail=%d", len(affected_ids), len(fail_ids))
 
         # 写入审计日志
         try:
@@ -1633,7 +1629,7 @@ class AIAssistantService:
                 transaction_id=transaction_id
             )
         except Exception as e:
-            print(f"[Audit] 写入审计日志失败: {e}")
+            logger.error("写入审计日志失败: %s", e)
 
         return {
             "success": success,

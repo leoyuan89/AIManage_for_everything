@@ -2,11 +2,14 @@
 主题管理模块
 提供 qt-material 主题加载 + ThemeColors 色板系统 + 图标管理
 """
+import logging
 from dataclasses import dataclass
 from typing import Dict
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtGui import QIcon
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -248,11 +251,11 @@ class ThemeManager(QObject):
                 apply_stylesheet(app, theme='dark_blue.xml')
             else:
                 apply_stylesheet(app, theme='light_blue.xml')
-            print(f"[INFO] Applied qt-material theme: {theme}")
+            logger.info("Applied qt-material theme: %s", theme)
         except ImportError:
-            print("[WARNING] qt-material not installed, using default style")
+            logger.warning("qt-material not installed, using default style")
         except Exception as e:
-            print(f"[WARNING] Failed to apply theme: {e}")
+            logger.warning("Failed to apply theme: %s", e)
 
 
 # ============================================================

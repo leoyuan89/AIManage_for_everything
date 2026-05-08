@@ -2,8 +2,11 @@
 标签服务模块
 支持：AI 自动生成 + 用户自定义
 """
+import logging
 import json
 from typing import List, Optional, Dict
+
+logger = logging.getLogger(__name__)
 
 
 class TagService:
@@ -61,7 +64,7 @@ class TagService:
                 ai_tags = self._generate_tags_with_ai(app_name, url, category)
                 tags.extend(ai_tags)
             except Exception as e:
-                print(f"[Tag] AI tag generation failed: {e}")
+                logger.error("AI tag generation failed: %s", e)
         
         # 去重并限制数量
         tags = list(dict.fromkeys(tags))  # 保持顺序去重

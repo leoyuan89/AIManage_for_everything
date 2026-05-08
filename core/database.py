@@ -2,12 +2,15 @@
 数据库管理模块
 SQLite 连接管理 + 自动加解密透明处理
 """
+import logging
 import os
 import sqlite3
 import json
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
+
+logger = logging.getLogger(__name__)
 
 
 class DatabaseManager:
@@ -144,6 +147,14 @@ class DatabaseManager:
             )
         """)
         
+        # 保险箱配置表
+        self.cursor.execute("""
+            CREATE TABLE IF NOT EXISTS vault_config (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
+        
         self.conn.commit()
     
     def _encrypt_field(self, plaintext: str) -> str:
@@ -159,7 +170,7 @@ class DatabaseManager:
                 return self.crypto.decrypt_from_string(ciphertext)
             except Exception as e:
                 # 解密失败：记录日志后返回原密文（避免崩溃，但UI会显示密文）
-                print(f"[DB] Decrypt failed: {type(e).__name__}: {e}")
+                logger.warning("Decrypt failed: %s: %s", type(e).__name__, e)
                 return ciphertext
         return ciphertext
     
@@ -181,14 +192,14 @@ class DatabaseManager:
                 if col_name not in columns:
                     try:
                         self.cursor.execute(sql)
-                        print(f"[DB] Migrated: added column '{col_name}'")
+                        logger.info("Migrated: added column '%s'", col_name)
                     except Exception as e:
-                        print(f"[DB] Migration warning for {col_name}: {e}")
+                        logger.warning("Migration warning for %s: %s", col_name, e)
             
             self.conn.commit()
             
         except Exception as e:
-            print(f"[DB] Migration failed: {e}")
+            logger.error("Migration failed: %s", e)
     
     def close(self):
         """关闭数据库连接"""
@@ -440,7 +451,7 @@ class DatabaseManager:
             self.conn.commit()
             return True
         except Exception as e:
-            print(f"[DB] add_category_order failed: {e}")
+            logger.error("add_category_order failed: %s", e)
             return False
     
     def rename_category(self, old_name: str, new_name: str) -> int:
@@ -469,7 +480,7 @@ class DatabaseManager:
             self.conn.commit()
             return True
         except Exception as e:
-            print(f"[DB] rename_category_order failed: {e}")
+            logger.error("rename_category_order failed: %s", e)
             return False
 
     def delete_category(self, category_name: str) -> int:
@@ -554,7 +565,7 @@ class DatabaseManager:
             return True
         except Exception as e:
             self.conn.rollback()
-            print(f"[DB] promote_category failed: {e}")
+            logger.error("promote_category failed: %s", e)
             return False
     
     def reparent_category(self, old_path: str, new_path: str) -> int:
@@ -605,7 +616,7 @@ class DatabaseManager:
             return updated_rows
         except Exception as e:
             self.conn.rollback()
-            print(f"[DB] reparent_category failed: {e}")
+            logger.error("reparent_category failed: %s", e)
             return 0
     
     def _decrypt_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
@@ -676,6 +687,33 @@ class DatabaseManager:
         )
         self.conn.commit()
     
+    # ==================== 保险箱配置表操作 ====================
+    
+    def _get_vault_config(self, key: str) -> Optional[str]:
+        """获取保险箱配置项"""
+        self.cursor.execute("SELECT value FROM vault_config WHERE key = ?", (key,))
+        row = self.cursor.fetchone()
+        return row['value'] if row else None
+    
+    def _set_vault_config(self, key: str, value: str):
+        """设置保险箱配置项"""
+        self.cursor.execute(
+            "INSERT OR REPLACE INTO vault_config (key, value) VALUES (?, ?)",
+            (key, value)
+        )
+        self.conn.commit()
+    
+    def get_session_version(self) -> int:
+        """获取当前会话版本号"""
+        val = self._get_vault_config('session_version')
+        return int(val) if val else 1
+    
+    def increment_session_version(self) -> int:
+        """递增会话版本号（密码修改时调用）"""
+        new_version = self.get_session_version() + 1
+        self._set_vault_config('session_version', str(new_version))
+        return new_version
+    
     def insert_audit_log(self, mode: str, user_query: str, parsed_action: Optional[str] = None,
                          parsed_params: Optional[Any] = None, affected_count: int = 0,
                          affected_ids: Optional[List[int]] = None, result: Optional[str] = None,
@@ -740,7 +778,7 @@ class DatabaseManager:
             return True
         except Exception as e:
             self.conn.rollback()
-            print(f"[DB] soft_delete_account error: {e}")
+            logger.error("soft_delete_account error: %s", e)
             return False
     
     def soft_delete_url(self, url_id: int, url_data: dict) -> bool:
@@ -763,7 +801,7 @@ class DatabaseManager:
             return True
         except Exception as e:
             self.conn.rollback()
-            print(f"[DB] soft_delete_url error: {e}")
+            logger.error("soft_delete_url error: %s", e)
             return False
     
     def get_recycle_bin_items(self, item_type: str = None, include_expired: bool = False) -> List[Dict]:
@@ -792,7 +830,7 @@ class DatabaseManager:
             rows = self.cursor.fetchall()
             return [dict(row) for row in rows]
         except Exception as e:
-            print(f"[DB] get_recycle_bin_items error: {e}")
+            logger.error("get_recycle_bin_items error: %s", e)
             return []
     
     def restore_account(self, recycle_id: int) -> Optional[Dict]:
@@ -826,7 +864,7 @@ class DatabaseManager:
             return account_data
         except Exception as e:
             self.conn.rollback()
-            print(f"[DB] restore_account error: {e}")
+            logger.error("restore_account error: %s", e)
             return None
     
     def restore_url(self, recycle_id: int) -> Optional[Dict]:
@@ -857,7 +895,7 @@ class DatabaseManager:
             return url_data
         except Exception as e:
             self.conn.rollback()
-            print(f"[DB] restore_url error: {e}")
+            logger.error("restore_url error: %s", e)
             return None
     
     def cleanup_expired_recycle_bin(self, days: int = 30) -> int:
@@ -870,7 +908,7 @@ class DatabaseManager:
             return self.cursor.rowcount
         except Exception as e:
             self.conn.rollback()
-            print(f"[DB] cleanup_expired_recycle_bin error: {e}")
+            logger.error("cleanup_expired_recycle_bin error: %s", e)
             return 0
     
     def permanently_delete_recycle_item(self, recycle_id: int) -> bool:
@@ -881,7 +919,7 @@ class DatabaseManager:
             return self.cursor.rowcount > 0
         except Exception as e:
             self.conn.rollback()
-            print(f"[DB] permanently_delete_recycle_item error: {e}")
+            logger.error("permanently_delete_recycle_item error: %s", e)
             return False
     
     # ==================== 快照表操作 ====================

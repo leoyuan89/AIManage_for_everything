@@ -2,9 +2,12 @@
 网址数据库管理模块
 独立的 SQLite 数据库（vault_urls.db）
 """
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Optional, List, Dict, Any
+
+logger = logging.getLogger(__name__)
 
 
 class URLDatabaseManager:
@@ -239,7 +242,7 @@ class URLDatabaseManager:
             return True
         except Exception as e:
             self.conn.rollback()
-            print(f"[URLDB] soft_delete_url error: {e}")
+            logger.error("soft_delete_url error: %s", e)
             return False
     
     def get_recycle_bin_items(self, include_expired: bool = False) -> List[Dict[str, Any]]:
@@ -256,7 +259,7 @@ class URLDatabaseManager:
             rows = self.cursor.fetchall()
             return [dict(row) for row in rows]
         except Exception as e:
-            print(f"[URLDB] get_recycle_bin_items error: {e}")
+            logger.error("get_recycle_bin_items error: %s", e)
             return []
     
     def restore_url(self, recycle_id: int) -> Optional[Dict[str, Any]]:
@@ -287,7 +290,7 @@ class URLDatabaseManager:
             return url_data
         except Exception as e:
             self.conn.rollback()
-            print(f"[URLDB] restore_url error: {e}")
+            logger.error("restore_url error: %s", e)
             return None
     
     def permanently_delete_recycle_item(self, recycle_id: int) -> bool:
@@ -298,7 +301,7 @@ class URLDatabaseManager:
             return self.cursor.rowcount > 0
         except Exception as e:
             self.conn.rollback()
-            print(f"[URLDB] permanently_delete_recycle_item error: {e}")
+            logger.error("permanently_delete_recycle_item error: %s", e)
             return False
     
     def cleanup_expired_recycle_bin(self, days: int = 30) -> int:
@@ -311,7 +314,7 @@ class URLDatabaseManager:
             return self.cursor.rowcount
         except Exception as e:
             self.conn.rollback()
-            print(f"[URLDB] cleanup_expired_recycle_bin error: {e}")
+            logger.error("cleanup_expired_recycle_bin error: %s", e)
             return 0
     
     def get_url_by_id(self, url_id: int) -> Optional[Dict[str, Any]]:
@@ -521,7 +524,7 @@ class URLDatabaseManager:
             self.conn.commit()
             return True
         except Exception as e:
-            print(f"[URLDB] rename_category_order failed: {e}")
+            logger.error("rename_category_order failed: %s", e)
             return False
 
     def delete_category(self, category_name: str) -> int:
@@ -601,7 +604,7 @@ class URLDatabaseManager:
             return True
         except Exception as e:
             self.conn.rollback()
-            print(f"[URLDB] promote_category failed: {e}")
+            logger.error("promote_category failed: %s", e)
             return False
 
     def reparent_category(self, old_path: str, new_path: str) -> int:
@@ -648,5 +651,5 @@ class URLDatabaseManager:
             return self.cursor.rowcount
         except Exception as e:
             self.conn.rollback()
-            print(f"[URLDB] reparent_category failed: {e}")
+            logger.error("reparent_category failed: %s", e)
             return 0

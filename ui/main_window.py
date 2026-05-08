@@ -1,9 +1,10 @@
-"""
+﻿"""
 主窗口模块
 包含：分类导航、账号列表、搜索框、底部工具栏
 """
 import sys
 import time
+import logging
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Dict
@@ -40,6 +41,10 @@ from .export_dialog import ExportDialog
 from .settings_dialog import SettingsDialog
 from .batch_add_preview_widget import BatchAddPreviewWidget
 from .lock_screen import LockScreen, IdleTimer
+from .widgets.account_list_item import AccountListItem
+from .widgets.url_list_item import URLListItem
+
+logger = logging.getLogger(__name__)
 
 
 class AIQueryThread(QThread):
@@ -69,15 +74,15 @@ class AIQueryThread(QThread):
     def run(self):
         """在线程中执行 AI 查询：使用分段输出（打字机效果）"""
         import json as _json
-        print(f"[AIThread] 开始处理查询: {self.query[:50]}...")
+        logger.debug(f" 开始处理查询: {self.query[:50]}...")
         try:
             # 分段输出：先获取完整响应，再逐段发射到 UI（每 250ms 一段）
             # 比完全流式更稳定（避免高频 Signal），比完全非流式体验更好
             self._run_segmented()
         except Exception as e:
             import traceback
-            print(f"[AIThread] 异常: {e}")
-            traceback.print_exc()
+            logger.debug(f" 异常: {e}")
+            logger.exception("Unhandled exception")
             error_result = {
                 "success": False,
                 "thinking": "",
@@ -93,18 +98,18 @@ class AIQueryThread(QThread):
         import json as _json
         import time
         
-        print("[AIThread] _run_segmented started")
+        logger.debug("[AIThread] _run_segmented started")
         
         # 1. 获取完整响应（非流式，更稳定）
         try:
             result = self.ai_assistant.process_react_query(
                 self.query, self.accounts, mode=self.mode, vault_type=self.vault_type
             )
-            print(f"[AIThread] process_query done, action={result.get('action')}")
+            logger.debug(f" process_query done, action={result.get('action')}")
         except Exception as e:
             import traceback
-            print(f"[AIThread] process_query error: {e}")
-            traceback.print_exc()
+            logger.debug(f" process_query error: {e}")
+            logger.exception("Unhandled exception")
             result = {
                 "success": False,
                 "thinking": "",
@@ -120,20 +125,20 @@ class AIQueryThread(QThread):
         response_text = result.get('response', '')
         if response_text and not self._cancelled and not is_react:
             segments = self._split_into_segments(response_text, max_chunk=30)
-            print(f"[AIThread] Split into {len(segments)} segments")
+            logger.debug(f" Split into {len(segments)} segments")
             
             # 3. 逐段发射，每段间隔 250ms（每秒 4 次，安全频率）
             for i, segment in enumerate(segments):
                 if self._cancelled:
-                    print("[AIThread] Cancelled, stopping emission")
+                    logger.info("[AIThread] Cancelled, stopping emission")
                     break
-                print(f"[AIThread] Emit segment {i+1}/{len(segments)} ({len(segment)} chars)")
+                logger.debug(f" Emit segment {i+1}/{len(segments)} ({len(segment)} chars)")
                 self.result_token.emit(segment)
                 time.sleep(0.25)  # 250ms 间隔
         
         # 4. 发射最终结果
         json_str = _json.dumps(result, ensure_ascii=False)
-        print(f"[AIThread] Emitting result_ready, json_len={len(json_str)}")
+        logger.debug(f" Emitting result_ready, json_len={len(json_str)}")
         self.result_ready.emit(json_str)
     
     def _split_into_segments(self, text: str, max_chunk: int = 30) -> list:
@@ -184,39 +189,39 @@ class AIQueryThread(QThread):
                 try:
                     if thinking_buffer:
                         batch = ''.join(thinking_buffer)
-                        print(f"[AIThread] Emit thinking batch ({len(batch)} chars)")
+                        logger.debug(f" Emit thinking batch ({len(batch)} chars)")
                         self.thinking_token.emit(batch)
                         thinking_buffer.clear()
                     if result_buffer:
                         batch = ''.join(result_buffer)
-                        print(f"[AIThread] Emit result batch ({len(batch)} chars)")
+                        logger.debug(f" Emit result batch ({len(batch)} chars)")
                         self.result_token.emit(batch)
                         result_buffer.clear()
                 except Exception as e:
-                    print(f"[AIThread] Emit error: {e}")
+                    logger.debug(f" Emit error: {e}")
                 last_emit_time[0] = now
         
-        print(f"[AIThread] Entering process_query_stream, mode={self.mode}")
+        logger.debug(f" Entering process_query_stream, mode={self.mode}")
         result = self.ai_assistant.process_query_stream(
             self.query, self.accounts, mode=self.mode, on_token=on_token, vault_type=self.vault_type
         )
-        print(f"[AIThread] process_query_stream finished, action={result.get('action')}, success={result.get('success')}")
+        logger.debug(f" process_query_stream finished, action={result.get('action')}, success={result.get('success')}")
         
         # 发射剩余 buffer
         try:
             if thinking_buffer:
                 batch = ''.join(thinking_buffer)
-                print(f"[AIThread] Final thinking emit ({len(batch)} chars)")
+                logger.debug(f" Final thinking emit ({len(batch)} chars)")
                 self.thinking_token.emit(batch)
             if result_buffer:
                 batch = ''.join(result_buffer)
-                print(f"[AIThread] Final result emit ({len(batch)} chars)")
+                logger.debug(f" Final result emit ({len(batch)} chars)")
                 self.result_token.emit(batch)
         except Exception as e:
-            print(f"[AIThread] Final emit error: {e}")
+            logger.debug(f" Final emit error: {e}")
         
         json_str = _json.dumps(result, ensure_ascii=False)
-        print(f"[AIThread] Emitting result_ready, json_len={len(json_str)}")
+        logger.debug(f" Emitting result_ready, json_len={len(json_str)}")
         self.result_ready.emit(json_str)
     
     def _run_legacy(self):
@@ -225,274 +230,6 @@ class AIQueryThread(QThread):
         result = self.ai_assistant.process_query(self.query, self.accounts, vault_type=self.vault_type)
         json_str = _json.dumps(result, ensure_ascii=False)
         self.result_ready.emit(json_str)
-
-
-class AccountListItem(QWidget):
-    """自定义账号列表项（支持标识徽章、选择模式）"""
-    
-    def __init__(self, account: Account, badges: list = None, selection_mode: bool = False, parent=None):
-        colors = ThemeManager.instance().colors
-        super().__init__(parent)
-        self.setObjectName("accountListItem")
-        self.account = account
-        self.badges = badges or []
-        self.setup_ui(selection_mode)
-    
-    def setup_ui(self, selection_mode: bool):
-        colors = ThemeManager.instance().colors
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 0, 10, 0)
-        layout.setSpacing(10)
-        
-        # 复选框
-        self.checkbox = QCheckBox()
-        self.checkbox.setFixedSize(24, 24)
-        self.checkbox.setVisible(selection_mode)
-        layout.addWidget(self.checkbox)
-        
-        # 圆形图标
-        self.icon_label = QLabel(self._get_initial(self.account.app_name))
-        self.icon_label.setFixedSize(36, 36)
-        self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        color = self._generate_icon_color(self.account.app_name)
-        self.icon_label.setStyleSheet(f"""
-            QLabel {{
-                background-color: {color};
-                color: {colors.text_on_accent};
-                border-radius: 18px;
-                font-size: 14px;
-                font-weight: bold;
-            }}
-        """)
-        layout.addWidget(self.icon_label)
-        
-        # 文字区（垂直）
-        text_layout = QVBoxLayout()
-        text_layout.setSpacing(2)
-        text_layout.setContentsMargins(0, 0, 0, 0)
-        
-        # 主标题行（包含徽章）
-        title_layout = QHBoxLayout()
-        title_layout.setSpacing(4)
-        
-        self.lbl_name = QLabel(self.account.app_name)
-        self.lbl_name.setStyleSheet(f"color: {colors.text_primary}; font-size: 15px; font-weight: 600;")
-        title_layout.addWidget(self.lbl_name)
-        
-        # 徽章标签（如 炽阳推荐）
-        for badge_text, badge_color in self.badges:
-            lbl_badge = QLabel(badge_text)
-            lbl_badge.setStyleSheet(f"""
-                color: {badge_color};
-                font-size: 9px;
-                font-weight: bold;
-                background-color: {badge_color}20;
-                border-radius: 4px;
-                padding: 1px 6px;
-            """)
-            title_layout.addWidget(lbl_badge)
-        
-        # 密码强度徽章
-        if self.account.security_level:
-            level_colors = {
-                "弱": "#f44336",
-                "中": "#FF9800",
-                "强": "#4CAF50",
-                "极强": "#2196F3"
-            }
-            level_color = level_colors.get(self.account.security_level, colors.text_tertiary)
-            lbl_sec = QLabel(self.account.security_level)
-            lbl_sec.setStyleSheet(f"""
-                color: {level_color};
-                font-size: 9px;
-                font-weight: bold;
-                background-color: {level_color}20;
-                border-radius: 4px;
-                padding: 1px 6px;
-            """)
-            title_layout.addWidget(lbl_sec)
-        
-        title_layout.addStretch()
-        text_layout.addLayout(title_layout)
-        
-        # 副标题：脱敏账号
-        self.lbl_account = QLabel(self.account.mask_username())
-        self.lbl_account.setStyleSheet(f"color: {colors.text_tertiary}; font-size: 12px;")
-        text_layout.addWidget(self.lbl_account)
-        
-        layout.addLayout(text_layout, 1)
-        
-        # 分类标签 Pill
-        self.lbl_category = QLabel(self.account.category or '其他')
-        self.lbl_category.setStyleSheet(f"""
-            color: {colors.text_secondary};
-            font-size: 11px;
-            background-color: {colors.bg_secondary};
-            border-radius: 10px;
-            padding: 2px 8px;
-        """)
-        layout.addWidget(self.lbl_category)
-        
-        # 右箭头
-        self.lbl_arrow = QLabel("›")
-        self.lbl_arrow.setStyleSheet(f"color: {colors.text_disabled}; font-size: 18px;")
-        layout.addWidget(self.lbl_arrow)
-        
-        self.setFixedHeight(56)
-        self.setStyleSheet(f"""
-            #accountListItem {{
-                background-color: {colors.bg_primary};
-                border: none;
-                border-bottom: 1px solid {colors.border_light};
-            }}
-        """)
-    
-    def set_selection_mode(self, enabled: bool):
-        self.checkbox.setVisible(enabled)
-    
-    def is_checked(self) -> bool:
-        return self.checkbox.isChecked()
-    
-    def set_checked(self, checked: bool):
-        self.checkbox.setChecked(checked)
-    
-    @staticmethod
-    def _generate_icon_color(text: str) -> str:
-        colors = ['#E57373', '#F06292', '#BA68C8', '#9575CD', '#7986CB', '#64B5F6', '#4FC3F7', '#4DD0E1', '#4DB6AC', '#81C784', '#AED581', '#FFD54F', '#FFB74D', '#FF8A65', '#A1887F']
-        hash_val = sum(ord(c) for c in text) if text else 0
-        return colors[hash_val % len(colors)]
-    
-    @staticmethod
-    def _get_initial(text: str) -> str:
-        if not text:
-            return '?'
-        return text[0].upper()
-
-
-class URLListItem(QWidget):
-    """自定义网址列表项（支持标识徽章、选择模式）"""
-    
-    def __init__(self, url_item, badges: list = None, selection_mode: bool = False, parent=None):
-        colors = ThemeManager.instance().colors
-        super().__init__(parent)
-        self.setObjectName("urlListItem")
-        self.url_item = url_item
-        self.badges = badges or []
-        self.setup_ui(selection_mode)
-    
-    def setup_ui(self, selection_mode: bool):
-        colors = ThemeManager.instance().colors
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 0, 10, 0)
-        layout.setSpacing(10)
-        
-        # 复选框
-        self.checkbox = QCheckBox()
-        self.checkbox.setFixedSize(24, 24)
-        self.checkbox.setVisible(selection_mode)
-        layout.addWidget(self.checkbox)
-        
-        # 圆形图标
-        title = self.url_item.get('title', '') if isinstance(self.url_item, dict) else getattr(self.url_item, 'title', '')
-        self.icon_label = QLabel(self._get_initial(title))
-        self.icon_label.setFixedSize(36, 36)
-        self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        color = self._generate_icon_color(title)
-        self.icon_label.setStyleSheet(f"""
-            QLabel {{
-                background-color: {color};
-                color: {colors.text_on_accent};
-                border-radius: 18px;
-                font-size: 14px;
-                font-weight: bold;
-            }}
-        """)
-        layout.addWidget(self.icon_label)
-        
-        # 文字区（垂直）
-        text_layout = QVBoxLayout()
-        text_layout.setSpacing(2)
-        text_layout.setContentsMargins(0, 0, 0, 0)
-        
-        # 主标题行（包含徽章）
-        title_layout = QHBoxLayout()
-        title_layout.setSpacing(4)
-        
-        self.lbl_name = QLabel(title)
-        self.lbl_name.setStyleSheet(f"color: {colors.text_primary}; font-size: 15px; font-weight: 600;")
-        title_layout.addWidget(self.lbl_name)
-        
-        # 徽章标签（如 匹配）
-        for badge_text, badge_color in self.badges:
-            lbl_badge = QLabel(badge_text)
-            lbl_badge.setStyleSheet(f"""
-                color: {badge_color};
-                font-size: 9px;
-                font-weight: bold;
-                background-color: {badge_color}20;
-                border-radius: 4px;
-                padding: 1px 6px;
-            """)
-            title_layout.addWidget(lbl_badge)
-        
-        title_layout.addStretch()
-        text_layout.addLayout(title_layout)
-        
-        url = self.url_item.get('url', '') if isinstance(self.url_item, dict) else getattr(self.url_item, 'url', '')
-        display_url = url[:40] if len(url) <= 40 else url[:40] + '...'
-        self.lbl_url = QLabel(display_url)
-        self.lbl_url.setStyleSheet(f"color: {colors.text_tertiary}; font-size: 12px;")
-        self.lbl_url.setToolTip(url)
-        text_layout.addWidget(self.lbl_url)
-        
-        layout.addLayout(text_layout, 1)
-        
-        # 分类标签 Pill
-        category = self.url_item.get('category', '') if isinstance(self.url_item, dict) else getattr(self.url_item, 'category', '')
-        self.lbl_category = QLabel(category or '其他')
-        self.lbl_category.setStyleSheet(f"""
-            color: {colors.text_secondary};
-            font-size: 11px;
-            background-color: {colors.bg_secondary};
-            border-radius: 10px;
-            padding: 2px 8px;
-        """)
-        layout.addWidget(self.lbl_category)
-        
-        # 右箭头
-        self.lbl_arrow = QLabel("›")
-        self.lbl_arrow.setStyleSheet(f"color: {colors.text_disabled}; font-size: 18px;")
-        layout.addWidget(self.lbl_arrow)
-        
-        self.setFixedHeight(56)
-        self.setStyleSheet(f"""
-            #urlListItem {{
-                background-color: {colors.bg_primary};
-                border: none;
-                border-bottom: 1px solid {colors.border_light};
-            }}
-        """)
-    
-    def set_selection_mode(self, enabled: bool):
-        self.checkbox.setVisible(enabled)
-    
-    def is_checked(self) -> bool:
-        return self.checkbox.isChecked()
-    
-    def set_checked(self, checked: bool):
-        self.checkbox.setChecked(checked)
-    
-    @staticmethod
-    def _generate_icon_color(text: str) -> str:
-        colors = ['#E57373', '#F06292', '#BA68C8', '#9575CD', '#7986CB', '#64B5F6', '#4FC3F7', '#4DD0E1', '#4DB6AC', '#81C784', '#AED581', '#FFD54F', '#FFB74D', '#FF8A65', '#A1887F']
-        hash_val = sum(ord(c) for c in text) if text else 0
-        return colors[hash_val % len(colors)]
-    
-    @staticmethod
-    def _get_initial(text: str) -> str:
-        if not text:
-            return '?'
-        return text[0].upper()
 
 
 class ReActState(Enum):
@@ -938,7 +675,7 @@ class ActionPreviewWidget(QFrame):
                 updated = True
         if updated:
             check_item.setData(Qt.ItemDataRole.UserRole, raw)
-            print(f"[ActionPreviewWidget] Row {row} col {col} edited, raw_data updated: {raw}")
+            logger.debug(f" Row {row} col {col} edited, raw_data updated: {raw}")
     
     def get_selected_items(self) -> List[Dict]:
         """获取用户勾选的条目（兼容旧代码）"""
@@ -1574,6 +1311,7 @@ class MainWindow(QMainWindow):
         self.setup_ui()
         self._reload_categories()
         self._setup_session_security()
+        self._session_version = self.db.get_session_version()
         self.load_accounts()
         
         # 初始化网址库
@@ -1612,6 +1350,65 @@ class MainWindow(QMainWindow):
 
         # 初始化完成后主动同步一次样式（确保初始主题正确）
         self._reapply_styles(ThemeManager.instance().colors)
+        
+        # 注册键盘快捷键
+        self._register_shortcuts()
+    
+    def _register_shortcuts(self):
+        """注册全局键盘快捷键"""
+        from PyQt6.QtGui import QShortcut, QKeySequence
+        
+        shortcuts = [
+            (QKeySequence("Ctrl+F"), self._shortcut_focus_search),
+            (QKeySequence("Ctrl+N"), self.on_add_item),
+            (QKeySequence("Delete"), self._shortcut_delete_current),
+            (QKeySequence("Escape"), self._shortcut_escape),
+            (QKeySequence("Ctrl+D"), self._shortcut_toggle_theme),
+            (QKeySequence("Ctrl+L"), self._shortcut_lock),
+            (QKeySequence("Ctrl+1"), lambda: self._on_vault_tab_changed(0)),
+            (QKeySequence("Ctrl+2"), lambda: self._on_vault_tab_changed(1)),
+        ]
+        for key_seq, slot in shortcuts:
+            QShortcut(key_seq, self).activated.connect(slot)
+    
+    def _shortcut_focus_search(self):
+        self.search_box.setFocus()
+        self.search_box.selectAll()
+    
+    def _shortcut_delete_current(self):
+        if self._selection_mode:
+            self._execute_batch_delete()
+        else:
+            item = self.account_list.currentItem()
+            if item:
+                self._enter_selection_mode()
+                data = item.data(Qt.ItemDataRole.UserRole)
+                if data and hasattr(data, 'id'):
+                    self._selected_ids.add(data.id)
+                elif data and isinstance(data, dict) and 'id' in data:
+                    self._selected_ids.add(data['id'])
+                self._update_bottom_bar_for_selection()
+                self._execute_batch_delete()
+    
+    def _shortcut_escape(self):
+        if self._selection_mode:
+            self._exit_selection_mode()
+        elif self.search_box.text().strip():
+            self.search_box.clear()
+            if self.current_vault == 'accounts':
+                self.load_accounts()
+            else:
+                self.load_urls()
+        elif self._ai_panel_visible:
+            self.on_ai_toggle_panel()
+    
+    def _shortcut_toggle_theme(self):
+        current = ThemeManager.instance().current
+        new_theme = 'dark' if current == 'light' else 'light'
+        ThemeManager.instance().apply_theme(new_theme)
+    
+    def _shortcut_lock(self):
+        self.show_lock_screen()
     
     def setup_ui(self):
         """设置界面"""
@@ -3372,7 +3169,7 @@ class MainWindow(QMainWindow):
                         self._url_db.soft_delete_url(item_id, url_item.to_dict())
                         deleted += 1
             except Exception as e:
-                print(f"[BatchDelete] Failed to delete {item_id}: {e}")
+                logger.warning(f" Failed to delete {item_id}: {e}")
         
         self._selection_mode = False
         self._selected_ids.clear()
@@ -3420,37 +3217,43 @@ class MainWindow(QMainWindow):
     
     def show_account_detail(self, account: Account):
         """显示账号详情"""
+        if not self._verify_session():
+            return
         self.selected_account = account
-        
-        self._save_scroll_state()
+        old_category = account.category
         
         # 创建详情弹窗
         t0 = time.perf_counter()
         dialog = AccountDialog(self.db, account, parent=self)
         t1 = time.perf_counter()
-        print(f"[Perf] AccountDialog construct: {(t1-t0)*1000:.1f} ms")
+        logger.debug(f" AccountDialog construct: {(t1-t0)*1000:.1f} ms")
         result = dialog.exec()
         t2 = time.perf_counter()
-        print(f"[Perf] AccountDialog exec: {(t2-t1)*1000:.1f} ms")
+        logger.debug(f" AccountDialog exec: {(t2-t1)*1000:.1f} ms")
         if result == AccountDialog.DialogCode.Accepted:
             self._smart_refresh()
-            self._restore_scroll_state()
-            self._reload_categories()
+            # 仅在分类变化时重建分类树
+            if dialog.account and dialog.account.category != old_category:
+                self._reload_categories()
     
     def show_url_detail(self, url_item):
         """显示网址详情/编辑"""
+        if not self._verify_session():
+            return
         from models.url_item import URLItem
         
         if isinstance(url_item, dict):
             url_item = URLItem.from_dict(url_item)
         
-        self._save_scroll_state()
+        old_category = url_item.category if hasattr(url_item, 'category') else url_item.get('category', '')
         
         dialog = URLEditDialog(self._url_service, url_item, parent=self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self._smart_refresh()
-            self._restore_scroll_state()
-            self._reload_categories()
+            # 仅在分类变化时重建分类树
+            new_cat = dialog.url_item.category if hasattr(dialog.url_item, 'category') else dialog.url_item.get('category', '')
+            if new_cat != old_category:
+                self._reload_categories()
     
     def on_add_item(self):
         """添加账号/网址"""
@@ -3459,10 +3262,10 @@ class MainWindow(QMainWindow):
             t0 = time.perf_counter()
             dialog = AccountDialog(self.db, parent=self)
             t1 = time.perf_counter()
-            print(f"[Perf] AccountDialog construct: {(t1-t0)*1000:.1f} ms")
+            logger.debug(f" AccountDialog construct: {(t1-t0)*1000:.1f} ms")
             result = dialog.exec()
             t2 = time.perf_counter()
-            print(f"[Perf] AccountDialog exec: {(t2-t1)*1000:.1f} ms")
+            logger.debug(f" AccountDialog exec: {(t2-t1)*1000:.1f} ms")
             if result == AccountDialog.DialogCode.Accepted:
                 new_id = dialog.account.id if dialog.account else None
                 self._cache_dirty = True
@@ -3645,6 +3448,8 @@ class MainWindow(QMainWindow):
     
     def on_export(self):
         """导出账号/网址"""
+        if not self._verify_session():
+            return
         dialog = ExportDialog(self.db, self.account_service, self.export_service,
                               vault_type=self.current_vault, url_service=self._url_service, parent=self)
         dialog.exec()
@@ -3934,6 +3739,8 @@ class MainWindow(QMainWindow):
 
     def on_settings(self):
         """打开设置对话框"""
+        if not self._verify_session():
+            return
         if not self.config_path:
             QMessageBox.warning(self, "提示", "配置文件路径未设置")
             return
@@ -3944,14 +3751,17 @@ class MainWindow(QMainWindow):
             parent=self
         )
         t1 = time.perf_counter()
-        print(f"[Perf] SettingsDialog construct: {(t1-t0)*1000:.1f} ms")
+        logger.debug(f" SettingsDialog construct: {(t1-t0)*1000:.1f} ms")
         
         # 连接主题切换信号
         dialog.theme_changed.connect(self._apply_theme)
         
         result = dialog.exec()
         t2 = time.perf_counter()
-        print(f"[Perf] SettingsDialog exec: {(t2-t1)*1000:.1f} ms")
+        logger.debug(f" SettingsDialog exec: {(t2-t1)*1000:.1f} ms")
+        
+        # 更新会话版本（密码修改后会递增）
+        self._session_version = self.db.get_session_version()
 
         # 弹窗关闭后无条件重绘，确保主题彻底生效（解决嵌套模态弹窗的 paint 延迟）
         self._reapply_styles(ThemeManager.instance().colors)
@@ -4232,7 +4042,7 @@ class MainWindow(QMainWindow):
             scrollbar = self.thinking_area.verticalScrollBar()
             scrollbar.setValue(scrollbar.maximum())
         except Exception as e:
-            print(f"[MainWindow] _on_thinking_token error: {e}")
+            logger.info(f" _on_thinking_token error: {e}")
     
     def _on_result_token(self, segment: str):
         """接收 result 段落，追加到对话历史并刷新 UI
@@ -4251,9 +4061,9 @@ class MainWindow(QMainWindow):
                 self._ai_update_chat_display()
             else:
                 # 如果没有 assistant 消息（异常情况），直接忽略
-                print(f"[MainWindow] _on_result_token: no assistant msg to append")
+                logger.info(f" _on_result_token: no assistant msg to append")
         except Exception as e:
-            print(f"[MainWindow] _on_result_token error: {e}")
+            logger.info(f" _on_result_token error: {e}")
     
     def _on_ai_copy_result(self):
         """复制 AI 回复到剪贴板"""
@@ -4273,7 +4083,7 @@ class MainWindow(QMainWindow):
     def _on_action_preview_confirmed(self):
         """Build 模式：用户确认执行操作预览（使用事务提交）"""
         import traceback
-        print("[MainWindow] _on_action_preview_confirmed called")
+        logger.debug("[MainWindow] _on_action_preview_confirmed called")
         self.action_preview_widget.hide()
         
         # ReAct 模式：走新流程
@@ -4282,7 +4092,7 @@ class MainWindow(QMainWindow):
             return
         
         if not self._pending_action:
-            print("[MainWindow] No pending action, returning")
+            logger.debug("[MainWindow] No pending action, returning")
             return
         action, params, query = self._pending_action
         self._pending_action = None
@@ -4291,26 +4101,26 @@ class MainWindow(QMainWindow):
         
         # 执行操作（事务方式）
         try:
-            print(f"[MainWindow] Building action_preview for action={action}")
+            logger.info(f" Building action_preview for action={action}")
             # 1. 生成结构化操作预览（根据当前 vault 传正确缓存）
             context_items = self._cached_accounts if self.current_vault == 'accounts' else self._cached_urls
             action_preview = self.ai_assistant.build_action_preview(
                 action, params, context_items, self.current_vault
             )
-            print(f"[MainWindow] action_preview built: preview_items={len(action_preview.get('preview_items', []))}")
+            logger.info(f" action_preview built: preview_items={len(action_preview.get('preview_items', []))}")
             
             # 1.5 过滤用户取消勾选的条目
             selected_items = self.action_preview_widget.get_selected_items()
             action_preview['preview_items'] = selected_items
             action_preview['affected_count'] = len(selected_items)
-            print(f"[MainWindow] User selected {len(selected_items)} items after filtering")
+            logger.info(f" User selected {len(selected_items)} items after filtering")
             
             # 2. 执行操作
-            print("[MainWindow] Calling execute_build_action_with_transaction")
+            logger.debug("[MainWindow] Calling execute_build_action_with_transaction")
             result = self.ai_assistant.execute_build_action_with_transaction(
                 action_preview, user_query=query
             )
-            print(f"[MainWindow] Execution result: success={result.get('success')}, affected={result.get('affected_count')}")
+            logger.info(f" Execution result: success={result.get('success')}, affected={result.get('affected_count')}")
             
             # 处理超量删除的二次确认
             if result.get('needs_confirmation'):
@@ -4384,8 +4194,8 @@ class MainWindow(QMainWindow):
                 if affected_ids:
                     self.highlight_matched_accounts(affected_ids, query_text="AI本次修改")
         except Exception as e:
-            print(f"[MainWindow] _on_action_preview_confirmed exception: {e}")
-            traceback.print_exc()
+            logger.info(f" _on_action_preview_confirmed exception: {e}")
+            logger.exception("Unhandled exception")
             result_msg = f"❌ 执行失败：{str(e)}"
         
         self._restore_scroll_state()
@@ -4590,10 +4400,10 @@ class MainWindow(QMainWindow):
                     if affected_ids:
                         self.highlight_matched_accounts(affected_ids, query_text="AI本次修改")
                 except Exception as e:
-                    print(f"[MainWindow] Highlight affected items error: {e}")
+                    logger.info(f" Highlight affected items error: {e}")
         except Exception as e:
-            print(f"[MainWindow] ReAct preview confirmed error: {e}")
-            traceback.print_exc()
+            logger.info(f" ReAct preview confirmed error: {e}")
+            logger.exception("Unhandled exception")
             result_msg = f"❌ 执行失败：{str(e)}"
         
         now_str = datetime.now().strftime("%H:%M:%S")
@@ -4748,7 +4558,7 @@ class MainWindow(QMainWindow):
                     self.highlight_matched_accounts(new_ids, query_text="AI本次修改")
             except Exception as e:
                 import traceback
-                traceback.print_exc()
+                logger.exception("Unhandled exception")
                 result_msg = f"❌ 导入失败：{str(e)}"
             
             self._restore_scroll_state()
@@ -4801,7 +4611,7 @@ class MainWindow(QMainWindow):
                     summary = self.ai_assistant.build_db_summary(urls=urls, vault_type='urls')
                 self.ai_assistant.conversation_context.set_db_summary(summary, self.current_vault)
             except Exception as e:
-                print(f"[MainWindow] Warmup error: {e}")
+                logger.info(f" Warmup error: {e}")
             # 预热完成后继续往下执行，不要 return，直接处理用户的查询
         
         # 防止重复提交（如果已有查询在进行中，忽略）
@@ -4877,7 +4687,7 @@ class MainWindow(QMainWindow):
         """
         import json
         import traceback
-        print(f"[MainWindow] _on_ai_query_finished called, json_len={len(result_json)}")
+        logger.info(f" _on_ai_query_finished called, json_len={len(result_json)}")
         
         # ========== 第零步：安全关闸 ==========
         # 标记查询已结束，延迟 token 将被 _on_thinking_token/_on_result_token 丢弃
@@ -4892,12 +4702,12 @@ class MainWindow(QMainWindow):
         if self._ai_thread is not None:
             try:
                 self._ai_thread.thinking_token.disconnect(self._on_thinking_token)
-                print("[MainWindow] thinking_token disconnected")
+                logger.debug("[MainWindow] thinking_token disconnected")
             except Exception:
                 pass
             try:
                 self._ai_thread.result_token.disconnect(self._on_result_token)
-                print("[MainWindow] result_token disconnected")
+                logger.debug("[MainWindow] result_token disconnected")
             except Exception:
                 pass
             # 释放线程引用，允许 GC
@@ -4906,9 +4716,9 @@ class MainWindow(QMainWindow):
         # 解析结果
         try:
             result = json.loads(result_json)
-            print(f"[MainWindow] Parsed result: action={result.get('action')}, mode={self._ai_mode}, success={result.get('success')}")
+            logger.info(f" Parsed result: action={result.get('action')}, mode={self._ai_mode}, success={result.get('success')}")
         except json.JSONDecodeError as e:
-            print(f"[MainWindow] JSON decode error: {e}")
+            logger.info(f" JSON decode error: {e}")
             result = {
                 "success": False,
                 "thinking": "",
@@ -4949,16 +4759,16 @@ class MainWindow(QMainWindow):
             self.result_area.clear()
             self.thinking_area.clear()
             self.thinking_area.hide()
-            print("[MainWindow] Stream UI cleaned")
+            logger.debug("[MainWindow] Stream UI cleaned")
         except Exception as e:
-            print(f"[MainWindow] Stream UI clean error: {e}")
+            logger.info(f" Stream UI clean error: {e}")
         
         # 重新渲染历史为 HTML
         self._ai_update_chat_display()
         
         # ========== Plan 模式：只建议，联动左侧列表 ==========
         if self._ai_mode == 'plan':
-            print(f"[MainWindow] Plan mode handling action={action}, vault={vault_type}")
+            logger.info(f" Plan mode handling action={action}, vault={vault_type}")
             try:
                 # 统一尝试语义高亮（不依赖 action 类型，只要 semantic_result 有有效匹配就高亮）
                 semantic_matched = False
@@ -4998,7 +4808,7 @@ class MainWindow(QMainWindow):
                             else:
                                 result['response'] += f"\n\n❌ 未找到匹配的{item_name}"
                         except Exception as e:
-                            print(f"[MainWindow] Fallback search error: {e}")
+                            logger.info(f" Fallback search error: {e}")
                             result['response'] += f"\n\n❌ 未找到匹配的{item_name}"
                 elif action == 'list':
                     scope = params.get('scope', 'all')
@@ -5021,13 +4831,13 @@ class MainWindow(QMainWindow):
                 if not result.get('success', True):
                     self._append_ai_system_msg(f"处理出错：{result.get('error', '未知错误')}")
             except Exception as e:
-                print(f"[MainWindow] Plan mode handling error: {e}")
-                traceback.print_exc()
+                logger.info(f" Plan mode handling error: {e}")
+                logger.exception("Unhandled exception")
                 self._append_ai_system_msg(f"处理出错：{str(e)}")
             return
         
         # ========== Build 模式 ==========
-        print(f"[MainWindow] Build mode handling action={action}, vault={vault_type}")
+        logger.info(f" Build mode handling action={action}, vault={vault_type}")
         try:
             if self._is_ai_action_safe(action):
                 # 安全操作：直接执行
@@ -5076,7 +4886,7 @@ class MainWindow(QMainWindow):
                         self.ai_action_buttons.show()
                 elif action in WRITE_ACTIONS:
                     # 统一生成预览（确保预览与执行数据一致）
-                    print(f"[MainWindow] Showing ActionPreviewWidget for action={action}")
+                    logger.info(f" Showing ActionPreviewWidget for action={action}")
                     self.ai_action_buttons.hide()
                     preview = self.ai_assistant.build_action_preview(action, params, context_items, vault_type)
                     self.action_preview_widget.update_action(action, params, preview.get('preview_items', []))
@@ -5094,39 +4904,43 @@ class MainWindow(QMainWindow):
                     self._ai_update_chat_display()
                     self.ai_action_buttons.show()
         except Exception as e:
-            print(f"[MainWindow] Build mode handling error: {e}")
-            traceback.print_exc()
+            logger.info(f" Build mode handling error: {e}")
+            logger.exception("Unhandled exception")
             self._append_ai_system_msg(f"处理出错：{str(e)}")
     
     def _smart_refresh(self):
         """智能刷新：保持当前视图模式，不自动回退到默认视图"""
-        self._cache_dirty = True
-        self._url_cache_dirty = True
-        
-        if self._view_mode == 'search':
-            text = self.search_box.text().strip()
-            if text:
-                self.on_search()
+        self._save_scroll_state()
+        try:
+            self._cache_dirty = True
+            self._url_cache_dirty = True
+            
+            if self._view_mode == 'search':
+                text = self.search_box.text().strip()
+                if text:
+                    self.on_search()
+                else:
+                    self._view_mode = 'default'
+                    if self.current_vault == 'accounts':
+                        self.load_accounts()
+                    else:
+                        self.load_urls()
+            elif self._view_mode == 'ai_highlight':
+                if self._highlight_matched_ids:
+                    self._reapply_ai_highlight()
+                else:
+                    self._view_mode = 'default'
+                    if self.current_vault == 'accounts':
+                        self.load_accounts()
+                    else:
+                        self.load_urls()
             else:
-                self._view_mode = 'default'
                 if self.current_vault == 'accounts':
                     self.load_accounts()
                 else:
                     self.load_urls()
-        elif self._view_mode == 'ai_highlight':
-            if self._highlight_matched_ids:
-                self._reapply_ai_highlight()
-            else:
-                self._view_mode = 'default'
-                if self.current_vault == 'accounts':
-                    self.load_accounts()
-                else:
-                    self.load_urls()
-        else:
-            if self.current_vault == 'accounts':
-                self.load_accounts()
-            else:
-                self.load_urls()
+        finally:
+            self._restore_scroll_state()
     
     def _reapply_ai_highlight(self):
         """重新应用当前的 AI 高亮筛选（数据变更后刷新）"""
@@ -5134,10 +4948,12 @@ class MainWindow(QMainWindow):
         self._url_cache_dirty = True
         if self.current_vault == 'accounts':
             self._cached_accounts = self.account_service.get_all_accounts()
+            self._cache_dirty = False
         else:
             self._cached_urls = self._url_service.get_all_urls()
+            self._url_cache_dirty = False
         
-        matched_ids = [int(id_str) for id_str in self._highlight_matched_ids]
+        matched_ids = list(self._highlight_matched_ids)
         self.highlight_matched_accounts(matched_ids, query_text=self._highlight_reasoning or "AI筛选")
 
     def _refresh_account_list(self):
@@ -5167,7 +4983,7 @@ class MainWindow(QMainWindow):
         try:
             history = self.ai_assistant.get_history()
         except Exception as e:
-            print(f"[MainWindow] get_history error: {e}")
+            logger.info(f" get_history error: {e}")
             return
         
         html_parts = []
@@ -5179,7 +4995,7 @@ class MainWindow(QMainWindow):
                 welcome_html = self._markdown_to_html(self._ai_welcome_md())
                 html_parts.append(f'<div style="padding:10px;">{welcome_html}</div>')
             except Exception as e:
-                print(f"[MainWindow] Welcome render error: {e}")
+                logger.info(f" Welcome render error: {e}")
         
         # 渲染每条消息
         for idx, msg in enumerate(history):
@@ -5197,7 +5013,7 @@ class MainWindow(QMainWindow):
                         f'{self._escape_html(msg.content)}</div>'
                     )
             except Exception as e:
-                print(f"[MainWindow] Message render error at idx={idx}: {e}")
+                logger.info(f" Message render error at idx={idx}: {e}")
                 # 跳过这条消息，继续渲染其他
                 continue
         
@@ -5212,20 +5028,20 @@ class MainWindow(QMainWindow):
         try:
             self.result_area.setHtml(full_html)
         except Exception as e:
-            print(f"[MainWindow] setHtml error: {e}")
+            logger.info(f" setHtml error: {e}")
             # 降级：只显示纯文本
             try:
                 plain_text = '\n'.join(f"{m.role}: {m.content}" for m in history)
                 self.result_area.setPlainText(plain_text)
             except Exception as e2:
-                print(f"[MainWindow] setPlainText fallback error: {e2}")
+                logger.info(f" setPlainText fallback error: {e2}")
         
         # 滚动到底部
         try:
             scrollbar = self.result_area.verticalScrollBar()
             scrollbar.setValue(scrollbar.maximum())
         except Exception as e:
-            print(f"[MainWindow] Scrollbar error: {e}")
+            logger.info(f" Scrollbar error: {e}")
     
     def _escape_html(self, text: str) -> str:
         """转义 HTML 特殊字符"""
@@ -5282,6 +5098,28 @@ class MainWindow(QMainWindow):
         
         return '\n\n'.join(parts)
     
+    def _thinking_is_redundant(self, thinking: str, response: str) -> bool:
+        """Check if thinking content is redundant with the response (same information)"""
+        if not thinking or not response:
+            return False
+        # Normalize: strip whitespace, lowercase
+        t = thinking.strip().lower()
+        r = response.strip().lower()
+        # If thinking is entirely contained in response, it's redundant
+        if t in r:
+            return True
+        # If response is entirely contained in thinking, it's redundant
+        if r in t:
+            return True
+        # If more than 70% of lines overlap
+        t_lines = set(line.strip() for line in thinking.strip().split('\n') if line.strip())
+        r_lines = set(line.strip() for line in response.strip().split('\n') if line.strip())
+        if t_lines and r_lines:
+            overlap = len(t_lines & r_lines)
+            if overlap / min(len(t_lines), len(r_lines)) > 0.7:
+                return True
+        return False
+    
     def _ai_display_results_in_list(self, accounts, query_text):
         """将 炽阳 搜索结果展示在左侧账号列表中"""
         colors = ThemeManager.instance().colors
@@ -5327,8 +5165,8 @@ class MainWindow(QMainWindow):
         
         self._view_mode = 'ai_highlight'
         
-        # 统一转为字符串集合，避免 LLM 返回的字符串 ID 与 SQLite 整数 ID 类型不匹配
-        self._highlight_matched_ids = {str(m) for m in matched_ids}
+        # 统一转为整数集合，避免 LLM 返回的字符串 ID 与 SQLite 整数 ID 类型不匹配
+        self._highlight_matched_ids = {int(m) for m in matched_ids}
         
         # 禁用更新避免大量 paint/layout 事件阻塞事件循环
         self.account_list.setUpdatesEnabled(False)
@@ -5346,8 +5184,8 @@ class MainWindow(QMainWindow):
             ItemWidget = URLListItem
             use_badges = False
         
-        matched_items = [item for item in all_items if str(getattr(item, 'id', None)) in self._highlight_matched_ids]
-        unmatched_items = [item for item in all_items if str(getattr(item, 'id', None)) not in self._highlight_matched_ids]
+        matched_items = [item for item in all_items if getattr(item, 'id', None) in self._highlight_matched_ids]
+        unmatched_items = [item for item in all_items if getattr(item, 'id', None) not in self._highlight_matched_ids]
         
         # 隐藏列表标题（筛选信息已在横幅中显示）
         self.lbl_list_title.hide()
@@ -5426,10 +5264,7 @@ class MainWindow(QMainWindow):
                         widget.set_checked(True)
                 # 降低可见度
                 if hasattr(widget, 'styleSheet'):
-                    widget.setStyleSheet(widget.styleSheet() + """
-                        colors = ThemeManager.instance().colors
-                        QLabel { color: {colors.text_disabled}; }
-                    """)
+                    widget.setStyleSheet(widget.styleSheet() + f"QLabel {{ color: {colors.text_disabled}; }}")
                 self.account_list.setItemWidget(item, widget)
         
         # 横幅显示用户原始查询和匹配数量
@@ -5481,7 +5316,7 @@ class MainWindow(QMainWindow):
         text = re.sub(r'```(.*?)```', code_block_repl, text, flags=re.DOTALL)
         
         # 行内代码 `code`
-        text = re.sub(r'`([^`]+)`', r'<code style="background:{colors.bg_secondary};padding:2px 4px;border-radius:3px;font-size:12px;">\1</code>', text)
+        text = re.sub(r'`([^`]+)`', rf'<code style="background:{colors.bg_secondary};padding:2px 4px;border-radius:3px;font-size:12px;">\1</code>', text)
         
         # 加粗 **text**
         text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
@@ -5490,15 +5325,15 @@ class MainWindow(QMainWindow):
         text = re.sub(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)', r'<i>\1</i>', text)
         
         # 标题
-        text = re.sub(r'^###\s+(.+)$', r'<h4 style="margin:6px 0;color:{colors.text_primary};">\1</h4>', text, flags=re.MULTILINE)
-        text = re.sub(r'^##\s+(.+)$', r'<h3 style="margin:8px 0;color:{colors.text_primary};">\1</h3>', text, flags=re.MULTILINE)
-        text = re.sub(r'^#\s+(.+)$', r'<h2 style="margin:10px 0;color:{colors.text_primary};">\1</h2>', text, flags=re.MULTILINE)
+        text = re.sub(r'^###\s+(.+)$', rf'<h4 style="margin:6px 0;color:{colors.text_primary};">\1</h4>', text, flags=re.MULTILINE)
+        text = re.sub(r'^##\s+(.+)$', rf'<h3 style="margin:8px 0;color:{colors.text_primary};">\1</h3>', text, flags=re.MULTILINE)
+        text = re.sub(r'^#\s+(.+)$', rf'<h2 style="margin:10px 0;color:{colors.text_primary};">\1</h2>', text, flags=re.MULTILINE)
         
         # 分隔线 ---
-        text = re.sub(r'^---+\s*$', r'<hr style="border:none;border-top:1px solid {colors.border_default};margin:8px 0;">', text, flags=re.MULTILINE)
+        text = re.sub(r'^---+\s*$', rf'<hr style="border:none;border-top:1px solid {colors.border_default};margin:8px 0;">', text, flags=re.MULTILINE)
         
         # 链接 [text](url)
-        text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2" style="color:{colors.accent_orange};text-decoration:none;">\1</a>', text)
+        text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', rf'<a href="\2" style="color:{colors.accent_orange};text-decoration:none;">\1</a>', text)
         
         # 列表项 - item
         def list_repl(m):
@@ -5865,7 +5700,8 @@ class MainWindow(QMainWindow):
         self._lock_screen.raise_()
     
     def _on_unlocked(self):
-        """解锁后的回调：重置空闲定时器"""
+        """解锁后的回调：刷新会话版本、重置空闲定时器"""
+        self._session_version = self.db.get_session_version()
         if self._idle_timer:
             self._idle_timer.reset()
     
@@ -5877,6 +5713,17 @@ class MainWindow(QMainWindow):
         )
         if reply == QMessageBox.StandardButton.Yes:
             self.show_lock_screen()
+    
+    def _verify_session(self) -> bool:
+        """验证当前会话是否仍然有效（密码未被修改）"""
+        current = self.db.get_session_version()
+        if current != self._session_version:
+            QMessageBox.warning(self, "会话过期",
+                "密码已被修改，请重新登录以继续操作",
+                QMessageBox.StandardButton.Ok)
+            self.show_lock_screen()
+            return False
+        return True
     
     def on_sync_to_mobile(self):
         """同步到手机：生成加密 HTML 密包（同时导出密码库 + 网址库）"""
@@ -5941,7 +5788,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "生成失败", f"密包生成失败：{str(e)}")
             import traceback
-            traceback.print_exc()
+            logger.exception("Unhandled exception")
     
     def on_recycle_bin(self):
         """打开回收站（根据当前 tab 显示对应库的回收站）"""

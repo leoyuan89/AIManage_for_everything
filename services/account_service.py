@@ -2,10 +2,13 @@
 账号服务模块
 处理账号的增删改查、排序等业务逻辑
 """
+import logging
 from typing import List, Optional, Dict
 from datetime import datetime
 from core.database import DatabaseManager
 from models.account import Account
+
+logger = logging.getLogger(__name__)
 
 
 class AccountService:
@@ -162,7 +165,7 @@ class AccountService:
         try:
             db_cats = set(self.db.get_categories())
         except Exception as e:
-            print(f"[AccountService] Failed to read categories from DB: {e}")
+            logger.error("Failed to read categories from DB: %s", e)
         
         # 读取自定义排序
         orders = {}

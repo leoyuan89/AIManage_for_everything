@@ -2,12 +2,15 @@
 AI Tool Calling 基础设施
 为 ReAct Agent 模式提供工具定义、注册和执行能力
 """
+import logging
 import json
 import time
 import threading
 from enum import Enum
 from dataclasses import dataclass, field
 from typing import Dict, Any, Optional, List, Callable, Type
+
+logger = logging.getLogger(__name__)
 
 
 class PermissionLevel(Enum):
@@ -1140,7 +1143,7 @@ class SmartClassifyAccountsTool(AITool):
         try:
             data = json.loads(fixed)
         except Exception as e:
-            print(f"[SmartClassify] JSON parse failed: {e}, raw preview: {raw[:300]!r}")
+            logger.warning("JSON parse failed: %s, raw preview: %r", e, raw[:300])
             return ToolResult(success=False, message=f"分类结果解析失败: {e}")
 
         # 统一ID类型为int，并去重
@@ -1184,13 +1187,13 @@ class SmartClassifyAccountsTool(AITool):
             for cat_name, id_list in data.items():
                 cleaned = sanitize_ai_category(cat_name)
                 if '>' not in cleaned:
-                    print(f"[SmartClassify] AUTO-CORRECT: '{cleaned}' -> '{main_category}>其他' (force_subclass)")
+                    logger.debug("AUTO-CORRECT: '%s' -> '%s>其他' (force_subclass)", cleaned, main_category)
                     cleaned = f"{main_category}>其他"
                 else:
                     actual_main = cleaned.split('>')[0].strip()
                     if actual_main != main_category:
                         sub = cleaned.split('>', 1)[1].strip()
-                        print(f"[SmartClassify] AUTO-CORRECT: main '{actual_main}' -> '{main_category}', sub '{sub}' (force_subclass)")
+                        logger.debug("AUTO-CORRECT: main '%s' -> '%s', sub '%s' (force_subclass)", actual_main, main_category, sub)
                         cleaned = f"{main_category}>{sub}"
                 corrected_data.setdefault(cleaned, []).extend(id_list)
             data = corrected_data
@@ -1250,13 +1253,13 @@ class SmartClassifyAccountsTool(AITool):
                     for cat_name, id_list in retry_data.items():
                         cleaned = sanitize_ai_category(cat_name)
                         if '>' not in cleaned:
-                            print(f"[SmartClassify] AUTO-CORRECT retry: '{cleaned}' -> '{main_category}>其他' (force_subclass)")
+                            logger.debug("AUTO-CORRECT retry: '%s' -> '%s>其他' (force_subclass)", cleaned, main_category)
                             cleaned = f"{main_category}>其他"
                         else:
                             actual_main = cleaned.split('>')[0].strip()
                             if actual_main != main_category:
                                 sub = cleaned.split('>', 1)[1].strip()
-                                print(f"[SmartClassify] AUTO-CORRECT retry: main '{actual_main}' -> '{main_category}', sub '{sub}' (force_subclass)")
+                                logger.debug("AUTO-CORRECT retry: main '%s' -> '%s', sub '%s' (force_subclass)", actual_main, main_category, sub)
                                 cleaned = f"{main_category}>{sub}"
                         corrected_retry.setdefault(cleaned, []).extend(id_list)
                     retry_data = corrected_retry
@@ -1268,9 +1271,9 @@ class SmartClassifyAccountsTool(AITool):
                     if isinstance(id_list, list):
                         classified_ids.update(id_list)
                 still_missing = input_ids - classified_ids
-                print(f"[SmartClassify] Retry {retry+1}: {len(missing_ids)} missing -> {len(still_missing)} still missing")
+                logger.info("Retry %d: %d missing -> %d still missing", retry+1, len(missing_ids), len(still_missing))
             except Exception as e:
-                print(f"[SmartClassify] Retry {retry+1} failed: {e}")
+                logger.warning("Retry %d failed: %s", retry+1, e)
                 break
 
         # 生成分类变更预览
@@ -1294,7 +1297,7 @@ class SmartClassifyAccountsTool(AITool):
         for tid, cats in id_to_cats.items():
             if len(cats) > 1:
                 best_cat = max(cats, key=lambda c: (len(c), cat_order.index(c)))
-                print(f"[SmartClassify] RESOLVE duplicate id={tid}: keep '{best_cat}', drop {cats}")
+                logger.debug("RESOLVE duplicate id=%s: keep '%s', drop %s", tid, best_cat, cats)
             else:
                 best_cat = cats[0]
             resolved[tid] = best_cat
@@ -1321,7 +1324,7 @@ class SmartClassifyAccountsTool(AITool):
         missing_ids = input_ids - seen_ids
         if missing_ids:
             fallback_cat = f"{main_category}>未分类" if force_subclass else '其他'
-            print(f"[SmartClassify] MISSING {len(missing_ids)} IDs: {sorted(missing_ids)[:20]}{'...' if len(missing_ids) > 20 else ''}")
+            logger.warning("MISSING %d IDs: %s%s", len(missing_ids), sorted(missing_ids)[:20], '...' if len(missing_ids) > 20 else '')
             for tid in missing_ids:
                 item = item_map.get(tid)
                 if item:
@@ -1500,7 +1503,7 @@ class SmartClassifyUrlsTool(AITool):
         try:
             data = json.loads(fixed)
         except Exception as e:
-            print(f"[SmartClassifyUrls] JSON parse failed: {e}, raw preview: {raw[:300]!r}")
+            logger.warning("JSON parse failed: %s, raw preview: %r", e, raw[:300])
             return ToolResult(success=False, message=f"分类结果解析失败: {e}")
 
         # 统一ID类型为int，并去重
@@ -1544,13 +1547,13 @@ class SmartClassifyUrlsTool(AITool):
             for cat_name, id_list in data.items():
                 cleaned = sanitize_ai_category(cat_name)
                 if '>' not in cleaned:
-                    print(f"[SmartClassifyUrls] AUTO-CORRECT: '{cleaned}' -> '{main_category}>其他' (force_subclass)")
+                    logger.debug("AUTO-CORRECT: '%s' -> '%s>其他' (force_subclass)", cleaned, main_category)
                     cleaned = f"{main_category}>其他"
                 else:
                     actual_main = cleaned.split('>')[0].strip()
                     if actual_main != main_category:
                         sub = cleaned.split('>', 1)[1].strip()
-                        print(f"[SmartClassifyUrls] AUTO-CORRECT: main '{actual_main}' -> '{main_category}', sub '{sub}' (force_subclass)")
+                        logger.debug("AUTO-CORRECT: main '%s' -> '%s', sub '%s' (force_subclass)", actual_main, main_category, sub)
                         cleaned = f"{main_category}>{sub}"
                 corrected_data.setdefault(cleaned, []).extend(id_list)
             data = corrected_data
@@ -1612,13 +1615,13 @@ class SmartClassifyUrlsTool(AITool):
                     for cat_name, id_list in retry_data.items():
                         cleaned = sanitize_ai_category(cat_name)
                         if '>' not in cleaned:
-                            print(f"[SmartClassifyUrls] AUTO-CORRECT retry: '{cleaned}' -> '{main_category}>其他' (force_subclass)")
+                            logger.debug("AUTO-CORRECT retry: '%s' -> '%s>其他' (force_subclass)", cleaned, main_category)
                             cleaned = f"{main_category}>其他"
                         else:
                             actual_main = cleaned.split('>')[0].strip()
                             if actual_main != main_category:
                                 sub = cleaned.split('>', 1)[1].strip()
-                                print(f"[SmartClassifyUrls] AUTO-CORRECT retry: main '{actual_main}' -> '{main_category}', sub '{sub}' (force_subclass)")
+                                logger.debug("AUTO-CORRECT retry: main '%s' -> '%s', sub '%s' (force_subclass)", actual_main, main_category, sub)
                                 cleaned = f"{main_category}>{sub}"
                         corrected_retry.setdefault(cleaned, []).extend(id_list)
                     retry_data = corrected_retry
@@ -1630,9 +1633,9 @@ class SmartClassifyUrlsTool(AITool):
                     if isinstance(id_list, list):
                         classified_ids.update(id_list)
                 still_missing = input_ids - classified_ids
-                print(f"[SmartClassifyUrls] Retry {retry+1}: {len(missing_ids)} missing -> {len(still_missing)} still missing")
+                logger.info("SmartClassifyUrls Retry %d: %d missing -> %d still missing", retry+1, len(missing_ids), len(still_missing))
             except Exception as e:
-                print(f"[SmartClassifyUrls] Retry {retry+1} failed: {e}")
+                logger.warning("SmartClassifyUrls Retry %d failed: %s", retry+1, e)
                 break
 
         item_map = {getattr(u, 'id', 0): u for u in urls if hasattr(u, 'id')}
@@ -1655,7 +1658,7 @@ class SmartClassifyUrlsTool(AITool):
         for tid, cats in id_to_cats.items():
             if len(cats) > 1:
                 best_cat = max(cats, key=lambda c: (len(c), cat_order.index(c)))
-                print(f"[SmartClassifyUrls] RESOLVE duplicate id={tid}: keep '{best_cat}', drop {cats}")
+                logger.debug("RESOLVE duplicate id=%s: keep '%s', drop %s", tid, best_cat, cats)
             else:
                 best_cat = cats[0]
             resolved[tid] = best_cat
@@ -1682,7 +1685,7 @@ class SmartClassifyUrlsTool(AITool):
         missing_ids = input_ids - seen_ids
         if missing_ids:
             fallback_cat = f"{main_category}>未分类" if force_subclass else '其他'
-            print(f"[SmartClassifyUrls] MISSING {len(missing_ids)} IDs: {sorted(missing_ids)[:20]}{'...' if len(missing_ids) > 20 else ''}")
+            logger.warning("SmartClassifyUrls MISSING %d IDs: %s%s", len(missing_ids), sorted(missing_ids)[:20], '...' if len(missing_ids) > 20 else '')
             for tid in missing_ids:
                 item = item_map.get(tid)
                 if item:

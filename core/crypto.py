@@ -129,6 +129,29 @@ class CryptoManager:
         ciphertext = base64.b64decode(ciphertext_str.encode('utf-8'))
         return self.decrypt(ciphertext)
     
+    def verify_password(self, password: str) -> bool:
+        """
+        验证密码是否与当前密钥匹配
+        
+        Args:
+            password: 待验证的密码明文
+            
+        Returns:
+            True 表示密码正确
+        """
+        test_key = self._derive_key(password, self._salt)
+        return test_key == self._key
+    
+    def change_password(self, new_password: str) -> None:
+        """
+        更换主密码：重新生成盐值和密钥
+        
+        Args:
+            new_password: 新密码明文
+        """
+        self._salt = os.urandom(self.SALT_LENGTH)
+        self._key = self._derive_key(new_password, self._salt)
+    
     def hash_for_cache(self, text: str) -> str:
         """
         计算文本的 SHA256 哈希（用于分类缓存表，不存储原文）

@@ -2,6 +2,7 @@
 批量导入对话框
 支持：Markdown (.md)、文本 (.txt)、Excel (.xlsx)
 """
+import logging
 import sys
 from typing import List, Optional
 from pathlib import Path
@@ -15,6 +16,8 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QFont, QColor
+
+logger = logging.getLogger(__name__)
 
 from models.account import Account
 from services.import_service import parse_import_file, ImportItem
@@ -496,7 +499,7 @@ class ImportDialog(QDialog):
                 self.account_service.add_account(account)
                 success_count += 1
             except Exception as e:
-                print(f"导入失败：{item.app_name} - {e}")
+                logger.error("导入失败：%s - %s", item.app_name, e)
         
         # 显示结果
         QMessageBox.information(

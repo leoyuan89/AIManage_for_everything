@@ -2,6 +2,7 @@
 网址添加/编辑弹窗
 集成：手动输入 + AI 智能分类 + 标签/备注管理
 """
+import logging
 from PyQt6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLineEdit, QLabel, QTextEdit,
@@ -14,6 +15,8 @@ from services.url_service import URLService
 from core.repositories import RepositoryFactory, URLRepository
 from services.ai_service_manager import AIServiceManager
 from services.ai_worker_thread import AIStatus
+
+logger = logging.getLogger(__name__)
 from core.theme_manager import ThemeManager, ThemeColors
 
 
@@ -60,7 +63,7 @@ class URLEditDialog(QDialog):
             cats = RepositoryFactory.get_repository('urls').get_categories()
             return cats
         except Exception as e:
-            print(f"[URLEditDialog] RepositoryFactory 获取分类失败: {e}")
+            logger.error("RepositoryFactory 获取分类失败: %s", e)
             return self.url_service.get_categories()
     
     def setup_ui(self):

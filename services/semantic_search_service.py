@@ -10,9 +10,12 @@
 
 保留本文件仅用于历史兼容，请勿在新代码中引用 SemanticSearchService。
 """
+import logging
 import json
 import numpy as np
 from typing import List, Dict, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -72,7 +75,7 @@ class SemanticSearchService:
         if self._embeddings_available is None:
             test_vector = self._get_embedding("test")
             if self._embeddings_available is False:
-                print("[Semantic Search] Embeddings API probe failed, skipping index build.")
+                logger.warning("Embeddings API probe failed, skipping index build.")
                 return
         
         self._account_vectors.clear()
@@ -260,7 +263,7 @@ class SemanticSearchService:
             url_results.sort(key=lambda x: x.similarity, reverse=True)
             
         except Exception as e:
-            print(f"[Semantic Search] AI enhancement failed: {e}")
+            logger.error("AI enhancement failed: %s", e)
         
         return account_results[:top_k], url_results[:top_k]
     
@@ -314,12 +317,12 @@ class SemanticSearchService:
                 # 400/500 错误通常表示模型不支持 embeddings
                 if response.status_code in (400, 500):
                     self._embeddings_available = False
-                    print(f"[Semantic Search] Embeddings API unavailable for model '{self.ollama.model}' "
-                          f"(HTTP {response.status_code}). Fuzzy search will fall back to keyword matching.")
+                    logger.warning("Embeddings API unavailable for model '%s' (HTTP %s). Fuzzy search will fall back to keyword matching.",
+                                   self.ollama.model, response.status_code)
                 elif self._embeddings_error_count >= self._max_embedding_errors:
                     self._embeddings_available = False
-                    print(f"[Semantic Search] Embeddings API failed {self._max_embedding_errors} times. "
-                          f"Disabling vector search to avoid flooding logs.")
+                    logger.warning("Embeddings API failed %d times. Disabling vector search to avoid flooding logs.",
+                                   self._max_embedding_errors)
                 return None
             
             result = response.json()
@@ -333,18 +336,18 @@ class SemanticSearchService:
             self._embeddings_error_count += 1
             if self._embeddings_error_count >= self._max_embedding_errors:
                 self._embeddings_available = False
-                print(f"[Semantic Search] Embeddings API failed {self._max_embedding_errors} times. "
-                      f"Disabling vector search to avoid flooding logs.")
+                logger.warning("Embeddings API failed %d times. Disabling vector search to avoid flooding logs.",
+                               self._max_embedding_errors)
             else:
-                print(f"[Semantic Search] Embedding request failed: {e}")
+                logger.warning("Embedding request failed: %s", e)
         except Exception as e:
             self._embeddings_error_count += 1
             if self._embeddings_error_count >= self._max_embedding_errors:
                 self._embeddings_available = False
-                print(f"[Semantic Search] Embeddings API failed {self._max_embedding_errors} times. "
-                      f"Disabling vector search to avoid flooding logs.")
+                logger.warning("Embeddings API failed %d times. Disabling vector search to avoid flooding logs.",
+                               self._max_embedding_errors)
             else:
-                print(f"[Semantic Search] Embedding failed: {e}")
+                logger.warning("Embedding failed: %s", e)
         
         return None
     
@@ -395,7 +398,7 @@ class SemanticSearchService:
                 with open(self.url_vectors_file, 'w', encoding='utf-8') as f:
                     json.dump(data, f, ensure_ascii=False)
         except Exception as e:
-            print(f"[Semantic Search] Save vectors failed: {e}")
+            logger.error("Save vectors failed: %s", e)
     
     def _load_vectors(self):
         """加载向量索引"""
@@ -409,7 +412,7 @@ class SemanticSearchService:
                 }
                 self._account_texts = data.get('texts', {})
         except Exception as e:
-            print(f"[Semantic Search] Load account vectors failed: {e}")
+            logger.error("Load account vectors failed: %s", e)
         
         try:
             if self.url_vectors_file.exists():
@@ -421,7 +424,7 @@ class SemanticSearchService:
                 }
                 self._url_texts = data.get('texts', {})
         except Exception as e:
-            print(f"[Semantic Search] Load URL vectors failed: {e}")
+            logger.error("Load URL vectors failed: %s", e)
     
     def _extract_json(self, text: str) -> str:
         """从文本中提取JSON"""

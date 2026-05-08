@@ -2,8 +2,11 @@
 分类服务模块
 管理 AI 智能分类和分类缓存
 """
+import logging
 from typing import Optional
 from core.database import DatabaseManager
+
+logger = logging.getLogger(__name__)
 
 
 class CategoryService:
@@ -62,7 +65,7 @@ class CategoryService:
                     self.cache_category(app_name, ai_category)
                 return ai_category
             except Exception as e:
-                print(f"AI 分类失败: {e}")
+                logger.error("AI 分类失败: %s", e)
         
         return '其他'
     
@@ -96,7 +99,7 @@ class CategoryService:
         """
         from services.ai_service_manager import AIServiceManager
         if not AIServiceManager.instance().is_available():
-            print("Ollama 不可用，无法批量分类")
+            logger.warning("Ollama 不可用，无法批量分类")
             return 0
         
         # 获取所有账号
@@ -133,7 +136,7 @@ class CategoryService:
                     count += 1
                     
             except Exception as e:
-                print(f"批量分类账号 {account.get('id')} 失败: {e}")
+                logger.error("批量分类账号 %s 失败: %s", account.get('id'), e)
                 continue
         
         return count
@@ -201,7 +204,7 @@ class CategoryService:
         try:
             db_cats = set(self.db.get_categories())
         except Exception as e:
-            print(f"[CategoryService] Failed to read categories from DB: {e}")
+            logger.error("Failed to read categories from DB: %s", e)
         
         # 只返回数据库中真实存在的分类
         all_cats = db_cats

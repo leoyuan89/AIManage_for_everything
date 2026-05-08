@@ -2,6 +2,7 @@
 设置对话框
 主界面为功能按钮列表，点击后弹出对应操作弹窗
 """
+import logging
 import json
 import time
 from PyQt6.QtWidgets import (
@@ -17,6 +18,8 @@ from core.database import DatabaseManager
 from core.crypto import CryptoManager
 from core.theme_manager import ThemeManager, ThemeColors
 
+logger = logging.getLogger(__name__)
+
 
 
 def _perf_log(phase: str, t0: float, t1: float = None):
@@ -24,7 +27,7 @@ def _perf_log(phase: str, t0: float, t1: float = None):
     if t1 is None:
         t1 = time.perf_counter()
     msg = f"[Perf] {phase}: {(t1 - t0) * 1000:.1f} ms"
-    print(msg, flush=True)
+    logger.debug(msg)
     try:
         with open("debug_output.txt", "a", encoding="utf-8") as f:
             f.write(msg + "\n")
@@ -167,11 +170,17 @@ class ChangePasswordDialog(QDialog):
         
         try:
             if self._do_change_password(current_password, new_password):
+                self.db.increment_session_version()
                 QMessageBox.information(
                     self,
                     "修改成功",
                     "主密码已修改成功！\n\n"
                     "请牢记新密码，遗忘后将无法恢复数据。"
+                )
+                QMessageBox.information(
+                    self,
+                    "会话提示",
+                    "密码已修改，部分敏感操作需要重新验证。"
                 )
                 self.accept()
             else:

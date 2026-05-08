@@ -1,11 +1,14 @@
 """
 网址服务模块
 """
+import logging
 from typing import List, Optional, Dict
 from urllib.parse import urlparse
 
 from core.url_database import URLDatabaseManager
 from models.url_item import URLItem
+
+logger = logging.getLogger(__name__)
 
 
 class URLService:
@@ -154,7 +157,7 @@ class URLService:
         try:
             db_cats = set(self.db.get_categories())
         except Exception as e:
-            print(f"[URLService] Failed to read categories from DB: {e}")
+            logger.error("Failed to read categories from DB: %s", e)
         
         # 读取自定义排序
         orders = {}

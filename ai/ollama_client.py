@@ -2,10 +2,13 @@
 Ollama API 客户端
 用于调用本地 Gemma 4 E4B 模型
 """
+import logging
 import json
 import re
 import requests
 from typing import List, Optional, Tuple, Generator, Dict
+
+logger = logging.getLogger(__name__)
 
 
 class OllamaClient:
@@ -161,9 +164,10 @@ class OllamaClient:
             done_reason = result.get('done_reason', 'N/A')
             prompt_eval_count = result.get('prompt_eval_count', 'N/A')
             eval_count = result.get('eval_count', 'N/A')
-            print(f"[OllamaDebug] status={response.status_code}, prompt_len={len(prompt)}, prompt_tokens={prompt_eval_count}, gen_tokens={eval_count}, response_len={len(raw_response)}, done_reason={done_reason}, preview={raw_response[:200]!r}")
+            logger.debug("status=%s, prompt_len=%s, prompt_tokens=%s, gen_tokens=%s, response_len=%s, done_reason=%s, preview=%r",
+                         response.status_code, len(prompt), prompt_eval_count, eval_count, len(raw_response), done_reason, raw_response[:200])
             if not raw_response:
-                print(f"[OllamaDebug] FULL result keys={list(result.keys())}")
+                logger.debug("FULL result keys=%s", list(result.keys()))
             return raw_response
             
         except requests.exceptions.ConnectionError:
@@ -341,7 +345,7 @@ class OllamaClient:
             return result if result else '其他'
             
         except Exception as e:
-            print(f"AI 分类失败: {e}")
+            logger.error("AI 分类失败: %s", e)
             return '其他'
     
     def semantic_search(self, query: str, app_list: List[str], accounts_info: List[dict] = None) -> List[Tuple[str, float]]:
@@ -394,17 +398,17 @@ class OllamaClient:
 匹配结果："""
         
         # 调试日志
-        print(f"[SemanticSearch] Prompt length: {len(prompt)} chars, accounts: {len(app_list)}")
+        logger.info("SemanticSearch Prompt length: %d chars, accounts: %d", len(prompt), len(app_list))
         
         try:
             result = self.generate(prompt, temperature=0.2)
-            print(f"[SemanticSearch] Raw response ({len(result)} chars):\n{result[:500]}")
+            logger.info("SemanticSearch Raw response (%d chars):\n%s", len(result), result[:500])
             
             # 如果结果只有"无"相关行（没有其他匹配项），返回空列表
             lines = [l.strip() for l in result.strip().split('\n') if l.strip()]
             non_empty_lines = [l for l in lines if l.lower() not in ('无', 'none', '')]
             if not non_empty_lines:
-                print("[SemanticSearch] No non-empty lines found")
+                logger.debug("No non-empty lines found")
                 return []
             
             # 解析返回的应用名列表
@@ -434,20 +438,20 @@ class OllamaClient:
                 # 确保应用名在原始列表中（精确或模糊匹配）
                 if app_name in app_list:
                     matched_apps.append((app_name, confidence))
-                    print(f"[SemanticSearch] Matched exact: {app_name} ({confidence})")
+                    logger.debug("Matched exact: %s (%s)", app_name, confidence)
                 else:
                     # 尝试子串匹配
                     for orig in app_list:
                         if app_name in orig or orig in app_name:
                             matched_apps.append((orig, confidence))
-                            print(f"[SemanticSearch] Matched fuzzy: {orig} via '{app_name}' ({confidence})")
+                            logger.debug("Matched fuzzy: %s via '%s' (%s)", orig, app_name, confidence)
                             break
             
-            print(f"[SemanticSearch] Total matched: {len(matched_apps)}")
+            logger.info("Total matched: %d", len(matched_apps))
             return matched_apps
             
         except Exception as e:
-            print(f"语义搜索失败: {e}")
+            logger.error("语义搜索失败: %s", e)
             return []
     
     def semantic_match(self, query: str, items_summary: str) -> dict:
@@ -497,7 +501,7 @@ class OllamaClient:
         try:
             raw = self.generate(prompt, temperature=0.2)
             text = raw.strip()
-            print(f"[SemanticMatch] Raw response ({len(text)} chars):\n{text[:300]}")
+            logger.info("SemanticMatch Raw response (%d chars):\n%s", len(text), text[:300])
 
             # 去除 markdown 代码块
             if text.startswith("```"):
@@ -517,7 +521,7 @@ class OllamaClient:
                 try:
                     fixed = self._fix_json(text)
                     result = _json.loads(fixed)
-                    print(f"[SemanticMatch] Used _fix_json, len={len(fixed)}")
+                    logger.debug("Used _fix_json, len=%d", len(fixed))
                 except _json.JSONDecodeError:
                     pass
             
@@ -527,7 +531,7 @@ class OllamaClient:
                 if extracted:
                     try:
                         result = _json.loads(extracted)
-                        print(f"[SemanticMatch] Used robust extraction, len={len(extracted)}")
+                        logger.debug("Used robust extraction, len=%d", len(extracted))
                     except _json.JSONDecodeError:
                         pass
                     
@@ -536,7 +540,7 @@ class OllamaClient:
                         try:
                             fixed_extracted = self._fix_json(extracted)
                             result = _json.loads(fixed_extracted)
-                            print(f"[SemanticMatch] Used robust+fix_json, len={len(fixed_extracted)}")
+                            logger.debug("Used robust+fix_json, len=%d", len(fixed_extracted))
                         except _json.JSONDecodeError:
                             pass
             
@@ -564,7 +568,7 @@ class OllamaClient:
                     pass
 
             line_count = len([l for l in items_summary.strip().split(chr(10)) if l.strip()])
-            print(f"[SemanticMatch] Model match: query='{query}', items={line_count}, matched={len(clean_ids)}")
+            logger.info("Model match: query='%s', items=%d, matched=%d", query, line_count, len(clean_ids))
 
             return {
                 "matched_ids": clean_ids,
@@ -573,7 +577,7 @@ class OllamaClient:
             }
 
         except Exception as e:
-            print(f"[SemanticMatch] Model match failed: {e}, fallback to local")
+            logger.error("Model match failed: %s, fallback to local", e)
             return self._local_semantic_match(query, items_summary)
 
     def _local_semantic_match(self, query: str, items_summary: str) -> dict:
@@ -685,7 +689,7 @@ class OllamaClient:
             if len(matched_details) > 8:
                 reasoning += f" 等共{len(matched_details)}项"
 
-        print(f"[SemanticMatch] Local fallback: query='{query}', items={len(items)}, matched={len(matched_ids)}")
+        logger.info("Local fallback: query='%s', items=%d, matched=%d", query, len(items), len(matched_ids))
 
         return {
             "matched_ids": matched_ids,
@@ -821,7 +825,7 @@ class OllamaClient:
             # 尝试1：直接解析
             try:
                 result = json.loads(text)
-                print(f"[JSONParse] L1 success")
+                logger.debug("L1 success")
                 return {
                     "thought": result.get("thought", ""),
                     "tool": result.get("tool", "direct_answer"),
@@ -830,13 +834,13 @@ class OllamaClient:
                     "response": result.get("response", "")
                 }
             except json.JSONDecodeError as e1:
-                print(f"[JSONParse] L1 fail: {e1} | text_preview={text[:100]!r}")
+                logger.debug("L1 fail: %s | text_preview=%r", e1, text[:100])
             
             # 尝试2：_fix_json 修复常见错误后解析
             fixed = self._fix_json(text)
             try:
                 result = json.loads(fixed)
-                print(f"[JSONParse] L2 success")
+                logger.debug("L2 success")
                 return {
                     "thought": result.get("thought", ""),
                     "tool": result.get("tool", "direct_answer"),
@@ -845,14 +849,14 @@ class OllamaClient:
                     "response": result.get("response", "")
                 }
             except json.JSONDecodeError as e2:
-                print(f"[JSONParse] L2 fail: {e2} | fixed_preview={fixed[:100]!r}")
+                logger.debug("L2 fail: %s | fixed_preview=%r", e2, fixed[:100])
             
             # 尝试3：_extract_json_object_robust 提取后再解析
             extracted = self._extract_json_object_robust(raw)
             if extracted:
                 try:
                     result = json.loads(extracted)
-                    print(f"[JSONParse] L3 success")
+                    logger.debug("L3 success")
                     return {
                         "thought": result.get("thought", ""),
                         "tool": result.get("tool", "direct_answer"),
@@ -861,12 +865,12 @@ class OllamaClient:
                         "response": result.get("response", "")
                     }
                 except json.JSONDecodeError as e3:
-                    print(f"[JSONParse] L3 fail: {e3} | extracted_preview={extracted[:100]!r}")
+                    logger.debug("L3 fail: %s | extracted_preview=%r", e3, extracted[:100])
                 # 尝试4：提取后 _fix_json 再解析
                 fixed_extracted = self._fix_json(extracted)
                 try:
                     result = json.loads(fixed_extracted)
-                    print(f"[JSONParse] L4 success")
+                    logger.debug("L4 success")
                     return {
                         "thought": result.get("thought", ""),
                         "tool": result.get("tool", "direct_answer"),
@@ -875,11 +879,11 @@ class OllamaClient:
                         "response": result.get("response", "")
                     }
                 except json.JSONDecodeError as e4:
-                    print(f"[JSONParse] L4 fail: {e4} | fixed_extracted_preview={fixed_extracted[:100]!r}")
+                    logger.debug("L4 fail: %s | fixed_extracted_preview=%r", e4, fixed_extracted[:100])
             else:
-                print(f"[JSONParse] L3 skipped: _extract_json_object_robust returned None")
+                logger.debug("L3 skipped: _extract_json_object_robust returned None")
             
-            print(f"[JSONParse] ALL FAILED, raw_preview={raw[:200]!r}")
+            logger.warning("ALL FAILED, raw_preview=%r", raw[:200])
             
             # 最后一道防线：文本中显式 tool 提取
             # 即使 JSON 结构坏了，只要文本里有 "tool": "xxx" 且不是 direct_answer，就提取出来
@@ -900,7 +904,7 @@ class OllamaClient:
                     extracted_thought = thought_match.group(1) if thought_match else ""
                     response_match = re.search(r'"response"\s*[:：]\s*"([^"]*)"', raw)
                     extracted_response = response_match.group(1) if response_match else ""
-                    print(f"[JSONParse] L5 text-extract success: tool={extracted_tool}")
+                    logger.debug("L5 text-extract success: tool=%s", extracted_tool)
                     return {
                         "thought": extracted_thought,
                         "tool": extracted_tool,
@@ -919,7 +923,7 @@ class OllamaClient:
             }
             
         except Exception as e:
-            print(f"[JSONParse] EXCEPTION: {e}")
+            logger.exception("JSONParse EXCEPTION")
             # 兜底：使用 _extract_command 的容错逻辑
             fallback = self._extract_command(raw)
             return {

@@ -2,12 +2,15 @@
 导出服务模块
 支持：Excel 导出、加密备份导出、HTML 书签导出
 """
+import logging
 import html
 import json
 import base64
 from pathlib import Path
 from typing import List, Optional
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
@@ -110,7 +113,7 @@ class ExportService:
             return True
             
         except Exception as e:
-            print(f"[Export] Excel export failed: {e}")
+            logger.error("Excel export failed: %s", e)
             return False
     
     def export_encrypted_backup(self, accounts: List[Account], file_path: str, 
@@ -174,7 +177,7 @@ class ExportService:
             return True
             
         except Exception as e:
-            print(f"[Export] Encrypted backup failed: {e}")
+            logger.error("Encrypted backup failed: %s", e)
             return False
     
     def export_urls_to_html(self, urls: List, file_path: str) -> bool:
@@ -277,7 +280,7 @@ class ExportService:
             return True
             
         except Exception as e:
-            print(f"[Export] URL HTML export failed: {e}")
+            logger.error("URL HTML export failed: %s", e)
             return False
     
     def export_urls_to_excel(self, urls: List, file_path: str) -> bool:
@@ -353,7 +356,7 @@ class ExportService:
             return True
             
         except Exception as e:
-            print(f"[Export] URL Excel export failed: {e}")
+            logger.error("URL Excel export failed: %s", e)
             return False
     
     def import_from_vault(self, file_path: str, master_password: str) -> Optional[List[Account]]:
@@ -408,5 +411,5 @@ class ExportService:
             return accounts
             
         except Exception as e:
-            print(f"[Export] Vault import failed: {e}")
+            logger.error("Vault import failed: %s", e)
             return None

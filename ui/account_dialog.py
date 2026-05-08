@@ -8,15 +8,16 @@ from PyQt6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLineEdit, QLabel, QComboBox,
     QTextEdit, QTabWidget, QMessageBox, QFileDialog,
-    QProgressDialog, QApplication, QFrame, QListWidget
+    QProgressDialog, QApplication, QFrame, QListWidget, QScrollArea
 )
 from PyQt6.QtCore import QPoint
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QFont, QPixmap
+from PyQt6.QtGui import QFont, QPixmap, QColor, QPalette
 
 from core.database import DatabaseManager
 from core.clipboard import ClipboardManager
-from core.password_strength import evaluate_password_strength
+from core.password_strength import evaluate_password_strength, suggest_improvements
+from core.password_generator import generate_password
 from core.repositories import RepositoryFactory, AccountRepository
 from core.theme_manager import ThemeManager, ThemeColors
 from services.account_service import AccountService
@@ -29,16 +30,11 @@ logger = logging.getLogger(__name__)
 
 
 def _perf_log(phase: str, t0: float, t1: float = None):
-    """Phase 0 计时日志（输出到 debug_output.txt）"""
+    """Phase 0 计时日志"""
     if t1 is None:
         t1 = time.perf_counter()
     msg = f"[Perf] {phase}: {(t1 - t0) * 1000:.1f} ms"
     logger.debug(msg)
-    try:
-        with open("debug_output.txt", "a", encoding="utf-8") as f:
-            f.write(msg + "\n")
-    except Exception:
-        pass
 
 
 class OCRWorker(QThread):
@@ -76,6 +72,168 @@ class OCRWorker(QThread):
     def stop(self):
         self._is_running = False
         self.wait(1000)
+
+
+class PasswordHistoryDialog(QDialog):
+    def __init__(self, db_manager: DatabaseManager, account_id: int, app_name: str, parent=None):
+        super().__init__(parent)
+        self.db = db_manager
+        self.account_id = account_id
+        self._decrypted_cache = {}
+
+        self.setWindowTitle(f"密码历史记录 - {app_name}")
+        self.setMinimumSize(900, 380)
+
+        colors = ThemeManager.instance().colors
+        self.setStyleSheet(f"QDialog {{ background-color: {colors.bg_primary}; }}")
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+        layout.setContentsMargins(16, 16, 16, 16)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setSpacing(4)
+
+        history = self.db.get_password_history(account_id)
+
+        if not history:
+            empty_label = QLabel("暂无密码历史记录")
+            empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            empty_label.setStyleSheet(f"color: {colors.text_tertiary}; padding: 40px; font-size: 14px;")
+            content_layout.addWidget(empty_label)
+        else:
+            for entry in history:
+                entry_id, enc_pwd, changed_at = entry
+                row = QWidget()
+                row.setStyleSheet(f"""
+                    QWidget {{
+                        background-color: {colors.bg_card};
+                        border: 1px solid {colors.border_light};
+                        border-radius: 6px;
+                    }}
+                """)
+                row_layout = QHBoxLayout(row)
+                row_layout.setContentsMargins(12, 6, 12, 6)
+                row_layout.setSpacing(10)
+
+                dt = changed_at if changed_at else "未知"
+                dt_label = QLabel(dt)
+                dt_label.setStyleSheet(f"color: {colors.text_secondary}; font-size: 12px; border: none; background: transparent;")
+                dt_label.setFixedWidth(160)
+                row_layout.addWidget(dt_label)
+
+                pwd_field = QLineEdit("••••••••")
+                pwd_field.setReadOnly(True)
+                pwd_field.setEchoMode(QLineEdit.EchoMode.Password)
+                pwd_field.setStyleSheet(f"""
+                    QLineEdit {{
+                        border: 1px solid {colors.border_medium};
+                        border-radius: 4px;
+                        padding: 4px 8px;
+                        background-color: {colors.bg_secondary};
+                        color: {colors.text_primary};
+                        font-size: 12px;
+                    }}
+                """)
+                row_layout.addWidget(pwd_field, 1)
+
+                show_btn = QPushButton("显示")
+                show_btn.setCheckable(True)
+                show_btn.setFixedWidth(56)
+                show_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {colors.accent_blue_bg};
+                        color: {colors.accent_blue};
+                        border: 1px solid {colors.accent_blue_light};
+                        border-radius: 4px;
+                        font-size: 11px;
+                        padding: 4px 8px;
+                    }}
+                    QPushButton:hover {{
+                        background-color: {colors.accent_blue_light};
+                    }}
+                    QPushButton:checked {{
+                        background-color: {colors.accent_blue};
+                        color: {colors.text_on_accent};
+                    }}
+                """)
+                show_btn.toggled.connect(lambda checked, eid=entry_id, f=pwd_field, b=show_btn, ep=enc_pwd:
+                    self._toggle_password(checked, eid, f, b, ep))
+                row_layout.addWidget(show_btn)
+
+                copy_btn = QPushButton("复制")
+                copy_btn.setFixedWidth(56)
+                copy_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {colors.bg_secondary};
+                        color: {colors.text_secondary};
+                        border: 1px solid {colors.border_medium};
+                        border-radius: 4px;
+                        font-size: 11px;
+                        padding: 4px 8px;
+                    }}
+                    QPushButton:hover {{
+                        background-color: {colors.bg_tertiary};
+                        color: {colors.text_primary};
+                    }}
+                """)
+                copy_btn.clicked.connect(lambda checked, eid=entry_id, ep=enc_pwd:
+                    self._copy_password(eid, ep))
+                row_layout.addWidget(copy_btn)
+
+                content_layout.addWidget(row)
+
+        content_layout.addStretch()
+        scroll.setWidget(content)
+        layout.addWidget(scroll)
+
+        close_btn = QPushButton("关闭")
+        close_btn.setFixedHeight(36)
+        close_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.bg_secondary};
+                color: {colors.text_primary};
+                border: 1px solid {colors.border_medium};
+                border-radius: 4px;
+                font-size: 13px;
+                padding: 4px 20px;
+            }}
+            QPushButton:hover {{
+                background-color: {colors.bg_tertiary};
+            }}
+        """)
+        close_btn.clicked.connect(self.close)
+        layout.addWidget(close_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+
+    def _toggle_password(self, checked, entry_id, pwd_field, show_btn, enc_pwd):
+        if checked:
+            if entry_id not in self._decrypted_cache:
+                try:
+                    self._decrypted_cache[entry_id] = self.db._decrypt_field(enc_pwd)
+                except Exception:
+                    self._decrypted_cache[entry_id] = "[解密失败]"
+            pwd_field.setEchoMode(QLineEdit.EchoMode.Normal)
+            pwd_field.setText(self._decrypted_cache[entry_id])
+            show_btn.setText("隐藏")
+        else:
+            pwd_field.setEchoMode(QLineEdit.EchoMode.Password)
+            pwd_field.setText("••••••••")
+            show_btn.setText("显示")
+
+    def _copy_password(self, entry_id, enc_pwd):
+        if entry_id not in self._decrypted_cache:
+            try:
+                self._decrypted_cache[entry_id] = self.db._decrypt_field(enc_pwd)
+            except Exception:
+                QMessageBox.warning(self, "错误", "解密失败")
+                return
+        ClipboardManager().copy_to_clipboard(self._decrypted_cache[entry_id])
+        QMessageBox.information(self, "复制成功", "密码已复制到剪贴板")
 
 
 class PopupComboBox(QWidget):
@@ -279,6 +437,7 @@ class JustifyLabel(QLabel):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setFont(self.font())
+        painter.setPen(self.palette().color(QPalette.ColorRole.WindowText))
         
         rect = self.rect()
         fm = QFontMetrics(self.font())
@@ -351,6 +510,7 @@ class AccountDialog(QDialog):
         self._pending_categorize_parent_task = None
         self._pending_categorize_child_task = None
         self._pending_remark_task = None
+        self._is_dirty = False
         
         # 注册 Repository（若未注册）
         self._ensure_repository_registered()
@@ -517,6 +677,7 @@ class AccountDialog(QDialog):
         self.txt_app_name.setPlaceholderText("例如：支付宝、微信")
         self.txt_app_name.setFixedHeight(36)
         self.txt_app_name.textChanged.connect(self.on_app_name_changed)
+        self.txt_app_name.textChanged.connect(self._mark_dirty)
         name_layout.addWidget(self.txt_app_name)
         layout.addLayout(name_layout)
         
@@ -530,6 +691,7 @@ class AccountDialog(QDialog):
         self.txt_url = QLineEdit()
         self.txt_url.setPlaceholderText("例如：https://www.alipay.com")
         self.txt_url.setFixedHeight(36)
+        self.txt_url.textChanged.connect(self._mark_dirty)
         url_layout.addWidget(self.txt_url)
         layout.addLayout(url_layout)
         
@@ -544,6 +706,7 @@ class AccountDialog(QDialog):
         self.txt_username = QLineEdit()
         self.txt_username.setPlaceholderText("请输入账号")
         self.txt_username.setFixedHeight(36)
+        self.txt_username.textChanged.connect(self._mark_dirty)
         username_layout.addWidget(self.txt_username)
         layout.addLayout(username_layout)
         
@@ -561,6 +724,7 @@ class AccountDialog(QDialog):
         self.txt_password.setEchoMode(QLineEdit.EchoMode.Password)
         self.txt_password.setFixedHeight(36)
         self.txt_password.textChanged.connect(self.on_password_changed)
+        self.txt_password.textChanged.connect(self._mark_dirty)
         password_layout.addWidget(self.txt_password)
         
         self.btn_show_password = QPushButton("显示")
@@ -571,9 +735,9 @@ class AccountDialog(QDialog):
         
         layout.addLayout(password_layout)
         
-        # 密码强度（与上方输入框对齐，左侧留80px标签宽度）
+        # 密码强度行 (与上方输入框对齐，左侧留80px标签宽度)
         strength_layout = QHBoxLayout()
-        strength_layout.setSpacing(10)
+        strength_layout.setSpacing(6)
         strength_spacer = QLabel("")
         strength_spacer.setFixedWidth(80)
         strength_layout.addWidget(strength_spacer)
@@ -581,11 +745,44 @@ class AccountDialog(QDialog):
         self.lbl_password_strength = QLabel("")
         self.lbl_password_strength.setFixedHeight(24)
         self.lbl_password_strength.hide()
-        strength_layout.addWidget(self.lbl_password_strength, 1)
+        strength_layout.addWidget(self.lbl_password_strength)
+        
+        strength_layout.addStretch()
+        
+        self.btn_generate_password = QPushButton("生成")
+        self.btn_generate_password.setFixedSize(100, 26)
+        self.btn_generate_password.setToolTip("随机生成密码")
+        self.btn_generate_password.clicked.connect(self.on_generate_password)
+        strength_layout.addWidget(self.btn_generate_password)
+        
+        self.btn_generator_settings = QPushButton("⚙")
+        self.btn_generator_settings.setFixedSize(70, 26)
+        self.btn_generator_settings.setToolTip("密码生成器设置")
+        self.btn_generator_settings.clicked.connect(self.on_generate_password_settings)
+        strength_layout.addWidget(self.btn_generator_settings)
+        
+        self.btn_password_history = QPushButton("历史")
+        self.btn_password_history.setFixedSize(100, 26)
+        self.btn_password_history.setToolTip("查看密码历史记录")
+        self.btn_password_history.clicked.connect(self.on_show_password_history)
+        strength_layout.addWidget(self.btn_password_history)
         
         layout.addLayout(strength_layout)
-        t_form1 = time.perf_counter(); _perf_log("setup_manual_tab form controls", t_manual0, t_form1)
-        
+
+        # 密码改进建议
+        tips_layout = QHBoxLayout()
+        tips_layout.setSpacing(10)
+        tips_spacer = QLabel("")
+        tips_spacer.setFixedWidth(80)
+        tips_layout.addWidget(tips_spacer)
+
+        self.lbl_strength_tips = QLabel("")
+        self.lbl_strength_tips.setStyleSheet(f"color: {colors.text_tertiary}; font-size: 11px;")
+        self.lbl_strength_tips.setWordWrap(True)
+        tips_layout.addWidget(self.lbl_strength_tips, 1)
+
+        layout.addLayout(tips_layout)
+
         # 分类 + AI 按钮
         t_cat0 = time.perf_counter()
         category_layout = QHBoxLayout()
@@ -600,6 +797,7 @@ class AccountDialog(QDialog):
         self.cmb_parent.setPlaceholderText("请选择")
         self.cmb_parent.setFixedHeight(36)
         self.cmb_parent.currentTextChanged.connect(self._on_parent_changed)
+        self.cmb_parent.currentTextChanged.connect(self._mark_dirty)
         category_layout.addWidget(self.cmb_parent)
         
         lbl_sep = QLabel(">")
@@ -611,6 +809,7 @@ class AccountDialog(QDialog):
         self.cmb_child.setEditable(True)
         self.cmb_child.setPlaceholderText("子类（可选）")
         self.cmb_child.setFixedHeight(36)
+        self.cmb_child.currentTextChanged.connect(self._mark_dirty)
         category_layout.addWidget(self.cmb_child)
         
         self._load_categories()
@@ -680,6 +879,7 @@ class AccountDialog(QDialog):
         self.txt_ai_remark = QLineEdit()
         self.txt_ai_remark.setPlaceholderText("AI 生成的一句话备注（选填）")
         self.txt_ai_remark.setFixedHeight(36)
+        self.txt_ai_remark.textChanged.connect(self._mark_dirty)
         ai_remark_layout.addWidget(self.txt_ai_remark)
         
         self.btn_ai_remark = QPushButton("✨ AI生成")
@@ -703,6 +903,7 @@ class AccountDialog(QDialog):
         self.txt_remark.setPlaceholderText("其他信息（选填）")
         self.txt_remark.setMinimumHeight(80)
         self.txt_remark.setMaximumHeight(120)
+        self.txt_remark.textChanged.connect(self._mark_dirty)
         remark_layout.addWidget(self.txt_remark)
         layout.addLayout(remark_layout)
         
@@ -1125,26 +1326,21 @@ class AccountDialog(QDialog):
         # 显示已保存的密码强度
         if self.account.security_level:
             self._show_strength_label(self.account.security_level, self._get_strength_color(self.account.security_level))
+        
+        self._is_dirty = False  # 加载数据不视为修改
     
     def on_password_changed(self, text):
         """密码输入变化时更新强度显示"""
         if not text:
             self.lbl_password_strength.hide()
+            self.lbl_strength_tips.setText("")
             return
         
         result = evaluate_password_strength(text)
-        self.lbl_password_strength.show()
-        self.lbl_password_strength.setText(f"  密码强度：{result['label']}  ")
-        self.lbl_password_strength.setStyleSheet(f"""
-            QLabel {{
-                color: {result['color']};
-                background-color: {result['bg_color']};
-                border-radius: 4px;
-                font-size: 11px;
-                font-weight: bold;
-                padding: 2px 8px;
-            }}
-        """)
+        color = self._get_strength_color(result['label'])
+        self._show_strength_label(result['label'], color)
+
+        self._update_strength_suggestions()
     
     def _get_strength_color(self, level: str) -> str:
         """根据安全等级文本获取颜色"""
@@ -1189,6 +1385,49 @@ class AccountDialog(QDialog):
             self.txt_password.setEchoMode(QLineEdit.EchoMode.Password)
             self.btn_show_password.setText("显示")
     
+    def on_generate_password(self):
+        """快速生成密码（默认设置）"""
+        pwd = generate_password()
+        self.txt_password.setText(pwd)
+        self._trigger_strength_evaluation()
+    
+    def on_generate_password_settings(self):
+        """打开密码生成器设置弹窗"""
+        from ui.dialogs.password_generator_dialog import PasswordGeneratorDialog
+        dlg = PasswordGeneratorDialog(self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            pwd = dlg.generated_password
+            if pwd:
+                self.txt_password.setText(pwd)
+                self._trigger_strength_evaluation()
+
+    def on_show_password_history(self):
+        """打开密码历史记录对话框"""
+        if not self.is_edit_mode:
+            QMessageBox.information(self, "提示", "密码历史记录仅在编辑模式下可用，请先保存账号")
+            return
+        dlg = PasswordHistoryDialog(self.db, self.account.id, self.account.app_name, parent=self)
+        dlg.exec()
+    
+    def _trigger_strength_evaluation(self):
+        """手动触发密码强度评估"""
+        self.on_password_changed(self.txt_password.text())
+
+    def _update_strength_suggestions(self):
+        colors = ThemeManager.instance().colors
+        password = self.txt_password.text()
+        if not password:
+            self.lbl_strength_tips.setText("")
+            return
+
+        tips = suggest_improvements(password)
+        if tips:
+            self.lbl_strength_tips.setText("建议: " + " | ".join(tips[:3]))
+            self.lbl_strength_tips.setStyleSheet(f"color: {colors.accent_red}; font-size: 11px;")
+        else:
+            self.lbl_strength_tips.setText("密码强度良好")
+            self.lbl_strength_tips.setStyleSheet(f"color: {colors.accent_green}; font-size: 11px;")
+
     def on_ai_generate_remark(self):
         """AI 生成备注按钮点击（异步）"""
         app_name = self.txt_app_name.text().strip()
@@ -1291,16 +1530,27 @@ class AccountDialog(QDialog):
         
         try:
             if self.is_edit_mode:
-                # 更新
+                old_enc_pwd = None
+                old_decrypted_pwd = ""
+                old_row = self.db.cursor.execute(
+                    "SELECT password FROM accounts WHERE id = ?", (self.account.id,)
+                ).fetchone()
+                if old_row:
+                    old_enc_pwd = old_row['password']
+                    old_decrypted_pwd = self.db._decrypt_field(old_enc_pwd)
+
                 self.account_service.update_account(account)
-                QMessageBox.information(self, "成功", "账号已更新")
+
+                if old_enc_pwd and password != old_decrypted_pwd:
+                    self.db.add_password_history(self.account.id, old_enc_pwd)
+
             else:
                 # 新增
                 new_id = self.account_service.add_account(account)
                 account.id = new_id
-                QMessageBox.information(self, "成功", "账号已添加")
             
             self.account = account
+            self._is_dirty = False
             self.accept()
             
         except Exception as e:
@@ -1320,7 +1570,6 @@ class AccountDialog(QDialog):
                 # 软删除：移入回收站
                 success = self.db.soft_delete_account(self.account.id, self.account.to_dict())
                 if success:
-                    QMessageBox.information(self, "成功", "账号已移至回收站")
                     self.accept()
                 else:
                     QMessageBox.critical(self, "错误", "移至回收站失败")
@@ -1392,8 +1641,31 @@ class AccountDialog(QDialog):
             
             self.refresh_tags_display()
     
+    def _mark_dirty(self):
+        self._is_dirty = True
+
+    def reject(self):
+        # 取消按钮：直接关闭，不检查是否修改
+        self._is_dirty = False
+        self.close()
+
     def closeEvent(self, event):
         """关闭时清理"""
+        if self._is_dirty:
+            reply = QMessageBox.question(
+                self, "未保存的修改",
+                "有未保存的修改，是否保存？",
+                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Save
+            )
+            if reply == QMessageBox.StandardButton.Save:
+                self.on_save()
+                if self._is_dirty:
+                    event.ignore()
+                    return
+            elif reply == QMessageBox.StandardButton.Cancel:
+                event.ignore()
+                return
         # 断开 AI 信号
         try:
             self._ai_manager.state_changed.disconnect(self._update_ai_buttons)

@@ -359,6 +359,22 @@ class ExportService:
             logger.error("URL Excel export failed: %s", e)
             return False
     
+    def export_bitwarden_csv(self, accounts, file_path):
+        """Export accounts in Bitwarden CSV format"""
+        import csv
+        with open(file_path, 'w', encoding='utf-8', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['name', 'url', 'username', 'password', 'notes', 'folder'])
+            for acc in accounts:
+                writer.writerow([
+                    acc.app_name,
+                    acc.url or '',
+                    acc.username,
+                    acc.password,
+                    acc.remark or '',
+                    acc.category or ''
+                ])
+
     def import_from_vault(self, file_path: str, master_password: str) -> Optional[List[Account]]:
         """
         从加密备份文件导入（支持跨设备恢复）

@@ -4,6 +4,8 @@
 """
 import sys
 import time
+import json
+import os
 import logging
 from pathlib import Path
 from datetime import datetime
@@ -15,10 +17,12 @@ from PyQt6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem,
     QLabel, QFrame, QSplitter, QMessageBox, QApplication,
     QMenu, QCheckBox, QDialog, QInputDialog, QTextBrowser, QTextEdit,
-    QTableWidget, QTableWidgetItem, QHeaderView
+    QTableWidget, QTableWidgetItem, QHeaderView,
+    QDateEdit, QComboBox, QStackedWidget, QCalendarWidget
 )
-from PyQt6.QtCore import Qt, QSize, QTimer, QThread, pyqtSignal, QPoint
+from PyQt6.QtCore import Qt, QSize, QTimer, QThread, pyqtSignal, QPoint, QStringListModel, QDate
 from PyQt6.QtGui import QIcon, QFont, QColor
+from PyQt6.QtWidgets import QCompleter
 
 from core.database import DatabaseManager
 from core.clipboard import ClipboardManager
@@ -30,7 +34,7 @@ from services.account_service import AccountService
 from services.category_service import CategoryService
 from services.ai_classification_service import AIClassificationService
 from services.export_service import ExportService
-from services.search_service import SearchService, SearchResult
+from services.search_service import SearchService, SearchResult, SearchFilter
 from services.ai_assistant_service import AIAssistantService
 from services.ai_service_manager import AIServiceManager
 from services.ai_worker_thread import AIStatus
@@ -39,10 +43,12 @@ from .account_dialog import AccountDialog
 from .url_dialog import URLEditDialog
 from .export_dialog import ExportDialog
 from .settings_dialog import SettingsDialog
+from .dialogs.health_check_dialog import HealthCheckDialog
 from .batch_add_preview_widget import BatchAddPreviewWidget
 from .lock_screen import LockScreen, IdleTimer
 from .widgets.account_list_item import AccountListItem
 from .widgets.url_list_item import URLListItem
+from .widgets.dashboard_widget import DashboardWidget
 
 logger = logging.getLogger(__name__)
 
@@ -951,7 +957,7 @@ class CategoryTreeWidget(QTreeWidget):
         if self._reorganize_mode:
             # 重组模式规则
             # 1. 源是"全部"或"成为一级"特殊条目 → 拒绝
-            if source_data in ('全部', '__DROP_TO_ROOT__'):
+            if source_data in ('全部', '__DROP_TO_ROOT__', '__favorites__', '__recent__'):
                 event.ignore()
                 return
             
@@ -1308,6 +1314,9 @@ class MainWindow(QMainWindow):
         self._category_selection_mode = False
         self._selected_categories = set()
         
+        # 撤销横幅数据
+        self._undo_deleted_items = []
+        
         self.setup_ui()
         self._reload_categories()
         self._setup_session_security()
@@ -1324,6 +1333,11 @@ class MainWindow(QMainWindow):
         self._url_db = URLDatabaseManager(str(url_db_path))
         self._url_service = URLService(self._url_db)
         self.ai_assistant.url_db = self._url_db
+        
+        # 现在创建仪表盘（_url_service 已就绪）
+        self.dashboard = DashboardWidget(self.account_service, self._url_service, self.current_vault)
+        self.dashboard.set_callback(self._on_dashboard_action)
+        self.list_stack.addWidget(self.dashboard)
         
         # 统一注册 RepositoryFactory（确保 URLRepository 有 main_db 引用用于回收站备份）
         from core.repositories import RepositoryFactory, AccountRepository, URLRepository
@@ -1367,6 +1381,7 @@ class MainWindow(QMainWindow):
             (QKeySequence("Ctrl+L"), self._shortcut_lock),
             (QKeySequence("Ctrl+1"), lambda: self._on_vault_tab_changed(0)),
             (QKeySequence("Ctrl+2"), lambda: self._on_vault_tab_changed(1)),
+            (QKeySequence("Ctrl+Z"), self._shortcut_undo),
         ]
         for key_seq, slot in shortcuts:
             QShortcut(key_seq, self).activated.connect(slot)
@@ -1410,6 +1425,11 @@ class MainWindow(QMainWindow):
     def _shortcut_lock(self):
         self.show_lock_screen()
     
+    def _shortcut_undo(self):
+        """Ctrl+Z 撤销最近的批量删除"""
+        if hasattr(self, '_undo_banner') and self._undo_banner and self._undo_banner.isVisible():
+            self._undo_delete(self._undo_deleted_items)
+    
     def setup_ui(self):
         """设置界面"""
         colors = ThemeManager.instance().colors
@@ -1437,8 +1457,58 @@ class MainWindow(QMainWindow):
         self.search_box = QLineEdit()
         self.search_box.setPlaceholderText("搜索账号（应用名/网址/备注），按回车搜索...")
         self.search_box.setFixedHeight(36)
+        self.search_box.setStyleSheet(style_input(colors))
         self.search_box.returnPressed.connect(self.on_search)
         top_layout.addWidget(self.search_box, 1)
+        
+        # 搜索历史下拉补全
+        self._search_completer = QCompleter(self.search_box)
+        self._search_model = QStringListModel()
+        self._search_completer.setModel(self._search_model)
+        self._search_completer.setCompletionMode(QCompleter.CompletionMode.UnfilteredPopupCompletion)
+        self.search_box.setCompleter(self._search_completer)
+        
+        original_focus_in = self.search_box.focusInEvent
+        def _update_search_completer(e):
+            history = self.search_service.get_search_history()
+            self._search_model.setStringList(history)
+            original_focus_in(e)
+        self.search_box.focusInEvent = _update_search_completer
+        self._search_completer.activated.connect(self.on_search)
+        
+        # 筛选切换按钮
+        self.btn_toggle_filter = QPushButton("🔍筛选")
+        self.btn_toggle_filter.setFixedWidth(100)
+        self.btn_toggle_filter.setCheckable(True)
+        self.btn_toggle_filter.setToolTip("展开/收起高级筛选")
+        self.btn_toggle_filter.setStyleSheet(f"""
+            QPushButton {{
+                border: 1px solid {colors.border_default};
+                border-radius: 4px;
+                background-color: {colors.bg_tertiary};
+                color: {colors.text_primary};
+                font-size: 14px;
+            }}
+            QPushButton:checked {{
+                background-color: {colors.accent_blue};
+                color: {colors.text_on_accent};
+                border: 1px solid {colors.accent_blue};
+            }}
+            QPushButton:hover {{
+                background-color: {colors.bg_hover};
+            }}
+            QPushButton:checked:hover {{
+                background-color: {colors.accent_blue_dark};
+            }}
+        """)
+        self.btn_toggle_filter.clicked.connect(lambda checked: self._on_filter_toggle(checked))
+        top_layout.addWidget(self.btn_toggle_filter)
+        
+        # 筛选条件已启用标签
+        self.lbl_filter_active = QLabel("筛选条件已启用")
+        self.lbl_filter_active.setStyleSheet(f"color: {colors.accent_orange_text}; font-size: 11px; font-weight: bold; padding: 0 4px;")
+        self.lbl_filter_active.hide()
+        top_layout.addWidget(self.lbl_filter_active)
         
         top_layout.addSpacing(10)
         
@@ -1488,6 +1558,7 @@ class MainWindow(QMainWindow):
         self.btn_add = QPushButton("+ 添加账号")
         self.btn_add.setFixedHeight(36)
         self.btn_add.setFixedWidth(120)
+        self.btn_add.setStyleSheet(style_button_primary(colors))
         self.btn_add.clicked.connect(self.on_add_item)
         top_layout.addWidget(self.btn_add)
         
@@ -1516,13 +1587,130 @@ class MainWindow(QMainWindow):
         top_layout.addSpacing(10)
         
         # 设置按钮
-        btn_settings = QPushButton("设置")
-        btn_settings.setFixedSize(60, 36)
-        btn_settings.setToolTip("设置")
-        btn_settings.clicked.connect(self.on_settings)
-        top_layout.addWidget(btn_settings)
+        self.btn_settings = QPushButton("设置")
+        self.btn_settings.setFixedSize(60, 36)
+        self.btn_settings.setToolTip("设置")
+        self.btn_settings.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.bg_tertiary};
+                color: {colors.text_primary};
+                border: 1px solid {colors.border_default};
+                border-radius: 4px;
+            }}
+            QPushButton:hover {{
+                background-color: {colors.bg_hover};
+            }}
+        """)
+        self.btn_settings.clicked.connect(self.on_settings)
+        top_layout.addWidget(self.btn_settings)
+        
+        top_layout.addSpacing(8)
         
         main_layout.addWidget(self.top_bar)
+        
+        # ==================== 高级筛选面板 ====================
+        self.filter_panel = QWidget()
+        self.filter_panel.setVisible(False)
+        self.filter_panel.setStyleSheet(f"background-color: {colors.bg_secondary}; border-bottom: 1px solid {colors.border_default};")
+        filter_wrap_layout = QHBoxLayout(self.filter_panel)
+        filter_wrap_layout.setContentsMargins(8, 4, 8, 4)
+        filter_wrap_layout.setSpacing(8)
+        
+        label_style = f"color: {colors.text_primary}; font-size: 12px;"
+        combo_style = f"""
+            QComboBox {{
+                background-color: {colors.bg_primary};
+                color: {colors.text_primary};
+                border: 1px solid {colors.border_default};
+                border-radius: 4px;
+                padding: 2px 8px;
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: {colors.bg_primary};
+                color: {colors.text_primary};
+                border: 1px solid {colors.border_default};
+            }}
+        """
+        date_style = f"""
+            QDateEdit {{
+                background-color: {colors.bg_primary};
+                color: {colors.text_primary};
+                border: 1px solid {colors.border_default};
+                border-radius: 4px;
+                padding: 2px 8px;
+            }}
+            QDateEdit::drop-down {{
+                border: none;
+            }}
+        """
+        
+        self.lbl_filter_category = QLabel("分类:")
+        self.lbl_filter_category.setStyleSheet(label_style)
+        filter_wrap_layout.addWidget(self.lbl_filter_category)
+        self.filter_category = QComboBox()
+        self.filter_category.setStyleSheet(combo_style)
+        self.filter_category.addItem("全部", None)
+        filter_wrap_layout.addWidget(self.filter_category)
+        
+        self.lbl_filter_created = QLabel("创建:")
+        self.lbl_filter_created.setStyleSheet(label_style)
+        filter_wrap_layout.addWidget(self.lbl_filter_created)
+        self.filter_date_from = QDateEdit()
+        self.filter_date_from.setStyleSheet(date_style)
+        self.filter_date_from.setCalendarPopup(True)
+        self.filter_date_from.setDate(QDate.currentDate().addYears(-1))
+        self.filter_date_from.setMinimumWidth(120)
+        self.filter_date_from.setDisplayFormat("yyyy-MM-dd")
+        self.filter_date_from.setToolTip("默认起始时间将自动设为数据最早记录")
+        filter_wrap_layout.addWidget(self.filter_date_from)
+        self.lbl_filter_to = QLabel("至")
+        self.lbl_filter_to.setStyleSheet(label_style)
+        filter_wrap_layout.addWidget(self.lbl_filter_to)
+        self.filter_date_to = QDateEdit()
+        self.filter_date_to.setStyleSheet(date_style)
+        self.filter_date_to.setCalendarPopup(True)
+        self.filter_date_to.setDate(QDate.currentDate())
+        self.filter_date_to.setMinimumWidth(120)
+        self.filter_date_to.setDisplayFormat("yyyy-MM-dd")
+        filter_wrap_layout.addWidget(self.filter_date_to)
+        
+        self.lbl_filter_strength = QLabel("强度:")
+        self.lbl_filter_strength.setStyleSheet(label_style)
+        filter_wrap_layout.addWidget(self.lbl_filter_strength)
+        self.filter_strength = QComboBox()
+        self.filter_strength.setStyleSheet(combo_style)
+        self.filter_strength.setMinimumWidth(100)
+        self.filter_strength.addItems(["全部", "弱", "中", "强", "极强"])
+        filter_wrap_layout.addWidget(self.filter_strength)
+        
+        self.btn_apply_filter = QPushButton("筛选")
+        self.btn_apply_filter.setMinimumWidth(60)
+        self.btn_apply_filter.setStyleSheet(style_button_primary(colors))
+        self.btn_apply_filter.clicked.connect(self._on_apply_filter)
+        filter_wrap_layout.addWidget(self.btn_apply_filter)
+        
+        self.btn_clear_filter = QPushButton("清除")
+        self.btn_clear_filter.setMinimumWidth(60)
+        self.btn_clear_filter.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.bg_tertiary};
+                color: {colors.text_primary};
+                border: 1px solid {colors.border_default};
+                border-radius: 4px;
+                padding: 4px 12px;
+            }}
+            QPushButton:hover {{
+                background-color: {colors.bg_hover};
+            }}
+        """)
+        self.btn_clear_filter.clicked.connect(self._on_clear_filter)
+        filter_wrap_layout.addWidget(self.btn_clear_filter)
+        
+        filter_wrap_layout.addStretch()
+        main_layout.addWidget(self.filter_panel)
+
+        self._calendar_style_applied = False
+        self._filter_earliest_date = QDate.currentDate().addYears(-1)
         
         # ==================== 中间内容区 ====================
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -1740,14 +1928,44 @@ class MainWindow(QMainWindow):
         center_layout.setContentsMargins(15, 15, 15, 15)
         center_layout.setSpacing(10)
         
-        # 账号列表标题
+        # 账号列表标题 + 紧凑视图切换按钮
+        title_header = QHBoxLayout()
+        title_header.setContentsMargins(0, 0, 0, 0)
+        title_header.setSpacing(6)
+        
         self.lbl_list_title = QLabel("全部账号")
         font = QFont()
         font.setPointSize(14)
         font.setBold(True)
         self.lbl_list_title.setFont(font)
         self.lbl_list_title.setStyleSheet(f"color: {colors.text_primary}; padding-bottom: 10px;")
-        center_layout.addWidget(self.lbl_list_title)
+        title_header.addWidget(self.lbl_list_title, 1)
+        
+        self.btn_compact_view = QPushButton("📋")
+        self.btn_compact_view.setFixedSize(28, 28)
+        self.btn_compact_view.setCheckable(True)
+        self.btn_compact_view.setToolTip("切换紧凑视图")
+        self.btn_compact_view.setStyleSheet(f"""
+            QPushButton {{
+                border: none;
+                background: transparent;
+                font-size: 14px;
+                color: {colors.text_secondary};
+            }}
+            QPushButton:hover {{
+                background-color: {colors.bg_hover};
+                border-radius: 4px;
+            }}
+            QPushButton:checked {{
+                background-color: {colors.accent_blue_bg};
+                color: {colors.accent_blue};
+                border-radius: 4px;
+            }}
+        """)
+        self.btn_compact_view.clicked.connect(self._toggle_compact_view)
+        title_header.addWidget(self.btn_compact_view)
+        
+        center_layout.addLayout(title_header)
         
         # AI 筛选横幅
         self.ai_filter_banner = QWidget()
@@ -1765,10 +1983,10 @@ class MainWindow(QMainWindow):
         self.lbl_ai_filter.setStyleSheet(f"color: {colors.accent_blue_dark}; font-size: 12px;")
         filter_banner_layout.addWidget(self.lbl_ai_filter, 1)
         
-        btn_clear_filter = QPushButton("清除筛选")
-        btn_clear_filter.setFixedHeight(24)
-        btn_clear_filter.setFixedWidth(90)
-        btn_clear_filter.setStyleSheet(f"""
+        self.btn_clear_ai_filter = QPushButton("清除筛选")
+        self.btn_clear_ai_filter.setFixedHeight(24)
+        self.btn_clear_ai_filter.setFixedWidth(90)
+        self.btn_clear_ai_filter.setStyleSheet(f"""
             QPushButton {{
                 background-color: {colors.accent_blue_light};
                 color: {colors.text_on_accent};
@@ -1780,11 +1998,44 @@ class MainWindow(QMainWindow):
                 background-color: {colors.accent_blue};
             }}
         """)
-        btn_clear_filter.clicked.connect(self.clear_account_highlight)
-        filter_banner_layout.addWidget(btn_clear_filter)
+        self.btn_clear_ai_filter.clicked.connect(self.clear_account_highlight)
+        filter_banner_layout.addWidget(self.btn_clear_ai_filter)
         
         self.ai_filter_banner.hide()
         center_layout.addWidget(self.ai_filter_banner)
+        
+        # 撤销删除横幅（默认隐藏）
+        self._undo_banner = QWidget()
+        self._undo_banner.setObjectName("undoBanner")
+        undo_layout = QHBoxLayout(self._undo_banner)
+        undo_layout.setContentsMargins(12, 6, 12, 6)
+        
+        self._undo_msg = QLabel("")
+        self._undo_msg.setStyleSheet(f"color: {colors.text_on_dark}; font-size: 13px;")
+        undo_layout.addWidget(self._undo_msg)
+        
+        undo_layout.addStretch()
+        
+        self._undo_btn = QPushButton("撤销")
+        self._undo_btn.setFixedWidth(60)
+        self._undo_btn.setStyleSheet(f"""
+            QPushButton {{ background: {colors.bg_card}; color: {colors.text_primary}; border-radius: 4px; padding: 4px 12px; font-weight: bold; }}
+            QPushButton:hover {{ background: {colors.bg_hover}; }}
+        """)
+        undo_layout.addWidget(self._undo_btn)
+        
+        close_btn = QPushButton("\u2715")
+        close_btn.setFixedSize(24, 24)
+        close_btn.setStyleSheet(f"color: {colors.text_on_dark}; border: none; font-size: 14px;")
+        close_btn.clicked.connect(self._dismiss_undo_banner)
+        undo_layout.addWidget(close_btn)
+        
+        self._undo_banner.setStyleSheet(f"""
+            #undoBanner {{ background-color: {colors.bg_secondary}; border-radius: 8px; }}
+        """)
+        self._undo_banner.setFixedHeight(42)
+        self._undo_banner.hide()
+        center_layout.addWidget(self._undo_banner)
         
         # 账号列表 + 字母导航条
         list_container = QWidget()
@@ -1808,7 +2059,16 @@ class MainWindow(QMainWindow):
         self.account_list.setSpacing(0)
         self.account_list.itemClicked.connect(self.on_account_clicked)
         self.account_list.itemDoubleClicked.connect(self.on_account_double_clicked)
-        list_row.addWidget(self.account_list, 1)
+        self.account_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.account_list.customContextMenuRequested.connect(self._on_list_item_context_menu)
+        
+        self.list_stack = QStackedWidget()
+        self.list_stack.addWidget(self.account_list)
+        # dashboard 在 _url_service 初始化后创建（见 __init__ 末尾）
+        self.dashboard = None
+        self.list_stack.setCurrentIndex(0)
+        
+        list_row.addWidget(self.list_stack, 1)
         
         # 字母索引导航条
         self.alpha_nav = self._build_alpha_nav()
@@ -2142,6 +2402,14 @@ class MainWindow(QMainWindow):
         
         bottom_layout.addSpacing(10)
         
+        # 从其他管理器导入按钮
+        btn_import_manager = QPushButton("导入")
+        btn_import_manager.setFixedHeight(36)
+        btn_import_manager.clicked.connect(self._on_import_from_manager)
+        bottom_layout.addWidget(btn_import_manager)
+        
+        bottom_layout.addSpacing(10)
+        
         # 导出按钮
         btn_export = QPushButton("导出")
         btn_export.setFixedHeight(36)
@@ -2211,6 +2479,18 @@ class MainWindow(QMainWindow):
         """)
         self.btn_sel_delete.clicked.connect(self._execute_batch_delete)
         selection_layout.addWidget(self.btn_sel_delete)
+        
+        selection_layout.addSpacing(10)
+        
+        self.btn_batch_categorize = QPushButton("批量分类")
+        self.btn_batch_categorize.setFixedHeight(36)
+        self.btn_batch_categorize.clicked.connect(self._execute_batch_categorize)
+        selection_layout.addWidget(self.btn_batch_categorize)
+        
+        self.btn_batch_tag = QPushButton("批量标签")
+        self.btn_batch_tag.setFixedHeight(36)
+        self.btn_batch_tag.clicked.connect(self._execute_batch_tag)
+        selection_layout.addWidget(self.btn_batch_tag)
         
         self.selection_bottom_bar.hide()
         main_layout.addWidget(self.selection_bottom_bar)
@@ -2297,7 +2577,13 @@ class MainWindow(QMainWindow):
         
         # 获取账号（使用缓存）
         if self._cache_dirty or not self._cached_accounts:
-            if self.current_category == '全部':
+            if self.current_category == '__favorites__':
+                self._cached_accounts = self.account_service.get_favorites()
+            elif self.current_category == '__recent__':
+                all_accs = self.account_service.get_all_accounts()
+                all_accs.sort(key=lambda a: a.updated_at or datetime.min, reverse=True)
+                self._cached_accounts = all_accs[:20]
+            elif self.current_category == '全部':
                 self._cached_accounts = self.account_service.get_all_accounts()
             else:
                 self._cached_accounts = self.account_service.get_accounts_by_category(self.current_category)
@@ -2307,6 +2593,7 @@ class MainWindow(QMainWindow):
         
         # 扁平列表显示（按拼音首字母排序：英文/中文排前面，数字符号归为#排最后）
         if not accounts:
+            self.btn_compact_view.setChecked(False)
             item = QListWidgetItem("暂无账号")
             item.setFlags(Qt.ItemFlag.NoItemFlags)
             self.account_list.addItem(item)
@@ -2318,27 +2605,47 @@ class MainWindow(QMainWindow):
             if not text:
                 return (1, '')
             fc = text[0]
-            # 字母或中文排前面（group=0），其他（数字/符号）归为#排最后（group=1）
             if ('a' <= fc.lower() <= 'z') or ('\u4e00' <= fc <= '\u9fff'):
                 return (0, PinyinConverter.get_pinyin_initials(text).lower())
             return (1, text.lower())
         
         accounts.sort(key=_account_sort_key)
         
+        is_compact = self._load_compact_preference()
+        item_height = 32 if is_compact else 56
+        col_config = self._load_column_config()
+        
         for idx, account in enumerate(accounts):
             item = QListWidgetItem()
-            item.setSizeHint(QSize(self.account_list.width() - 20, 56))
+            item.setSizeHint(QSize(self.account_list.width() - 20, item_height))
             item.setData(Qt.ItemDataRole.UserRole, account)
             self.account_list.addItem(item)
             
             widget = AccountListItem(account, selection_mode=self._selection_mode)
             if self._selection_mode and account.id in self._selected_ids:
                 widget.set_checked(True)
+            if is_compact:
+                widget.set_compact_mode(True)
             self.account_list.setItemWidget(item, widget)
+            for key, visible in col_config.items():
+                if not visible:
+                    widget.set_column_visible(key, False)
+        
+        self.btn_compact_view.setChecked(is_compact)
         
         # 更新标题
         count = len(accounts)
-        self.lbl_list_title.setText(f"{self.current_category} ({count})")
+        if self.current_category == '__favorites__':
+            title = '收藏'
+        elif self.current_category == '__recent__':
+            title = '最近使用'
+        elif self.current_category == '__dashboard__':
+            title = '首页'
+        elif self.current_category == '全部':
+            title = '全部账号'
+        else:
+            title = self.current_category
+        self.lbl_list_title.setText(f"{title} ({count})")
     
     def _on_vault_tab_changed(self, tab_id: int):
         """库切换事件"""
@@ -2360,6 +2667,9 @@ class MainWindow(QMainWindow):
             self.lbl_list_title.setText("全部网址")
             self.search_box.setPlaceholderText("搜索网址（标题/网址/备注）...")
             self.btn_add.setText("+ 添加网址")
+        
+        if self.dashboard is not None:
+            self.dashboard.set_vault(self.current_vault)
         
         # 重置对话上下文和欢迎语状态
         self.ai_assistant.conversation_context.reset()
@@ -2407,6 +2717,7 @@ class MainWindow(QMainWindow):
     
     def _reload_categories(self):
         """重新加载分类导航（树形结构）"""
+        saved_category = self.current_category  # Bug #1: 保存当前分类
         # 重建树期间断开 itemChanged，避免 setCheckState/clear 触发信号修改 _selected_categories
         try:
             self.category_tree.itemChanged.disconnect(self._on_category_check_changed)
@@ -2424,6 +2735,25 @@ class MainWindow(QMainWindow):
         cat_sel_mode = getattr(self, '_category_selection_mode', False)
         reorg_mode = getattr(self, '_category_reorganize_mode', False)
         
+        # 添加"🏠 首页"节点
+        home_item = QTreeWidgetItem(self.category_tree)
+        home_item.setText(0, "🏠 首页")
+        home_item.setData(0, Qt.ItemDataRole.UserRole, '__dashboard__')
+        if edit_mode or reorg_mode:
+            home_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+        elif cat_sel_mode:
+            home_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+        
+        # 添加"⭐ 收藏"节点
+        fav_count = len(self.account_service.get_favorites()) if self.current_vault == 'accounts' else len(self._url_service.get_favorites())
+        root_fav = QTreeWidgetItem(self.category_tree)
+        root_fav.setText(0, f"⭐ 收藏 ({fav_count})")
+        root_fav.setData(0, Qt.ItemDataRole.UserRole, "__favorites__")
+        if edit_mode or reorg_mode:
+            root_fav.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+        elif cat_sel_mode:
+            root_fav.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+        
         # 添加"全部"节点
         total_count = self._get_total_count()
         root_all = QTreeWidgetItem(self.category_tree)
@@ -2433,6 +2763,15 @@ class MainWindow(QMainWindow):
             root_all.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
         elif cat_sel_mode:
             root_all.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+        
+        # 添加"🕐 最近使用"节点
+        recent_item = QTreeWidgetItem(self.category_tree)
+        recent_item.setText(0, "🕐 最近使用")
+        recent_item.setData(0, Qt.ItemDataRole.UserRole, "__recent__")
+        if edit_mode or reorg_mode:
+            recent_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+        elif cat_sel_mode:
+            recent_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
         
         # 添加一级节点
         for parent_name in tree_data.keys():
@@ -2489,9 +2828,23 @@ class MainWindow(QMainWindow):
             # 父节点默认展开
             parent_item.setExpanded(True)
         
-        # 默认选中"全部"
-        self.category_tree.setCurrentItem(root_all)
-        self.current_category = '全部'
+        # 恢复之前的选中分类（或默认选择"全部"）
+        restored = False
+        root = self.category_tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            item = root.child(i)
+            cat = item.data(0, Qt.ItemDataRole.UserRole)
+            if cat == saved_category:
+                self.category_tree.setCurrentItem(item)
+                self.current_category = saved_category
+                restored = True
+                break
+        if not restored:
+            self.category_tree.setCurrentItem(root_all)
+            self.current_category = '全部'
+        
+        if self.filter_panel.isVisible():
+            self._populate_filter_categories()
         
         # 重建完成后重新连接 itemChanged
         self.category_tree.itemChanged.connect(self._on_category_check_changed)
@@ -2527,7 +2880,7 @@ class MainWindow(QMainWindow):
         for i in range(root.childCount()):
             item = root.child(i)
             category = item.data(0, Qt.ItemDataRole.UserRole)
-            if category == '全部' or category == '__DROP_TO_ROOT__':
+            if category == '全部' or category == '__DROP_TO_ROOT__' or category == '__favorites__' or category == '__recent__' or category == '__dashboard__':
                 continue
             orders[category] = idx_top
             idx_top += 1
@@ -2646,7 +2999,7 @@ class MainWindow(QMainWindow):
     def _on_category_check_changed(self, item, column):
         """类别复选框状态变化"""
         category = item.data(0, Qt.ItemDataRole.UserRole)
-        if category == '全部':
+        if category in ('全部', '__favorites__', '__recent__', '__dashboard__'):
             return
         if item.checkState(0) == Qt.CheckState.Checked:
             self._selected_categories.add(category)
@@ -2723,7 +3076,13 @@ class MainWindow(QMainWindow):
         self.account_list.clear()
         
         if self._url_cache_dirty or not self._cached_urls:
-            if self.current_category == '全部':
+            if self.current_category == '__favorites__':
+                self._cached_urls = self._url_service.get_favorites()
+            elif self.current_category == '__recent__':
+                all_urls = self._url_service.get_all_urls()
+                all_urls.sort(key=lambda u: (getattr(u, 'updated_at', None) or (u.get('updated_at') if isinstance(u, dict) else None) or datetime.min), reverse=True)
+                self._cached_urls = all_urls[:20]
+            elif self.current_category == '全部':
                 self._cached_urls = self._url_service.get_all_urls()
             else:
                 self._cached_urls = self._url_service.get_urls_by_category(self.current_category)
@@ -2732,6 +3091,7 @@ class MainWindow(QMainWindow):
         urls = self._cached_urls.copy()
         
         if not urls:
+            self.btn_compact_view.setChecked(False)
             item = QListWidgetItem("暂无网址")
             item.setFlags(Qt.ItemFlag.NoItemFlags)
             self.account_list.addItem(item)
@@ -2750,10 +3110,13 @@ class MainWindow(QMainWindow):
         
         urls.sort(key=_url_sort_key)
         
-        # 扁平列表显示
+        is_compact = self._load_compact_preference()
+        item_height = 32 if is_compact else 56
+        col_config = self._load_column_config()
+        
         for url_item in urls:
             list_item = QListWidgetItem()
-            list_item.setSizeHint(QSize(self.account_list.width() - 20, 56))
+            list_item.setSizeHint(QSize(self.account_list.width() - 20, item_height))
             list_item.setData(Qt.ItemDataRole.UserRole, url_item)
             self.account_list.addItem(list_item)
             
@@ -2762,10 +3125,55 @@ class MainWindow(QMainWindow):
                 uid = getattr(url_item, 'id', None) or (url_item.get('id') if isinstance(url_item, dict) else None)
                 if uid and uid in self._selected_ids:
                     widget.set_checked(True)
+            if is_compact:
+                widget.set_compact_mode(True)
             self.account_list.setItemWidget(list_item, widget)
+            for key, visible in col_config.items():
+                if not visible:
+                    widget.set_column_visible(key, False)
+        
+        self.btn_compact_view.setChecked(is_compact)
         
         count = len(urls)
-        self.lbl_list_title.setText(f"{self.current_category} ({count})")
+        if self.current_category == '__favorites__':
+            title = '收藏'
+        elif self.current_category == '__recent__':
+            title = '最近使用'
+        elif self.current_category == '__dashboard__':
+            title = '首页'
+        elif self.current_category == '全部':
+            title = '全部网址'
+        else:
+            title = self.current_category
+        self.lbl_list_title.setText(f"{title} ({count})")
+    
+    def _toggle_compact_view(self, checked: bool):
+        self._save_compact_preference(checked)
+        self._smart_refresh()
+    
+    def _save_compact_preference(self, enabled: bool):
+        import json, os
+        config_path = os.path.join(os.path.expanduser('~'), '.local_password_vault', 'compact_view.json')
+        config = {}
+        try:
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+        except Exception:
+            pass
+        config[self.current_vault] = enabled
+        os.makedirs(os.path.dirname(config_path), exist_ok=True)
+        with open(config_path, 'w') as f:
+            json.dump(config, f)
+    
+    def _load_compact_preference(self) -> bool:
+        import json, os
+        config_path = os.path.join(os.path.expanduser('~'), '.local_password_vault', 'compact_view.json')
+        try:
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+                return config.get(self.current_vault, False)
+        except Exception:
+            return False
     
     def _save_scroll_state(self):
         """保存当前列表的滚动位置和选中项ID"""
@@ -2838,6 +3246,10 @@ class MainWindow(QMainWindow):
                 if uid and uid in self._selected_ids:
                     widget.set_checked(True)
             self.account_list.setItemWidget(list_item, widget)
+            col_config = self._load_column_config()
+            for key, visible in col_config.items():
+                if not visible:
+                    widget.set_column_visible(key, False)
         
         self.lbl_list_title.setText(f"搜索结果 ({len(results)})")
     
@@ -2845,12 +3257,25 @@ class MainWindow(QMainWindow):
         """分类选择事件"""
         if item is None:
             return
-        # 批量删除模式下仅更新选中状态，不切换列表视图
         if getattr(self, '_category_selection_mode', False):
             return
+        
+        new_category = item.data(0, Qt.ItemDataRole.UserRole)
+        if new_category == self.current_category:
+            return
+        
         self._view_mode = 'default'
-        self.current_category = item.data(0, Qt.ItemDataRole.UserRole)
-        # 切换分类时强制刷新缓存
+        self.current_category = new_category
+        
+        if self.current_category == '__dashboard__':
+            if self.dashboard is not None:
+                self.list_stack.setCurrentIndex(1)
+                self.dashboard.set_vault(self.current_vault)
+            self.alpha_nav.hide()
+            return
+        
+        self.list_stack.setCurrentIndex(0)
+        self.alpha_nav.show()
         self._cache_dirty = True
         self._url_cache_dirty = True
         if self.current_vault == 'accounts':
@@ -2867,6 +3292,8 @@ class MainWindow(QMainWindow):
             conn = self._url_db.conn
             table = 'urls'
         
+        if table not in ('accounts', 'urls'):
+            raise ValueError(f"Invalid table: {table}")
         cursor = conn.cursor()
         # 1. 精确匹配的旧名称
         cursor.execute(f"UPDATE {table} SET category = ? WHERE category = ?", (new_name, old_name))
@@ -2914,8 +3341,8 @@ class MainWindow(QMainWindow):
             return
         
         category = item.data(0, Qt.ItemDataRole.UserRole)
-        if category == '全部':
-            return  # 全部分类不提供操作
+        if category in ('全部', '__favorites__', '__recent__', '__dashboard__'):
+            return  # 特殊节点不提供操作
         
         # 判断是一级节点还是二级节点
         parent = item.parent()
@@ -3055,6 +3482,120 @@ class MainWindow(QMainWindow):
             else:
                 QMessageBox.warning(self, "提示", "升级失败，请重试")
     
+    def _on_list_item_context_menu(self, pos: QPoint):
+        """列表项右键菜单：切换收藏"""
+        item = self.account_list.itemAt(pos)
+        if not item:
+            return
+        data = item.data(Qt.ItemDataRole.UserRole)
+        if not data:
+            return
+        
+        item_id = getattr(data, 'id', None) or (data.get('id') if isinstance(data, dict) else None)
+        is_fav = getattr(data, 'is_favorite', False) or (data.get('is_favorite', False) if isinstance(data, dict) else False)
+        
+        menu = QMenu(self)
+        if is_fav:
+            action_fav = menu.addAction("⭐ 取消收藏")
+        else:
+            action_fav = menu.addAction("⭐ 添加到收藏")
+        
+        action = menu.exec(self.account_list.mapToGlobal(pos))
+        
+        if action == action_fav and item_id:
+            if self.current_vault == 'accounts':
+                new_status = self.account_service.toggle_favorite(item_id)
+            else:
+                new_status = self._url_service.toggle_favorite(item_id)
+            # Update the cached data in-place
+            if isinstance(data, dict):
+                data['is_favorite'] = int(new_status)
+            else:
+                data.is_favorite = new_status
+            # Refresh the list to show updated state
+            self._cache_dirty = True
+            self._url_cache_dirty = True
+            if self.current_vault == 'accounts':
+                self.load_accounts()
+            else:
+                self.load_urls()
+            # Also refresh category tree to update favorite count
+            self._reload_categories()
+
+    def _get_column_config_path(self):
+        data_dir = Path.home() / '.local_password_vault'
+        vault = self.current_vault
+        return data_dir / f'columns_{vault}.json'
+
+    def _load_column_config(self):
+        path = self._get_column_config_path()
+        if self.current_vault == 'accounts':
+            defaults = {'icon': True, 'app_name': True, 'username': True, 'strength': True, 'category': True, 'arrow': True}
+        else:
+            defaults = {'icon': True, 'app_name': True, 'url': True, 'category': True, 'arrow': True}
+        try:
+            if path.exists():
+                with open(path, 'r', encoding='utf-8') as f:
+                    saved = json.load(f)
+                return {**defaults, **saved}
+        except Exception:
+            pass
+        return defaults
+
+    def _save_column_config(self, config):
+        path = self._get_column_config_path()
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(config, f, ensure_ascii=False)
+
+    def _show_column_menu(self, pos):
+        menu = QMenu(self)
+        if self.current_vault == 'accounts':
+            columns = [
+                ('icon', '首字母图标'),
+                ('app_name', '应用名'),
+                ('username', '账号（脱敏）'),
+                ('strength', '密码强度'),
+                ('category', '分类标签'),
+                ('arrow', '右箭头'),
+            ]
+        else:
+            columns = [
+                ('icon', '首字母图标'),
+                ('app_name', '网址标题'),
+                ('url', '网址地址'),
+                ('category', '分类标签'),
+                ('arrow', '右箭头'),
+            ]
+
+        col_config = self._load_column_config()
+
+        for key, label in columns:
+            action = menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(col_config.get(key, True))
+            action.setData(key)
+            action.toggled.connect(lambda checked, k=key: self._toggle_column(k, checked))
+
+        app_name_action = None
+        for action in menu.actions():
+            if action.data() == 'app_name':
+                app_name_action = action
+                app_name_action.setEnabled(False)
+                app_name_action.setChecked(True)
+                break
+
+        menu.exec(self.lbl_list_title.mapToGlobal(pos))
+
+    def _toggle_column(self, key, visible):
+        config = self._load_column_config()
+        config[key] = visible
+        self._save_column_config(config)
+        for i in range(self.account_list.count()):
+            widget = self.account_list.itemWidget(
+                self.account_list.item(i))
+            if widget and hasattr(widget, 'set_column_visible'):
+                widget.set_column_visible(key, visible)
+
     def _enter_selection_mode(self):
         """进入批量选择模式"""
         self._selection_mode = True
@@ -3144,9 +3685,10 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "提示", "请先选择要删除的条目")
             return
         
+        count = len(self._selected_ids)
         reply = QMessageBox.question(
             self, "确认删除",
-            f"确定删除已选中的 {len(self._selected_ids)} 个条目？\n删除后将移至回收站。",
+            f"确定删除已选中的 {count} 个条目？\n删除后将移至回收站。",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         if reply != QMessageBox.StandardButton.Yes:
@@ -3154,18 +3696,21 @@ class MainWindow(QMainWindow):
         
         self._save_scroll_state()
         
+        # 删除前保存数据快照（用于撤销）
+        deleted_items_data = []
         deleted = 0
         for item_id in self._selected_ids:
             try:
                 if self.current_vault == 'accounts':
                     account = self.account_service.get_account(item_id)
                     if account:
+                        deleted_items_data.append(('account', account.to_dict()))
                         self.db.soft_delete_account(item_id, account.to_dict())
                         deleted += 1
                 else:
                     url_item = self._url_service.get_url(item_id)
                     if url_item:
-                        # 网址库独立回收站
+                        deleted_items_data.append(('url', url_item.to_dict()))
                         self._url_db.soft_delete_url(item_id, url_item.to_dict())
                         deleted += 1
             except Exception as e:
@@ -3178,7 +3723,168 @@ class MainWindow(QMainWindow):
         self._restore_scroll_state()
         self._reload_categories()
         
-        QMessageBox.information(self, "完成", f"已成功删除 {deleted} 个条目至回收站。")
+        if deleted > 0:
+            self.show_undo_banner(deleted, deleted_items_data)
+    
+    def _execute_batch_categorize(self):
+        """执行批量分类"""
+        if not self._selected_ids:
+            return
+        
+        if self.current_vault == 'accounts':
+            categories = self.account_service.get_categories()
+        else:
+            categories = self._url_service.get_categories()
+        
+        category, ok = QInputDialog.getItem(
+            self, "批量分类",
+            f"为 {len(self._selected_ids)} 个条目选择目标分类：",
+            categories, 0, False
+        )
+        
+        if not ok or not category:
+            return
+        
+        reply = QMessageBox.question(
+            self, "确认",
+            f"确定将 {len(self._selected_ids)} 个条目移动到「{category}」？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        
+        count = 0
+        for item_id in self._selected_ids:
+            try:
+                if self.current_vault == 'accounts':
+                    acc = self.account_service.get_account(item_id)
+                    if acc:
+                        acc.category = category
+                        self.account_service.update_account(acc)
+                        count += 1
+                else:
+                    url = self._url_service.get_url(item_id)
+                    if url:
+                        url.category = category
+                        self._url_service.update_url(url)
+                        count += 1
+            except Exception as e:
+                logger.warning(f"Batch categorize failed for {item_id}: {e}")
+        
+        self._exit_selection_mode()
+        self._smart_refresh()
+        self._reload_categories()
+        QMessageBox.information(self, "完成", f"已成功移动 {count} 个条目到「{category}」")
+    
+    def _execute_batch_tag(self):
+        """执行批量标签"""
+        if not self._selected_ids:
+            return
+        
+        mode, ok = QInputDialog.getItem(
+            self, "批量标签",
+            "选择操作模式：",
+            ["添加标签", "移除标签"], 0, False
+        )
+        if not ok:
+            return
+        
+        tag, ok = QInputDialog.getText(self, "批量标签", "输入标签：")
+        if not ok or not tag.strip():
+            return
+        tag = tag.strip()
+        
+        action = "添加" if "添加" in mode else "移除"
+        reply = QMessageBox.question(
+            self, "确认",
+            f"确定{action} {len(self._selected_ids)} 个条目的标签「{tag}」？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        
+        count = 0
+        for item_id in self._selected_ids:
+            try:
+                if self.current_vault == 'accounts':
+                    acc = self.account_service.get_account(item_id)
+                    if acc:
+                        if '添加' in mode:
+                            acc.add_tag(tag)
+                        else:
+                            acc.remove_tag(tag)
+                        self.account_service.update_account(acc)
+                        count += 1
+                else:
+                    url = self._url_service.get_url(item_id)
+                    if url:
+                        if '添加' in mode:
+                            url.add_tag(tag)
+                        else:
+                            url.remove_tag(tag)
+                        self._url_service.update_url(url)
+                        count += 1
+            except Exception as e:
+                logger.warning(f"Batch tag failed for {item_id}: {e}")
+        
+        self._exit_selection_mode()
+        self._smart_refresh()
+        QMessageBox.information(self, "完成", f"已成功{action} {count} 个条目的标签")
+    
+    def show_undo_banner(self, count, deleted_items):
+        """显示撤销横幅（60 秒后自动消失）"""
+        self._dismiss_undo_banner()
+        
+        # 保存待恢复数据
+        self._undo_deleted_items = deleted_items
+        
+        self._undo_msg.setText(f"已删除 {count} 个条目至回收站")
+        self._undo_btn.clicked.disconnect() if self._undo_btn.receivers(self._undo_btn.clicked) else None
+        self._undo_btn.clicked.connect(lambda: self._undo_delete(self._undo_deleted_items))
+        self._undo_banner.show()
+        
+        # 60 秒后自动消失
+        self._undo_timer = QTimer(self)
+        self._undo_timer.setSingleShot(True)
+        self._undo_timer.timeout.connect(self._dismiss_undo_banner)
+        self._undo_timer.start(60000)
+    
+    def _undo_delete(self, deleted_items):
+        """撤销批量删除，恢复条目"""
+        restored = 0
+        for item_type, item_data in deleted_items:
+            try:
+                if item_type == 'account':
+                    item_data.pop('id', None)
+                    item_data.pop('created_at', None)
+                    item_data.pop('updated_at', None)
+                    item_data.pop('last_password_change', None)
+                    self.db.insert_account(item_data)
+                    restored += 1
+                else:
+                    item_data.pop('id', None)
+                    item_data.pop('created_at', None)
+                    item_data.pop('updated_at', None)
+                    self._url_db.insert_url(item_data)
+                    restored += 1
+            except Exception as e:
+                logger.warning(f"Failed to restore {item_type}: {e}")
+        
+        self._dismiss_undo_banner()
+        self._cache_dirty = True
+        self._url_cache_dirty = True
+        self._smart_refresh()
+        self._reload_categories()
+        logger.info(f"Undo: restored {restored} items")
+    
+    def _dismiss_undo_banner(self):
+        """关闭撤销横幅"""
+        if hasattr(self, '_undo_timer') and self._undo_timer:
+            self._undo_timer.stop()
+            self._undo_timer = None
+        if hasattr(self, '_undo_banner') and self._undo_banner:
+            self._undo_banner.hide()
+        self._undo_deleted_items = []
     
     def on_account_clicked(self, item):
         """账号/网址点击事件"""
@@ -3232,6 +3938,7 @@ class MainWindow(QMainWindow):
         logger.debug(f" AccountDialog exec: {(t2-t1)*1000:.1f} ms")
         if result == AccountDialog.DialogCode.Accepted:
             self._smart_refresh()
+            self.show_copy_toast("保存成功")
             # 仅在分类变化时重建分类树
             if dialog.account and dialog.account.category != old_category:
                 self._reload_categories()
@@ -3250,6 +3957,7 @@ class MainWindow(QMainWindow):
         dialog = URLEditDialog(self._url_service, url_item, parent=self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self._smart_refresh()
+            self.show_copy_toast("保存成功")
             # 仅在分类变化时重建分类树
             new_cat = dialog.url_item.category if hasattr(dialog.url_item, 'category') else dialog.url_item.get('category', '')
             if new_cat != old_category:
@@ -3301,6 +4009,242 @@ class MainWindow(QMainWindow):
                     self.highlight_matched_accounts([new_id], query_text="AI本次修改")
                 self._restore_scroll_state()
                 self._reload_categories()
+    
+    # ==================== 高级筛选方法 ====================
+    
+    def _on_filter_toggle(self, checked: bool):
+        try:
+            self.filter_panel.setVisible(checked)
+            if checked:
+                self._populate_filter_categories()
+                self._fix_calendar_style()
+                self._set_filter_earliest_date()
+            else:
+                self.lbl_filter_active.hide()
+                self._view_mode = 'default'
+                if self.current_vault == 'accounts':
+                    self.load_accounts()
+                else:
+                    self.load_urls()
+        except Exception as e:
+            logger.error("筛选面板切换失败: %s", e, exc_info=True)
+    
+    def _fix_calendar_style(self):
+        if self._calendar_style_applied:
+            return
+        try:
+            cal_from = self.filter_date_from.calendarWidget()
+            cal_to = self.filter_date_to.calendarWidget()
+            calendar_style = """
+                QCalendarWidget {
+                    font-size: 13px;
+                    min-width: 360px;
+                }
+                QCalendarWidget QToolButton {
+                    font-size: 14px;
+                    padding: 4px 8px;
+                }
+                QCalendarWidget QWidget#qt_calendar_navigationbar {
+                    min-height: 36px;
+                }
+                QCalendarWidget QAbstractItemView {
+                    font-size: 13px;
+                    min-width: 340px;
+                    selection-background-color: #1976D2;
+                }
+            """
+            for cal in [cal_from, cal_to]:
+                if cal:
+                    cal.setStyleSheet(calendar_style)
+                    cal.setGridVisible(True)
+                    cal.setVerticalHeaderFormat(
+                        QCalendarWidget.VerticalHeaderFormat.ISOWeekNumbers
+                        if hasattr(QCalendarWidget, 'VerticalHeaderFormat') else 1
+                    )
+            self._calendar_style_applied = True
+        except Exception as e:
+            logger.debug("设置日历样式失败: %s", e)
+    
+    def _set_filter_earliest_date(self):
+        try:
+            if self.current_vault == 'accounts':
+                items = self.account_service.get_all_accounts()
+            else:
+                items = self._url_service.get_all_urls()
+            earliest = None
+            for item in items:
+                created = item.created_at if hasattr(item, 'created_at') else item.get('created_at')
+                if created:
+                    if isinstance(created, str):
+                        created = created.replace('Z', '+00:00')
+                        from datetime import datetime as _dt
+                        created = _dt.fromisoformat(created)
+                    if earliest is None or created < earliest:
+                        earliest = created
+            if earliest:
+                qd = QDate(earliest.year, earliest.month, earliest.day)
+            else:
+                qd = QDate.currentDate().addYears(-1)
+            self.filter_date_from.setMinimumDate(QDate(2000, 1, 1))
+            self.filter_date_from.setDate(qd)
+            self._filter_earliest_date = qd
+        except Exception as e:
+            logger.debug("设置筛选最早日期失败: %s", e)
+    
+    def _populate_filter_categories(self):
+        self.filter_category.blockSignals(True)
+        self.filter_category.clear()
+        self.filter_category.addItem("全部分类", None)
+        cats = []
+        try:
+            if self.current_vault == 'accounts':
+                cats = self.account_service.get_categories()
+            else:
+                cats = self._url_service.get_categories()
+        except Exception:
+            pass
+        for cat in cats:
+            if cat != '全部':
+                self.filter_category.addItem(cat, cat)
+        self.filter_category.blockSignals(False)
+    
+    def _has_active_filters(self):
+        if not self.filter_panel.isVisible():
+            return False
+        if self.filter_category.currentData() is not None:
+            return True
+        if self.filter_strength.currentText() != '全部':
+            return True
+        if self.filter_date_from.date() != self._filter_earliest_date:
+            return True
+        if self.filter_date_to.date() != QDate.currentDate():
+            return True
+        return False
+    
+    def _on_apply_filter(self):
+        try:
+            if not self._has_active_filters():
+                self.lbl_filter_active.hide()
+                return
+            self.lbl_filter_active.show()
+            text = self.search_box.text().strip()
+            self._view_mode = 'search'
+            self._search_with_filters(text)
+        except Exception as e:
+            logger.error("筛选执行失败: %s", e, exc_info=True)
+    
+    def _on_clear_filter(self):
+        self.filter_category.setCurrentIndex(0)
+        self.filter_date_from.setDate(self._filter_earliest_date)
+        self.filter_date_to.setDate(QDate.currentDate())
+        self.filter_strength.setCurrentIndex(0)
+        self.lbl_filter_active.hide()
+        self._view_mode = 'default'
+        if self.current_vault == 'accounts':
+            self.load_accounts()
+        else:
+            self.load_urls()
+    
+    def _search_with_filters(self, text: str):
+        import datetime as dt
+
+        is_accounts = self.current_vault == 'accounts'
+        if is_accounts:
+            all_items = self.account_service.get_all_accounts()
+        else:
+            all_items = self._url_service.get_all_urls()
+
+        flt_category = self.filter_category.currentData()
+        flt_strength = self.filter_strength.currentText() if self.filter_strength.currentText() != '全部' else None
+
+        from_date = self.filter_date_from.date()
+        to_date = self.filter_date_to.date()
+        flt_date_from = None
+        flt_date_to = None
+        if from_date != self._filter_earliest_date:
+            flt_date_from = dt.datetime(from_date.year(), from_date.month(), from_date.day()).isoformat()
+        if to_date != QDate.currentDate():
+            nxt = to_date.addDays(1)
+            flt_date_to = dt.datetime(nxt.year(), nxt.month(), nxt.day()).isoformat()
+
+        if is_accounts and text:
+            flt = SearchFilter()
+            if flt_category:
+                flt.category = flt_category
+            if flt_strength:
+                flt.strength = flt_strength
+            if flt_date_from:
+                flt.date_from = flt_date_from
+            if flt_date_to:
+                flt.date_to = flt_date_to
+            results = self.search_service.search_advanced(text, all_items, flt)
+            self._display_search_results(results, all_accounts=all_items)
+            return
+
+        results = []
+        for item in all_items:
+            match = True
+            if flt_category and (item.category if hasattr(item, 'category') else item.get('category', '')) != flt_category:
+                match = False
+            if match and flt_strength and is_accounts:
+                from core.password_strength import evaluate_password_strength
+                s = evaluate_password_strength(item.password or '')
+                if s['label'] != flt_strength:
+                    match = False
+            if match and flt_date_from:
+                created = item.created_at if hasattr(item, 'created_at') else item.get('created_at')
+                if created:
+                    if isinstance(created, str):
+                        created = dt.datetime.fromisoformat(created.replace('Z', '+00:00'))
+                    if created < dt.datetime.fromisoformat(flt_date_from):
+                        match = False
+            if match and flt_date_to:
+                created = item.created_at if hasattr(item, 'created_at') else item.get('created_at')
+                if created:
+                    if isinstance(created, str):
+                        created = dt.datetime.fromisoformat(created.replace('Z', '+00:00'))
+                    dt_to = dt.datetime.fromisoformat(flt_date_to).replace(hour=23, minute=59, second=59)
+                    if created > dt_to:
+                        match = False
+            if match:
+                from services.search_service import SearchResult
+                account_obj = item if is_accounts else item
+                results.append(SearchResult(account=account_obj, match_type='filter', confidence=1.0, matched_field='filter'))
+
+        if is_accounts:
+            self._display_search_results(results, all_accounts=all_items)
+        else:
+            self._display_url_filter_results(results)
+
+    def _display_url_filter_results(self, results):
+        colors = ThemeManager.instance().colors
+        self.account_list.clear()
+        total_displayed = 0
+        if results:
+            header = QListWidgetItem("  筛选结果")
+            header.setFlags(Qt.ItemFlag.NoItemFlags)
+            font = QFont()
+            font.setBold(True)
+            font.setPointSize(11)
+            header.setFont(font)
+            header.setBackground(QColor(colors.accent_blue_bg))
+            header.setForeground(QColor(colors.accent_blue))
+            self.account_list.addItem(header)
+            for result in results:
+                url_item = result.account
+                item = QListWidgetItem()
+                item.setSizeHint(QSize(max(self.account_list.width() - 20, 50), 48))
+                item.setData(Qt.ItemDataRole.UserRole, url_item)
+                self.account_list.addItem(item)
+                widget = URLListItem(url_item)
+                self.account_list.setItemWidget(item, widget)
+                total_displayed += 1
+        if total_displayed == 0:
+            item = QListWidgetItem("未找到匹配的网址")
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
+            self.account_list.addItem(item)
+        count = len(results)
+        self.lbl_list_title.setText(f"筛选结果  |  共 {count} 个")
     
     def on_search(self):
         """搜索 - 按回车触发
@@ -3371,6 +4315,10 @@ class MainWindow(QMainWindow):
                 if self._selection_mode and result.account.id in self._selected_ids:
                     widget.set_checked(True)
                 self.account_list.setItemWidget(item, widget)
+                col_config = self._load_column_config()
+                for key, visible in col_config.items():
+                    if not visible:
+                        widget.set_column_visible(key, False)
                 total_displayed += 1
         
         # ---------- 无结果提示 ----------
@@ -3446,6 +4394,69 @@ class MainWindow(QMainWindow):
             self._restore_scroll_state()
             self._reload_categories()
     
+    def _on_import_from_manager(self):
+        """从其他密码管理器导入（Bitwarden/LastPass CSV/JSON）"""
+        from services.import_service import ManagerImportService
+        from PyQt6.QtWidgets import QFileDialog
+
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "选择导入文件",
+            "", "所有支持格式 (*.csv *.json);;CSV 文件 (*.csv);;JSON 文件 (*.json)"
+        )
+        if not file_path:
+            return
+
+        fmt = ManagerImportService.detect_format(file_path)
+        if fmt == 'unknown':
+            QMessageBox.warning(self, "无法识别", "无法识别该文件格式，请确认文件来自 Bitwarden 或 LastPass")
+            return
+
+        fmt_labels = {
+            'bitwarden_csv': 'Bitwarden CSV',
+            'bitwarden_json': 'Bitwarden JSON',
+            'lastpass_csv': 'LastPass CSV',
+        }
+
+        try:
+            fmt, items = ManagerImportService.parse(file_path)
+        except Exception as e:
+            QMessageBox.critical(self, "解析失败", f"无法解析文件：\n{str(e)}")
+            return
+
+        if not items:
+            QMessageBox.information(self, "提示", "文件中没有找到可导入的条目")
+            return
+
+        reply = QMessageBox.question(
+            self, "确认导入",
+            f"检测到 {fmt_labels.get(fmt, fmt)} 格式，共 {len(items)} 个条目。\n确定导入吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        imported = 0
+        for item in items:
+            try:
+                acc = Account(
+                    app_name=item['app_name'],
+                    url=item.get('url', ''),
+                    username=item.get('username', ''),
+                    password=item.get('password', ''),
+                    category=item.get('category', '其他'),
+                    remark=item.get('remark', ''),
+                )
+                self.account_service.add_account(acc)
+                imported += 1
+            except Exception as e:
+                logger.warning("Manager import failed for %s: %s", item.get('app_name', '?'), e)
+
+        self._cache_dirty = True
+        self.load_accounts()
+        self._reload_categories()
+        QMessageBox.information(self, "导入完成", f"成功导入 {imported} 个条目")
+
     def on_export(self):
         """导出账号/网址"""
         if not self._verify_session():
@@ -3464,6 +4475,7 @@ class MainWindow(QMainWindow):
 
     def _on_theme_changed(self, theme_name: str):
         """主题切换后重建 UI 样式（由 ThemeManager 信号触发）"""
+        self._reapply_styles(ThemeManager.instance().colors)
 
     def _reapply_styles(self, colors: ThemeColors):
         """重新应用所有静态样式（主题切换时调用）"""
@@ -3730,6 +4742,98 @@ class MainWindow(QMainWindow):
                             border-radius: 10px;
                         }}
                     """)
+
+        # === 顶部工具栏控件 ===
+        self.search_box.setStyleSheet(style_input(colors))
+        self.btn_toggle_filter.setStyleSheet(f"""
+            QPushButton {{
+                border: 1px solid {colors.border_default};
+                border-radius: 4px;
+                background-color: {colors.bg_tertiary};
+                color: {colors.text_primary};
+                font-size: 14px;
+            }}
+            QPushButton:checked {{
+                background-color: {colors.accent_blue};
+                color: {colors.text_on_accent};
+                border: 1px solid {colors.accent_blue};
+            }}
+            QPushButton:hover {{
+                background-color: {colors.bg_hover};
+            }}
+            QPushButton:checked:hover {{
+                background-color: {colors.accent_blue_dark};
+            }}
+        """)
+        self.lbl_filter_active.setStyleSheet(f"color: {colors.accent_orange_text}; font-size: 11px; font-weight: bold; padding: 0 4px;")
+        self.btn_add.setStyleSheet(style_button_primary(colors))
+        self.btn_settings.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.bg_tertiary};
+                color: {colors.text_primary};
+                border: 1px solid {colors.border_default};
+                border-radius: 4px;
+            }}
+            QPushButton:hover {{
+                background-color: {colors.bg_hover};
+            }}
+        """)
+
+        # === 筛选面板 ===
+        self.filter_panel.setStyleSheet(f"background-color: {colors.bg_secondary}; border-bottom: 1px solid {colors.border_default};")
+        label_style = f"color: {colors.text_primary}; font-size: 12px;"
+        combo_style = f"""
+            QComboBox {{
+                background-color: {colors.bg_primary};
+                color: {colors.text_primary};
+                border: 1px solid {colors.border_default};
+                border-radius: 4px;
+                padding: 2px 8px;
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: {colors.bg_primary};
+                color: {colors.text_primary};
+                border: 1px solid {colors.border_default};
+            }}
+        """
+        date_style = f"""
+            QDateEdit {{
+                background-color: {colors.bg_primary};
+                color: {colors.text_primary};
+                border: 1px solid {colors.border_default};
+                border-radius: 4px;
+                padding: 2px 8px;
+            }}
+            QDateEdit::drop-down {{
+                border: none;
+            }}
+        """
+        self.lbl_filter_category.setStyleSheet(label_style)
+        self.lbl_filter_created.setStyleSheet(label_style)
+        self.lbl_filter_to.setStyleSheet(label_style)
+        self.lbl_filter_strength.setStyleSheet(label_style)
+        self.filter_category.setStyleSheet(combo_style)
+        self.filter_date_from.setStyleSheet(date_style)
+        self.filter_date_to.setStyleSheet(date_style)
+        self.filter_strength.setStyleSheet(combo_style)
+
+        # === AI 筛选横幅清除按钮 ===
+        self.btn_clear_ai_filter.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_blue_light};
+                color: {colors.text_on_accent};
+                border: none;
+                border-radius: 3px;
+                font-size: 11px;
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_blue};
+            }}
+        """)
+
+        # === Dashboard ===
+        if self.dashboard:
+            self.dashboard.refresh()
 
         # === 重建账号/网址列表（列表项使用新主题色） ===
         if self.current_vault == 'accounts':
@@ -4908,8 +6012,113 @@ class MainWindow(QMainWindow):
             logger.exception("Unhandled exception")
             self._append_ai_system_msg(f"处理出错：{str(e)}")
     
+    def show_copy_toast(self, message, is_password=False):
+        if hasattr(self, '_toast_timer') and self._toast_timer:
+            self._toast_timer.stop()
+            self._toast_timer = None
+        if hasattr(self, '_toast_label') and self._toast_label:
+            self._toast_label.hide()
+            self._toast_label.deleteLater()
+            self._toast_label = None
+        
+        colors = ThemeManager.instance().colors
+        bg = QColor(colors.bg_secondary)
+        bg.setAlpha(200)
+        self._toast_label = QLabel(message, self)
+        self._toast_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._toast_label.setStyleSheet(f"""
+            QLabel {{
+                background-color: rgba({bg.red()}, {bg.green()}, {bg.blue()}, {bg.alpha() / 255.0:.2f});
+                color: {colors.text_primary};
+                padding: 10px 24px;
+                border-radius: 12px;
+                font-size: 13px;
+            }}
+        """)
+        self._toast_label.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.WindowStaysOnTopHint |
+            Qt.WindowType.Tool
+        )
+        self._toast_label.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        self._toast_label.adjustSize()
+        self._position_toast()
+        self._toast_label.show()
+        self._toast_label.raise_()
+        
+        if is_password:
+            import json, os
+            delay = 20
+            try:
+                config_path = os.path.join(os.path.expanduser('~'), '.local_password_vault', 'config.json')
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                    delay = config.get('clipboard_clear_delay', 20)
+            except Exception:
+                pass
+            
+            self._countdown = delay
+            self._toast_label.setText(f"密码已复制（{self._countdown} 秒后清除）")
+            self._toast_label.adjustSize()
+            self._position_toast()
+            self._toast_label.show()
+            self._toast_label.raise_()
+            
+            self._toast_timer = QTimer(self)
+            def update_toast():
+                self._countdown -= 1
+                if self._countdown > 0:
+                    self._toast_label.setText(f"密码已复制（{self._countdown} 秒后清除）")
+                    self._toast_label.adjustSize()
+                    self._position_toast()
+                    self._toast_label.show()
+                    self._toast_label.raise_()
+                else:
+                    self._toast_timer.stop()
+                    self._toast_timer = None
+                    from PyQt6.QtWidgets import QApplication
+                    clipboard = QApplication.clipboard()
+                    clipboard.clear()
+                    try:
+                        import pyperclip
+                        pyperclip.copy('')
+                    except Exception:
+                        pass
+                    if hasattr(self, 'clipboard') and self.clipboard:
+                        self.clipboard.clear()
+                    self._toast_label.setText("剪贴板已清空")
+                    self._toast_label.adjustSize()
+                    self._position_toast()
+                    self._toast_label.show()
+                    self._toast_label.raise_()
+                    old_label = self._toast_label
+                    self._toast_label = None
+                    QTimer.singleShot(3000, old_label.deleteLater)
+            self._toast_timer.timeout.connect(update_toast)
+            self._toast_timer.start(1000)
+        else:
+            old_label = self._toast_label
+            self._toast_label = None
+            QTimer.singleShot(2000, old_label.deleteLater)
+    
+    def _position_toast(self):
+        if not hasattr(self, '_toast_label') or not self._toast_label:
+            return
+        lw = self._toast_label.width()
+        lh = self._toast_label.height()
+        geo = self.geometry()
+        x = geo.x() + (geo.width() - lw) // 2
+        y = geo.y() + geo.height() - lh - 60
+        if y < geo.y():
+            y = geo.y() + 10
+        self._toast_label.move(x, y)
+    
     def _smart_refresh(self):
         """智能刷新：保持当前视图模式，不自动回退到默认视图"""
+        if self.current_category == '__dashboard__':
+            if hasattr(self, 'dashboard') and self.dashboard is not None:
+                self.dashboard.refresh()
+            return
         self._save_scroll_state()
         try:
             self._cache_dirty = True
@@ -5154,6 +6363,10 @@ class MainWindow(QMainWindow):
             if self._selection_mode and account.id in self._selected_ids:
                 widget.set_checked(True)
             self.account_list.setItemWidget(item, widget)
+            col_config = self._load_column_config()
+            for key, visible in col_config.items():
+                if not visible:
+                    widget.set_column_visible(key, False)
         
         self.lbl_list_title.setText(f"炽阳 搜索结果 ({len(accounts)})")
     
@@ -5235,6 +6448,10 @@ class MainWindow(QMainWindow):
                         f"color: {colors.text_secondary}; font-size: 11px; background-color: transparent; border-radius: 10px; padding: 2px 8px;"
                     )
                 # 用容器代替原 widget 放入列表
+                col_config = self._load_column_config()
+                for key, visible in col_config.items():
+                    if not visible:
+                        widget.set_column_visible(key, False)
                 self.account_list.setItemWidget(item, container)
         
         # 显示未匹配项（灰色）
@@ -5265,6 +6482,10 @@ class MainWindow(QMainWindow):
                 # 降低可见度
                 if hasattr(widget, 'styleSheet'):
                     widget.setStyleSheet(widget.styleSheet() + f"QLabel {{ color: {colors.text_disabled}; }}")
+                col_config = self._load_column_config()
+                for key, visible in col_config.items():
+                    if not visible:
+                        widget.set_column_visible(key, False)
                 self.account_list.setItemWidget(item, widget)
         
         # 横幅显示用户原始查询和匹配数量
@@ -5790,6 +7011,65 @@ class MainWindow(QMainWindow):
             import traceback
             logger.exception("Unhandled exception")
     
+    def _on_dashboard_action(self, action, data):
+        """处理仪表盘的交互操作"""
+        if action == 'strength':
+            self.list_stack.setCurrentIndex(0)
+            self.alpha_nav.show()
+            self.current_category = '全部'
+            self._cache_dirty = True
+            self.load_accounts()
+            if data in ('弱', '中', '强', '极强'):
+                from core.password_strength import evaluate_password_strength
+                matched = []
+                for acc in self._cached_accounts:
+                    try:
+                        r = evaluate_password_strength(acc.password or '')
+                        if r['label'] == data:
+                            matched.append(acc.id)
+                    except Exception:
+                        pass
+                if matched:
+                    self.highlight_matched_accounts(matched, query_text=f"密码强度:{data}")
+        elif action == 'edit':
+            if self.current_vault == 'accounts':
+                self.show_account_detail(data)
+            else:
+                self.show_url_detail(data)
+        elif action == 'show_recent':
+            self.list_stack.setCurrentIndex(0)
+            self.alpha_nav.show()
+            items = data.get('items', [])
+            if items:
+                self.current_category = '全部'
+                self._cache_dirty = True
+                self.load_accounts()
+                ids = [acc.id for acc in items if hasattr(acc, 'id')]
+                if ids:
+                    self.highlight_matched_accounts(ids, query_text="本周新增")
+        elif action == 'add':
+            self.on_add_item()
+            if self.current_category == '__dashboard__':
+                self.dashboard.refresh()
+        elif action == 'import':
+            self._on_import_from_manager()
+    
+    def on_health_check(self):
+        """打开密码健康检查对话框"""
+        if not self._verify_session():
+            return
+        if not self.db.crypto:
+            QMessageBox.warning(self, "提示", "当前未启用加密，无法进行密码健康检查")
+            return
+
+        dialog = HealthCheckDialog(
+            self.account_service,
+            self.db.crypto,
+            ai_assistant=self.ai_assistant,
+            parent=self
+        )
+        dialog.exec()
+    
     def on_recycle_bin(self):
         """打开回收站（根据当前 tab 显示对应库的回收站）"""
         from ui.recycle_bin_dialog import RecycleBinDialog
@@ -5812,7 +7092,50 @@ class MainWindow(QMainWindow):
         self._restore_scroll_state()
     
     def closeEvent(self, event):
-        """程序关闭时清理资源"""
-        if self._url_db:
+        """程序关闭时清理资源，并自动备份数据库"""
+        self._auto_backup()
+
+        if hasattr(self, '_ai_manager'):
+            try:
+                self._ai_manager.state_changed.disconnect(self._on_ai_state_changed)
+            except Exception:
+                pass
+        if hasattr(self, '_context_expiry_timer') and self._context_expiry_timer is not None:
+            self._context_expiry_timer.stop()
+        if hasattr(self, '_idle_timer') and self._idle_timer:
+            self._idle_timer.stop()
+        if hasattr(self, '_url_db') and self._url_db:
             self._url_db.close()
-        event.accept()
+        super().closeEvent(event)
+
+    def _auto_backup(self):
+        """自动备份数据库文件"""
+        import shutil
+        from datetime import datetime
+
+        backup_dir = os.path.join(os.path.expanduser('~'), '.local_password_vault', 'backups')
+        os.makedirs(backup_dir, exist_ok=True)
+
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+        vault_path = os.path.join(os.path.expanduser('~'), '.local_password_vault', 'vault.db')
+        if os.path.exists(vault_path):
+            backup_path = os.path.join(backup_dir, f'vault_backup_{timestamp}.db')
+            shutil.copy2(vault_path, backup_path)
+
+        urls_path = os.path.join(os.path.expanduser('~'), '.local_password_vault', 'vault_urls.db')
+        if os.path.exists(urls_path):
+            backup_path = os.path.join(backup_dir, f'urls_backup_{timestamp}.db')
+            shutil.copy2(urls_path, backup_path)
+
+        self._cleanup_old_backups(backup_dir, 'vault_backup_', 5)
+        self._cleanup_old_backups(backup_dir, 'urls_backup_', 5)
+
+    def _cleanup_old_backups(self, backup_dir, prefix, keep_count):
+        """保留最近 N 份备份，删除更旧的"""
+        import glob
+        pattern = os.path.join(backup_dir, f'{prefix}*.db')
+        files = sorted(glob.glob(pattern))
+        while len(files) > keep_count:
+            os.remove(files[0])
+            files.pop(0)

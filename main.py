@@ -170,9 +170,7 @@ class LoginDialog(QDialog):
         self.txt_password.setFixedHeight(40)
         layout.addWidget(self.txt_password)
         
-        layout.addStretch()
-        
-        # 按钮
+        # 解锁按钮
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
         
@@ -181,12 +179,66 @@ class LoginDialog(QDialog):
         btn_login.setFixedWidth(120)
         btn_login.setStyleSheet(style_button_primary(ThemeManager.instance().colors))
         btn_login.clicked.connect(self.on_login)
+        btn_login.setDefault(True)
         btn_layout.addWidget(btn_login)
         
         layout.addLayout(btn_layout)
         
+        layout.addSpacing(8)
+        
+        # 从备份恢复按钮（次要操作）
+        btn_restore = QPushButton("从备份恢复")
+        btn_restore.setFixedHeight(28)
+        btn_restore.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                color: {ThemeManager.instance().colors.text_secondary};
+                border: 1px solid {ThemeManager.instance().colors.border_default};
+                border-radius: 4px;
+                font-size: 12px;
+            }}
+            QPushButton:hover {{
+                color: {ThemeManager.instance().colors.text_primary};
+                border-color: {ThemeManager.instance().colors.border_medium};
+            }}
+        """)
+        btn_restore.clicked.connect(self._on_restore_backup)
+        layout.addWidget(btn_restore)
+        
+        # 按回车直接解锁
+        self.txt_password.returnPressed.connect(self.on_login)
+        
         self.password = None
     
+    def _on_restore_backup(self):
+        """选择并恢复备份"""
+        from PyQt6.QtWidgets import QFileDialog
+        import shutil
+
+        backup_dir = os.path.join(os.path.expanduser('~'), '.local_password_vault', 'backups')
+
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "选择备份文件",
+            backup_dir,
+            "数据库文件 (*.db)"
+        )
+        if not file_path:
+            return
+
+        fname = os.path.basename(file_path)
+        if 'urls' in fname.lower():
+            target = os.path.join(os.path.expanduser('~'), '.local_password_vault', 'vault_urls.db')
+        else:
+            target = os.path.join(os.path.expanduser('~'), '.local_password_vault', 'vault.db')
+
+        if os.path.exists(target):
+            shutil.copy2(target, target + '.pre_restore')
+
+        shutil.copy2(file_path, target)
+
+        QMessageBox.information(self, "恢复完成",
+            "备份已恢复，请重新启动应用。")
+
     def on_login(self):
         password = self.txt_password.text().strip()
         
@@ -242,14 +294,15 @@ def main():
         
         master_password = setup_dialog.password
         
-        # 创建加密管理器
+        # 创建加密管理器（使用 600000 迭代）
         crypto = CryptoManager(master_password)
         
-        # 保存盐值到配置
+        # 保存盐值和迭代次数到配置
         config = {
             'salt': crypto.salt.hex(),
+            'iterations': crypto.iterations,
             'version': '1.0',
-
+            'clipboard_clear_delay': 20,
             'theme': 'light'
         }
         with open(config_path, 'w', encoding='utf-8') as f:
@@ -269,6 +322,7 @@ def main():
         with open(config_path, 'r', encoding='utf-8') as f:
             config = json.load(f)
         salt = bytes.fromhex(config['salt'])
+        iterations = config.get('iterations', 600000)
         
         db = None
         while db is None:
@@ -277,7 +331,7 @@ def main():
                 sys.exit(0)
             
             master_password = login_dialog.password
-            crypto = CryptoManager(master_password, salt)
+            crypto = CryptoManager(master_password, salt, iterations=iterations)
             
             # 尝试创建数据库连接并验证解密能力
             try:
@@ -286,10 +340,10 @@ def main():
                 db.cursor.execute("SELECT app_name FROM accounts LIMIT 1")
                 row = db.cursor.fetchone()
                 if row and row['app_name'] and db.crypto:
-                    # 尝试解密：若失败或返回原密文，说明密码错误
-                    decrypted = db._decrypt_field(row['app_name'])
-                    if decrypted == row['app_name']:
-                        # 解密失败（返回原始密文）
+                    # 尝试解密：若抛出异常，说明密码错误
+                    try:
+                        db.crypto.decrypt_from_string(row['app_name'])
+                    except Exception:
                         raise ValueError("Decryption failed: password incorrect")
             except Exception as e:
                 logging.getLogger(__name__).warning("Password verification failed: %s", e)

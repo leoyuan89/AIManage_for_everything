@@ -164,7 +164,7 @@ class URLService:
         try:
             orders = self.db.get_category_orders()
         except Exception:
-            pass
+            logger.debug("读取分类排序失败", exc_info=True)
         
         # 只显示数据库中真实存在的分类（不再硬编码默认分类）
         all_cats = db_cats
@@ -289,6 +289,19 @@ class URLService:
         
         return self.db.reparent_category(old_path, new_path) > 0
     
+    def toggle_favorite(self, url_id: int) -> bool:
+        """Toggle favorite status for a URL, returns new status"""
+        current = self.get_url(url_id)
+        if not current:
+            return False
+        new_status = not current.is_favorite
+        self.db.update_url(url_id, {'is_favorite': int(new_status)})
+        return new_status
+
+    def get_favorites(self) -> list:
+        """Get all favorited URLs"""
+        return [u for u in self.get_all_urls() if u.is_favorite]
+    
     def get_favicon_url(self, url: str) -> str:
         """
         获取网站的 favicon 地址
@@ -302,7 +315,8 @@ class URLService:
         try:
             parsed = urlparse(url)
             return f"{parsed.scheme}://{parsed.netloc}/favicon.ico"
-        except:
+        except Exception:
+            logger.debug("解析网址获取favicon失败: %s", url, exc_info=True)
             return ""
     
     @staticmethod

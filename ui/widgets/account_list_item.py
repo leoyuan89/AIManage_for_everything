@@ -1,7 +1,12 @@
-from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QCheckBox
+from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QCheckBox, QPushButton
 from PyQt6.QtCore import Qt
 
 from core.theme_manager import ThemeManager
+from core.clipboard import ClipboardManager
+
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class AccountListItem(QWidget):
@@ -13,7 +18,33 @@ class AccountListItem(QWidget):
         self.setObjectName("accountListItem")
         self.account = account
         self.badges = badges or []
+        self._clipboard = ClipboardManager()
         self.setup_ui(selection_mode)
+    
+    def set_compact_mode(self, enabled: bool):
+        if enabled == self._compact_mode:
+            return
+        self._compact_mode = enabled
+        colors = ThemeManager.instance().colors
+        
+        if enabled:
+            self.setFixedHeight(32)
+            self.icon_label.hide()
+            self.lbl_category.hide()
+            self.lbl_arrow.hide()
+            if hasattr(self, 'lbl_time'):
+                self.lbl_time.hide()
+            self.lbl_name.setStyleSheet(f"color: {colors.text_primary}; font-size: 13px; font-weight: 500;")
+            self.layout().setContentsMargins(6, 0, 6, 0)
+        else:
+            self.setFixedHeight(56)
+            self.icon_label.show()
+            self.lbl_category.show()
+            self.lbl_arrow.show()
+            if hasattr(self, 'lbl_time'):
+                self.lbl_time.show()
+            self.lbl_name.setStyleSheet(f"color: {colors.text_primary}; font-size: 15px; font-weight: 600;")
+            self.layout().setContentsMargins(10, 0, 10, 0)
     
     def setup_ui(self, selection_mode: bool):
         colors = ThemeManager.instance().colors
@@ -26,6 +57,12 @@ class AccountListItem(QWidget):
         self.checkbox.setFixedSize(24, 24)
         self.checkbox.setVisible(selection_mode)
         layout.addWidget(self.checkbox)
+        
+        # 收藏星标
+        if self.account.is_favorite:
+            star = QLabel("⭐")
+            star.setStyleSheet("font-size: 12px;")
+            layout.addWidget(star)
         
         # 圆形图标
         self.icon_label = QLabel(self._get_initial(self.account.app_name))
@@ -69,33 +106,65 @@ class AccountListItem(QWidget):
             """)
             title_layout.addWidget(lbl_badge)
         
-        # 密码强度徽章
-        if self.account.security_level:
-            level_colors = {
-                "弱": "#f44336",
-                "中": "#FF9800",
-                "强": "#4CAF50",
-                "极强": "#2196F3"
-            }
-            level_color = level_colors.get(self.account.security_level, colors.text_tertiary)
-            lbl_sec = QLabel(self.account.security_level)
-            lbl_sec.setStyleSheet(f"""
-                color: {level_color};
-                font-size: 9px;
-                font-weight: bold;
-                background-color: {level_color}20;
-                border-radius: 4px;
-                padding: 1px 6px;
-            """)
-            title_layout.addWidget(lbl_sec)
+        # 密码强度徽章（动态评估）
+        self._strength_label = None
+        if self.account.password:
+            try:
+                from core.password_strength import evaluate_password_strength
+                result = evaluate_password_strength(self.account.password)
+                level = result['label']
+                level_colors = {
+                    "弱": colors.accent_red,
+                    "中": colors.accent_orange,
+                    "强": colors.accent_green,
+                    "极强": colors.accent_blue,
+                }
+                level_color = level_colors.get(level, colors.text_tertiary)
+                self._strength_label = QLabel(level)
+                self._strength_label.setStyleSheet(f"""
+                    color: {level_color};
+                    font-size: 9px;
+                    font-weight: bold;
+                    background-color: {level_color}20;
+                    border-radius: 4px;
+                    padding: 1px 6px;
+                """)
+                title_layout.addWidget(self._strength_label)
+            except Exception:
+                logger.exception("Failed to evaluate password strength")
         
         title_layout.addStretch()
         text_layout.addLayout(title_layout)
         
-        # 副标题：脱敏账号
+        # 副标题：脱敏账号 + 时间
+        sub_layout = QHBoxLayout()
+        sub_layout.setSpacing(6)
+        sub_layout.setContentsMargins(0, 0, 0, 0)
+
         self.lbl_account = QLabel(self.account.mask_username())
         self.lbl_account.setStyleSheet(f"color: {colors.text_tertiary}; font-size: 12px;")
-        text_layout.addWidget(self.lbl_account)
+        sub_layout.addWidget(self.lbl_account)
+
+        time_parts = []
+        created = self.account.created_at
+        updated = self.account.updated_at
+        if created:
+            created_str = created.strftime('%Y-%m-%d') if hasattr(created, 'strftime') else str(created)[:10]
+            time_parts.append(f"创建:{created_str}")
+        if updated:
+            updated_str = updated.strftime('%Y-%m-%d') if hasattr(updated, 'strftime') else str(updated)[:10]
+            time_parts.append(f"修改:{updated_str}")
+        if time_parts:
+            self.lbl_time = QLabel("  ".join(time_parts))
+            self.lbl_time.setStyleSheet(f"color: {colors.text_disabled}; font-size: 10px;")
+            sub_layout.addWidget(self.lbl_time)
+        else:
+            self.lbl_time = QLabel("")
+            self.lbl_time.setStyleSheet(f"color: {colors.text_disabled}; font-size: 10px;")
+            sub_layout.addWidget(self.lbl_time)
+        sub_layout.addStretch()
+
+        text_layout.addLayout(sub_layout)
         
         layout.addLayout(text_layout, 1)
         
@@ -115,6 +184,52 @@ class AccountListItem(QWidget):
         self.lbl_arrow.setStyleSheet(f"color: {colors.text_disabled}; font-size: 18px;")
         layout.addWidget(self.lbl_arrow)
         
+        # 复制按钮容器
+        self._copy_btn_container = QWidget()
+        self._copy_btn_container.setStyleSheet("background: transparent;")
+        btn_layout = QHBoxLayout(self._copy_btn_container)
+        btn_layout.setContentsMargins(0, 0, 0, 0)
+        btn_layout.setSpacing(4)
+        
+        btn_style = f"""
+            QPushButton {{
+                background-color: transparent;
+                color: {colors.text_tertiary};
+                border: none;
+                border-radius: 13px;
+                font-size: 9px;
+                font-weight: bold;
+                padding: 0px;
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_blue_bg};
+                color: {colors.accent_blue};
+            }}
+        """
+        
+        self.btn_copy_url = QPushButton("URL")
+        self.btn_copy_url.setFixedSize(26, 26)
+        self.btn_copy_url.setToolTip("复制网址")
+        self.btn_copy_url.setStyleSheet(btn_style)
+        self.btn_copy_url.clicked.connect(self._on_copy_url)
+        btn_layout.addWidget(self.btn_copy_url)
+        
+        self.btn_copy_username = QPushButton("ID")
+        self.btn_copy_username.setFixedSize(26, 26)
+        self.btn_copy_username.setToolTip("复制账号")
+        self.btn_copy_username.setStyleSheet(btn_style)
+        self.btn_copy_username.clicked.connect(self._on_copy_username)
+        btn_layout.addWidget(self.btn_copy_username)
+        
+        self.btn_copy_password = QPushButton("PW")
+        self.btn_copy_password.setFixedSize(26, 26)
+        self.btn_copy_password.setToolTip("复制密码")
+        self.btn_copy_password.setStyleSheet(btn_style)
+        self.btn_copy_password.clicked.connect(self._on_copy_password)
+        btn_layout.addWidget(self.btn_copy_password)
+        
+        layout.addWidget(self._copy_btn_container)
+        
         self.setFixedHeight(56)
         self.setStyleSheet(f"""
             #accountListItem {{
@@ -126,12 +241,62 @@ class AccountListItem(QWidget):
     
     def set_selection_mode(self, enabled: bool):
         self.checkbox.setVisible(enabled)
+        self._copy_btn_container.setVisible(not enabled)
     
     def is_checked(self) -> bool:
         return self.checkbox.isChecked()
     
     def set_checked(self, checked: bool):
         self.checkbox.setChecked(checked)
+    
+    def set_column_visible(self, column, visible):
+        mapping = {
+            'icon': getattr(self, 'icon_label', None),
+            'app_name': getattr(self, 'lbl_name', None),
+            'username': getattr(self, 'lbl_account', None),
+            'strength': getattr(self, '_strength_label', None),
+            'category': getattr(self, 'lbl_category', None),
+            'arrow': getattr(self, 'lbl_arrow', None),
+            'time': getattr(self, 'lbl_time', None),
+        }
+        widget = mapping.get(column)
+        if widget:
+            widget.setVisible(visible)
+
+    def _on_copy_url(self):
+        try:
+            url = self.account.url or ''
+            if url:
+                self._clipboard.copy_text(url)
+                self._show_copy_toast("网址")
+        except Exception:
+            pass
+    
+    def _on_copy_username(self):
+        try:
+            username = self.account.username or ''
+            if username:
+                self._clipboard.copy_text(username)
+                self._show_copy_toast("账号")
+        except Exception:
+            pass
+    
+    def _on_copy_password(self):
+        try:
+            password = self.account.password or ''
+            if password:
+                self._clipboard.copy_text(password, is_password=True)
+                self._show_copy_toast("密码", is_password=True)
+        except Exception:
+            pass
+    
+    def _show_copy_toast(self, label, is_password=False):
+        try:
+            parent = self.window()
+            if parent and hasattr(parent, 'show_copy_toast'):
+                parent.show_copy_toast(f"{label}已复制", is_password=is_password)
+        except Exception:
+            pass
     
     @staticmethod
     def _generate_icon_color(text: str) -> str:

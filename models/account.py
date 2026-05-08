@@ -20,6 +20,7 @@ class Account:
     remark: str = ""
     ai_remark: str = ""  # AI 生成的一句话备注
     security_level: str = ""  # 安全等级：强/中/弱
+    is_favorite: bool = False
     last_password_change: Optional[datetime] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
@@ -30,7 +31,7 @@ class Account:
             if isinstance(self.tags, str):
                 return json.loads(self.tags) if self.tags else []
             return self.tags if isinstance(self.tags, list) else []
-        except:
+        except Exception:
             return []
     
     def set_tags_list(self, tags: List[str]):
@@ -65,6 +66,7 @@ class Account:
             remark=data.get('remark', ''),
             ai_remark=data.get('ai_remark', ''),
             security_level=data.get('security_level', ''),
+            is_favorite=bool(data.get('is_favorite', False)),
             last_password_change=data.get('last_password_change'),
             created_at=data.get('created_at'),
             updated_at=data.get('updated_at')
@@ -83,6 +85,7 @@ class Account:
             'remark': self.remark,
             'ai_remark': self.ai_remark,
             'security_level': self.security_level,
+            'is_favorite': int(self.is_favorite),
             'last_password_change': self.last_password_change,
             'created_at': self.created_at,
             'updated_at': self.updated_at

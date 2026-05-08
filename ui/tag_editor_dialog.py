@@ -129,14 +129,14 @@ class TagEditorDialog(QDialog):
         self.btn_ai_generate.setFixedHeight(36)
         self.btn_ai_generate.setStyleSheet(f"""
             QPushButton {{
-                background-color: #9c27b0;
-                color: white;
+                background-color: {colors.accent_blue};
+                color: {colors.text_on_dark};
                 border: none;
                 border-radius: 4px;
                 font-weight: bold;
             }}
             QPushButton:hover {{
-                background-color: #7b1fa2;
+                background-color: {colors.accent_blue_dark};
             }}
             QPushButton:disabled {{
                 background-color: {colors.text_disabled};

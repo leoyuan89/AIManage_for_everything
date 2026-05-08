@@ -18,6 +18,7 @@ from services.ai_worker_thread import AIStatus
 
 logger = logging.getLogger(__name__)
 from core.theme_manager import ThemeManager, ThemeColors
+from core.password_generator import generate_password
 
 
 class URLEditDialog(QDialog):
@@ -34,6 +35,7 @@ class URLEditDialog(QDialog):
         self._pending_remark_task = None
         self._pending_categorize_parent_task = None
         self._pending_categorize_child_task = None
+        self._is_dirty = False
         
         self.setup_ui()
         
@@ -90,6 +92,7 @@ class URLEditDialog(QDialog):
         self.txt_title = QLineEdit()
         self.txt_title.setPlaceholderText("例如：GitHub、知乎")
         self.txt_title.setFixedHeight(36)
+        self.txt_title.textChanged.connect(self._mark_dirty)
         title_layout.addWidget(self.txt_title)
         layout.addLayout(title_layout)
         
@@ -103,8 +106,43 @@ class URLEditDialog(QDialog):
         self.txt_url = QLineEdit()
         self.txt_url.setPlaceholderText("例如：https://github.com")
         self.txt_url.setFixedHeight(36)
+        self.txt_url.textChanged.connect(self._mark_dirty)
         url_layout.addWidget(self.txt_url)
         layout.addLayout(url_layout)
+        
+        # ===== 密码 =====
+        password_layout = QHBoxLayout()
+        lbl_password = QLabel("密码：")
+        lbl_password.setFixedWidth(80)
+        lbl_password.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        password_layout.addWidget(lbl_password)
+        
+        self.txt_password = QLineEdit()
+        self.txt_password.setPlaceholderText("请输入密码（可选）")
+        self.txt_password.setEchoMode(QLineEdit.EchoMode.Password)
+        self.txt_password.setFixedHeight(36)
+        self.txt_password.textChanged.connect(self._mark_dirty)
+        password_layout.addWidget(self.txt_password)
+        
+        self.btn_show_url_password = QPushButton("显示")
+        self.btn_show_url_password.setFixedSize(80, 36)
+        self.btn_show_url_password.setCheckable(True)
+        self.btn_show_url_password.toggled.connect(self._toggle_url_password_visibility)
+        password_layout.addWidget(self.btn_show_url_password)
+        
+        self.btn_generate_url_password = QPushButton("生成")
+        self.btn_generate_url_password.setFixedSize(60, 36)
+        self.btn_generate_url_password.setToolTip("随机生成密码")
+        self.btn_generate_url_password.clicked.connect(self._on_generate_url_password)
+        password_layout.addWidget(self.btn_generate_url_password)
+        
+        self.btn_generator_url_settings = QPushButton("⚙")
+        self.btn_generator_url_settings.setFixedSize(30, 36)
+        self.btn_generator_url_settings.setToolTip("密码生成器设置")
+        self.btn_generator_url_settings.clicked.connect(self._on_generate_url_password_settings)
+        password_layout.addWidget(self.btn_generator_url_settings)
+        
+        layout.addLayout(password_layout)
         
         # ===== 分类 + AI 按钮 =====
         category_layout = QHBoxLayout()
@@ -118,6 +156,7 @@ class URLEditDialog(QDialog):
         self.cmb_parent.setPlaceholderText("请选择")
         self.cmb_parent.setFixedHeight(36)
         self.cmb_parent.currentTextChanged.connect(self._on_parent_changed)
+        self.cmb_parent.currentTextChanged.connect(self._mark_dirty)
         category_layout.addWidget(self.cmb_parent)
         
         lbl_sep = QLabel(">")
@@ -129,6 +168,7 @@ class URLEditDialog(QDialog):
         self.cmb_child.setEditable(True)
         self.cmb_child.setPlaceholderText("子类（可选）")
         self.cmb_child.setFixedHeight(36)
+        self.cmb_child.currentTextChanged.connect(self._mark_dirty)
         category_layout.addWidget(self.cmb_child)
         
         self._load_categories()
@@ -159,6 +199,7 @@ class URLEditDialog(QDialog):
         self.txt_tags = QLineEdit()
         self.txt_tags.setPlaceholderText("逗号分隔，如: 工作, 常用, 开源")
         self.txt_tags.setFixedHeight(36)
+        self.txt_tags.textChanged.connect(self._mark_dirty)
         tags_layout.addWidget(self.txt_tags)
         
         self.btn_ai_tags = QPushButton("AI生成标签")
@@ -180,6 +221,7 @@ class URLEditDialog(QDialog):
         self.txt_remark.setPlaceholderText("输入用户备注...")
         self.txt_remark.setMinimumHeight(60)
         self.txt_remark.setMaximumHeight(100)
+        self.txt_remark.textChanged.connect(self._mark_dirty)
         remark_layout.addWidget(self.txt_remark)
         layout.addLayout(remark_layout)
         
@@ -307,9 +349,11 @@ class URLEditDialog(QDialog):
                 self.cmb_child.setCurrentText(child)
         self.txt_remark.setText(self.url_item.remark)
         self.txt_ai_remark.setText(self.url_item.ai_remark)
+        self.txt_password.setText(self.url_item.password)
         
         tags = self.url_item.get_tags_list()
         self.txt_tags.setText(", ".join(tags))
+        self._is_dirty = False  # 加载数据不视为修改
     
     def on_ai_categorize_parent(self):
         """AI 分析一级分类"""
@@ -500,6 +544,29 @@ class URLEditDialog(QDialog):
         self.btn_ai_child.setText("AI")
         QMessageBox.warning(self, "分类失败", f"AI 二级分类失败：{error}")
     
+    def _toggle_url_password_visibility(self, checked):
+        """切换 URL 密码可见性"""
+        if checked:
+            self.txt_password.setEchoMode(QLineEdit.EchoMode.Normal)
+            self.btn_show_url_password.setText("隐藏")
+        else:
+            self.txt_password.setEchoMode(QLineEdit.EchoMode.Password)
+            self.btn_show_url_password.setText("显示")
+    
+    def _on_generate_url_password(self):
+        """快速生成 URL 密码（默认设置）"""
+        pwd = generate_password()
+        self.txt_password.setText(pwd)
+    
+    def _on_generate_url_password_settings(self):
+        """打开密码生成器设置弹窗（URL）"""
+        from ui.dialogs.password_generator_dialog import PasswordGeneratorDialog
+        dlg = PasswordGeneratorDialog(self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            pwd = dlg.generated_password
+            if pwd:
+                self.txt_password.setText(pwd)
+    
     def on_save(self):
         """保存网址"""
         url = self.txt_url.text().strip()
@@ -546,17 +613,17 @@ class URLEditDialog(QDialog):
         self.url_item.category = category
         self.url_item.remark = self.txt_remark.toPlainText().strip()
         self.url_item.ai_remark = self.txt_ai_remark.toPlainText().strip()
+        self.url_item.password = self.txt_password.text().strip()
         self.url_item.set_tags_list(tags)
         
         try:
             if self.is_edit_mode:
                 self.url_service.update_url(self.url_item)
-                QMessageBox.information(self, "成功", "网址已更新")
             else:
                 new_id = self.url_service.add_url(self.url_item)
                 self.url_item.id = new_id
-                QMessageBox.information(self, "成功", "网址已添加")
             
+            self._is_dirty = False
             self.accept()
         except Exception as e:
             QMessageBox.critical(self, "错误", f"保存失败：{str(e)}")
@@ -574,13 +641,35 @@ class URLEditDialog(QDialog):
             try:
                 # 软删除：备份到网址库独立回收站，并删除原记录
                 self.url_service.db.soft_delete_url(self.url_item.id, self.url_item.to_dict())
-                QMessageBox.information(self, "成功", "网址已移至回收站")
                 self.accept()
             except Exception as e:
                 QMessageBox.critical(self, "错误", f"删除失败：{str(e)}")
     
+    def _mark_dirty(self):
+        self._is_dirty = True
+
+    def reject(self):
+        # 取消按钮：直接关闭，不检查是否修改
+        self._is_dirty = False
+        self.close()
+
     def closeEvent(self, event):
         """关闭时清理"""
+        if self._is_dirty:
+            reply = QMessageBox.question(
+                self, "未保存的修改",
+                "有未保存的修改，是否保存？",
+                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Save
+            )
+            if reply == QMessageBox.StandardButton.Save:
+                self.on_save()
+                if self._is_dirty:
+                    event.ignore()
+                    return
+            elif reply == QMessageBox.StandardButton.Cancel:
+                event.ignore()
+                return
         try:
             self._ai_manager.state_changed.disconnect(self._update_ai_buttons)
             self._ai_manager.task_finished.disconnect(self._on_ai_task_finished)

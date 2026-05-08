@@ -19,6 +19,7 @@ class ClipboardManager:
         """
         self.clear_delay = clear_delay
         self._timer = None
+        self._timer_lock = threading.Lock()
         self._last_password = None
     
     def copy_text(self, text: str, is_password: bool = False):
@@ -37,14 +38,15 @@ class ClipboardManager:
     
     def _start_timer(self):
         """启动清空定时器"""
-        # 取消之前的定时器
-        if self._timer and self._timer.is_alive():
-            self._timer.cancel()
-        
-        # 创建新定时器
-        self._timer = threading.Timer(self.clear_delay, self._clear_password)
-        self._timer.daemon = True
-        self._timer.start()
+        with self._timer_lock:
+            # 取消之前的定时器
+            if self._timer and self._timer.is_alive():
+                self._timer.cancel()
+            
+            # 创建新定时器
+            self._timer = threading.Timer(self.clear_delay, self._clear_password)
+            self._timer.daemon = True
+            self._timer.start()
     
     def _clear_password(self):
         """清空剪贴板中的密码"""
@@ -54,18 +56,25 @@ class ClipboardManager:
             if current == self._last_password:
                 pyperclip.copy('')
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug("清空剪贴板时发生异常", exc_info=True)
         finally:
             self._last_password = None
     
     def clear(self):
         """立即清空剪贴板"""
-        if self._timer and self._timer.is_alive():
-            self._timer.cancel()
+        with self._timer_lock:
+            if self._timer and self._timer.is_alive():
+                self._timer.cancel()
+                self._timer = None
         pyperclip.copy('')
         self._last_password = None
     
     def __del__(self):
         """析构时清理"""
-        if self._timer and self._timer.is_alive():
-            self._timer.cancel()
+        try:
+            with self._timer_lock:
+                if self._timer and self._timer.is_alive():
+                    self._timer.cancel()
+        except Exception:
+            pass

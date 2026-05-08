@@ -90,6 +90,7 @@ def _serialize_urls(urls: List, category_orders: dict = None) -> list:
             'category': u.category,
             'tags': u.tags if isinstance(u.tags, str) else json.dumps(u.tags, ensure_ascii=False),
             'visit_count': u.visit_count,
+            'password': getattr(u, 'password', None),
             'ai_remark': u.ai_remark,
             'remark': u.remark,
         }

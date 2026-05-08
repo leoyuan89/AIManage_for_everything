@@ -72,3 +72,48 @@ def evaluate_password_strength(password: str) -> dict:
         "color": colors.get(score, "#f44336"),
         "bg_color": bg_colors.get(score, "#ffebee")
     }
+
+
+def suggest_improvements(password: str) -> list:
+    """Return a list of improvement suggestions for a password"""
+    suggestions = []
+
+    if len(password) < 8:
+        suggestions.append("增加到 8 位以上")
+    elif len(password) < 12:
+        suggestions.append("建议增加到 12 位以上，更安全")
+
+    if not any(c.isupper() for c in password):
+        suggestions.append("添加大写字母 (A-Z)")
+
+    if not any(c.islower() for c in password):
+        suggestions.append("添加小写字母 (a-z)")
+
+    if not any(c.isdigit() for c in password):
+        suggestions.append("添加数字 (0-9)")
+
+    if not any(c in '!@#$%^&*-_=+.,;:?<>[]{}|/~`' for c in password):
+        suggestions.append("添加特殊符号 (!@#$%等)")
+
+    # Check for sequential characters
+    for i in range(len(password) - 2):
+        if ord(password[i+1]) == ord(password[i]) + 1 and ord(password[i+2]) == ord(password[i]) + 2:
+            suggestions.append("避免连续字符 (如abc、123)")
+            break
+
+    # Check for repeated characters
+    if len(password) >= 3:
+        for i in range(len(password) - 2):
+            if password[i] == password[i+1] == password[i+2]:
+                suggestions.append("避免重复字符 (如aaa、111)")
+                break
+
+    # Check for common patterns
+    common_patterns = ['password', 'admin', '123456', 'qwerty', 'abc123', 'iloveyou']
+    pw_lower = password.lower()
+    for pattern in common_patterns:
+        if pattern in pw_lower:
+            suggestions.append("避免常见弱密码模式")
+            break
+
+    return suggestions

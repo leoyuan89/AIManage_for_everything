@@ -31,7 +31,8 @@ class OllamaClient:
         try:
             response = requests.get(f"{self.host}/api/tags", timeout=2)
             return response.status_code == 200
-        except:
+        except Exception:
+            logger.debug("Ollama 可用性检查失败", exc_info=True)
             return False
     
     @staticmethod
@@ -223,7 +224,8 @@ class OllamaClient:
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     continue
                     
-        except Exception:
+        except Exception as stream_e:
+            logger.warning("流式生成失败，降级为非流式: %s", stream_e)
             # 降级为非流式生成
             try:
                 result = self.generate(prompt, temperature=temperature, num_predict=num_predict)
@@ -587,6 +589,7 @@ class OllamaClient:
         try:
             from core.pinyin import PinyinConverter
         except Exception:
+            logger.debug("PinyinConverter 导入失败", exc_info=True)
             PinyinConverter = None
 
         if not query or not items_summary:
@@ -665,14 +668,14 @@ class OllamaClient:
                         elif term in app_pinyin.lower():
                             score = max(score, 0.8)
                     except Exception:
-                        pass
+                        logger.debug("拼音转换失败: %s", item["app_name"], exc_info=True)
                 if score < 0.7 and len(term) >= 2 and len(app) >= 2:
                     try:
                         ratio = SequenceMatcher(None, term, app).ratio()
                         if ratio > 0.75:
                             score = max(score, ratio * 0.85)
                     except Exception:
-                        pass
+                        logger.debug("序列相似度计算失败", exc_info=True)
                 if score > max_score:
                     max_score = score
 
@@ -898,8 +901,8 @@ class OllamaClient:
                         try:
                             extracted_params = json.loads(params_match.group(1))
                         except Exception:
+                            logger.debug("params JSON 解析失败", exc_info=True)
                             # params 也坏了，但至少 tool 名是对的，params 可以空着让 validate_params 报错
-                            pass
                     thought_match = re.search(r'"thought"\s*[:：]\s*"([^"]*)"', raw)
                     extracted_thought = thought_match.group(1) if thought_match else ""
                     response_match = re.search(r'"response"\s*[:：]\s*"([^"]*)"', raw)
@@ -1150,4 +1153,5 @@ matched_ids: [相关的账号ID列表，如 [174, 175, 211]]
                 "query_summary": query_summary
             }
         except Exception:
+            logger.debug("_extract_command 解析失败", exc_info=True)
             return default

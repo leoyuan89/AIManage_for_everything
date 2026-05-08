@@ -23,16 +23,11 @@ logger = logging.getLogger(__name__)
 
 
 def _perf_log(phase: str, t0: float, t1: float = None):
-    """Phase 0 计时日志（输出到 debug_output.txt）"""
+    """Phase 0 计时日志"""
     if t1 is None:
         t1 = time.perf_counter()
     msg = f"[Perf] {phase}: {(t1 - t0) * 1000:.1f} ms"
     logger.debug(msg)
-    try:
-        with open("debug_output.txt", "a", encoding="utf-8") as f:
-            f.write(msg + "\n")
-    except Exception:
-        pass
 
 
 class ChangePasswordDialog(QDialog):
@@ -187,21 +182,27 @@ class ChangePasswordDialog(QDialog):
                 QMessageBox.critical(self, "修改失败", "密码修改失败，可能是当前密码错误。")
         except Exception as e:
             QMessageBox.critical(self, "修改失败", f"密码修改过程中发生错误：\n{str(e)}")
+            logger.exception("Password change failed")
     
     def _do_change_password(self, old_password: str, new_password: str) -> bool:
         """执行密码修改"""
+        logger.debug("Starting password change...")
         with open(self.config_path, 'r', encoding='utf-8') as f:
             config = json.load(f)
         
         old_salt = bytes.fromhex(config['salt'])
-        old_crypto = CryptoManager(old_password, old_salt)
+        old_iterations = config.get('iterations', 600000)
+        logger.debug(f"Old iterations: {old_iterations}")
+        old_crypto = CryptoManager(old_password, old_salt, iterations=old_iterations)
         
         try:
             self.db.cursor.execute("SELECT app_name FROM accounts LIMIT 1")
             row = self.db.cursor.fetchone()
             if row and row['app_name']:
                 old_crypto.decrypt_from_string(row['app_name'])
-        except Exception:
+                logger.debug("Old password verified successfully")
+        except Exception as e:
+            logger.warning(f"Old password verification failed: {e}")
             return False
         
         new_crypto = CryptoManager(new_password)
@@ -213,29 +214,25 @@ class ChangePasswordDialog(QDialog):
         """)
         rows = self.db.cursor.fetchall()
         
+        def _safe_re_encrypt(value):
+            """安全解密并重新加密：若解密失败则原文视为明文直接加密"""
+            if not value:
+                return ''
+            try:
+                plain = old_crypto.decrypt_from_string(value)
+            except Exception:
+                plain = value  # 可能是明文存储的旧数据
+            return new_crypto.encrypt_to_string(plain)
+        
         for row in rows:
             encrypted_data = {
-                'app_name': new_crypto.encrypt_to_string(
-                    old_crypto.decrypt_from_string(row['app_name']) if row['app_name'] else ''
-                ),
-                'url': new_crypto.encrypt_to_string(
-                    old_crypto.decrypt_from_string(row['url']) if row['url'] else ''
-                ),
-                'username': new_crypto.encrypt_to_string(
-                    old_crypto.decrypt_from_string(row['username']) if row['username'] else ''
-                ),
-                'password': new_crypto.encrypt_to_string(
-                    old_crypto.decrypt_from_string(row['password']) if row['password'] else ''
-                ),
-                'remark': new_crypto.encrypt_to_string(
-                    old_crypto.decrypt_from_string(row['remark']) if row['remark'] else ''
-                ),
-                'ai_remark': new_crypto.encrypt_to_string(
-                    old_crypto.decrypt_from_string(row['ai_remark']) if row['ai_remark'] else ''
-                ),
-                'security_level': new_crypto.encrypt_to_string(
-                    old_crypto.decrypt_from_string(row['security_level']) if row['security_level'] else ''
-                ),
+                'app_name': _safe_re_encrypt(row['app_name']),
+                'url': _safe_re_encrypt(row['url']),
+                'username': _safe_re_encrypt(row['username']),
+                'password': _safe_re_encrypt(row['password']),
+                'remark': _safe_re_encrypt(row['remark']),
+                'ai_remark': _safe_re_encrypt(row['ai_remark']),
+                'security_level': _safe_re_encrypt(row['security_level']),
             }
             
             self.db.cursor.execute("""
@@ -255,6 +252,7 @@ class ChangePasswordDialog(QDialog):
         self.db.crypto = new_crypto
         
         config['salt'] = new_crypto.salt.hex()
+        config['iterations'] = new_crypto.iterations
         with open(self.config_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, indent=2)
         

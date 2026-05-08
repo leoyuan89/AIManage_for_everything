@@ -599,3 +599,97 @@ def parse_import_file(file_path: str) -> Tuple[str, List[ImportItem]]:
         return 'excel', ExcelParser.parse(file_path)
     else:
         raise ValueError(f"不支持的文件格式：{suffix}")
+
+
+class ManagerImportService:
+    """从其他密码管理器导入（Bitwarden、LastPass 等）"""
+
+    @staticmethod
+    def detect_format(file_path: str) -> str:
+        ext = file_path.lower().rsplit('.', 1)[-1] if '.' in file_path else ''
+        with open(file_path, 'r', encoding='utf-8') as f:
+            first_line = f.readline().strip()
+        if ext == 'json':
+            return 'bitwarden_json'
+        elif ext in ('csv', 'txt'):
+            fl = first_line.lower()
+            if 'name' in fl and 'login_uri' in fl:
+                return 'bitwarden_csv'
+            elif 'name' in fl and 'url' in fl and 'username' in fl:
+                return 'bitwarden_csv'
+            elif 'url' in fl and 'username' in fl and 'password' in fl:
+                return 'lastpass_csv'
+        return 'unknown'
+
+    @staticmethod
+    def parse(file_path: str) -> Tuple[str, List[Dict]]:
+        fmt = ManagerImportService.detect_format(file_path)
+        if fmt == 'bitwarden_csv':
+            return fmt, ManagerImportService._parse_bitwarden_csv(file_path)
+        elif fmt == 'bitwarden_json':
+            return fmt, ManagerImportService._parse_bitwarden_json(file_path)
+        elif fmt == 'lastpass_csv':
+            return fmt, ManagerImportService._parse_lastpass_csv(file_path)
+        else:
+            raise ValueError("无法识别该文件格式")
+
+    @staticmethod
+    def _parse_bitwarden_csv(file_path: str) -> List[Dict]:
+        import csv
+        accounts = []
+        with open(file_path, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                accounts.append({
+                    'app_name': row.get('name', ''),
+                    'url': row.get('login_uri', row.get('url', '')),
+                    'username': row.get('login_username', row.get('username', '')),
+                    'password': row.get('login_password', row.get('password', '')),
+                    'remark': row.get('notes', ''),
+                    'category': row.get('folder', '') or '其他',
+                })
+        return accounts
+
+    @staticmethod
+    def _parse_bitwarden_json(file_path: str) -> List[Dict]:
+        import json
+        accounts = []
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        items = data.get('items', []) if isinstance(data, dict) else data
+        for item in items:
+            if item.get('type') == 1:
+                login = item.get('login', {})
+                uri = ''
+                uris = login.get('uris', [])
+                if uris and isinstance(uris, list):
+                    uri = uris[0].get('uri', '') if isinstance(uris[0], dict) else ''
+                accounts.append({
+                    'app_name': item.get('name', ''),
+                    'url': uri,
+                    'username': login.get('username', ''),
+                    'password': login.get('password', ''),
+                    'remark': item.get('notes', ''),
+                    'category': item.get('folder', '') or '其他',
+                })
+        return accounts
+
+    @staticmethod
+    def _parse_lastpass_csv(file_path: str) -> List[Dict]:
+        import csv
+        accounts = []
+        with open(file_path, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                url = row.get('url', '')
+                if not url or not url.startswith('http'):
+                    continue
+                accounts.append({
+                    'app_name': row.get('name', row.get('url', 'Unknown')),
+                    'url': url,
+                    'username': row.get('username', ''),
+                    'password': row.get('password', ''),
+                    'remark': row.get('extra', ''),
+                    'category': row.get('grouping', '') or '其他',
+                })
+        return accounts

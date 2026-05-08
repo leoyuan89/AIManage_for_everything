@@ -111,6 +111,8 @@ class ExportDialog(QDialog):
             "Excel 表格 (.xlsx)",
             "加密备份 (.vault)"
         ]
+        if is_account:
+            formats.append("Bitwarden CSV (.csv)")
         if not is_account:
             formats.append("HTML 书签 (.html)")
         self.cmb_format.addItems(formats)
@@ -267,12 +269,16 @@ class ExportDialog(QDialog):
     
     def on_format_changed(self, index):
         """格式切换"""
+        is_account = self.vault_type == 'accounts'
         if index == 0:  # Excel
             self.group_excel.show()
             self.group_vault.hide()
         elif index == 1:  # 加密备份
             self.group_excel.hide()
             self.group_vault.show()
+        elif is_account and index == 2:  # Bitwarden CSV
+            self.group_excel.show()
+            self.group_vault.hide()
         else:  # HTML 书签
             self.group_excel.hide()
             self.group_vault.hide()
@@ -390,6 +396,28 @@ class ExportDialog(QDialog):
                     self.accept()
                 else:
                     QMessageBox.critical(self, "导出失败", "加密备份导出过程中发生错误")
+        
+        elif is_account and format_index == 2:  # Bitwarden CSV
+            file_path, _ = QFileDialog.getSaveFileName(
+                self, "保存 Bitwarden CSV 文件",
+                f"bitwarden_export_{scope_name}",
+                "CSV 文件 (*.csv)"
+            )
+            if file_path:
+                if not file_path.endswith('.csv'):
+                    file_path += '.csv'
+                
+                success = self.export_service.export_bitwarden_csv(items, file_path)
+                
+                if success:
+                    QMessageBox.information(
+                        self, "导出成功",
+                        f"成功导出 {len(items)} 个{entity_name}到 Bitwarden CSV：\n{file_path}\n\n"
+                        f"提示：可在 Bitwarden「工具」→「导入数据」中使用此文件。"
+                    )
+                    self.accept()
+                else:
+                    QMessageBox.critical(self, "导出失败", "Bitwarden CSV 导出过程中发生错误")
         
         else:  # HTML 书签
             if is_account:

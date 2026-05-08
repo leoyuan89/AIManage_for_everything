@@ -16,9 +16,11 @@ class URLItem:
     category: str = "其他"     # 分类
     tags: str = "[]"          # 标签（JSON 数组）
     related_account_id: Optional[int] = None  # 关联的账号 ID
+    password: str = ""        # 密码
     visit_count: int = 0      # 访问次数
     ai_remark: str = ""       # AI 生成的一句话备注（新增）
     remark: str = ""          # 用户备注（新增）
+    is_favorite: bool = False
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     
@@ -28,7 +30,7 @@ class URLItem:
             if isinstance(self.tags, str):
                 return json.loads(self.tags) if self.tags else []
             return self.tags if isinstance(self.tags, list) else []
-        except:
+        except Exception:
             return []
     
     def set_tags_list(self, tags: List[str]):
@@ -59,9 +61,11 @@ class URLItem:
             category=data.get('category', '其他'),
             tags=data.get('tags', '[]'),
             related_account_id=data.get('related_account_id'),
+            password=data.get('password', ''),
             visit_count=data.get('visit_count', 0),
             ai_remark=data.get('ai_remark', ''),
             remark=data.get('remark', ''),
+            is_favorite=bool(data.get('is_favorite', False)),
             created_at=data.get('created_at'),
             updated_at=data.get('updated_at')
         )
@@ -75,9 +79,11 @@ class URLItem:
             'category': self.category,
             'tags': self.tags,
             'related_account_id': self.related_account_id,
+            'password': self.password,
             'visit_count': self.visit_count,
             'ai_remark': self.ai_remark,
             'remark': self.remark,
+            'is_favorite': int(self.is_favorite),
             'created_at': self.created_at,
             'updated_at': self.updated_at
         }

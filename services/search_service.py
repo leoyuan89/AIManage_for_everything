@@ -13,6 +13,16 @@ from models.account import Account
 
 
 @dataclass
+class SearchFilter:
+    category: Optional[str] = None
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+    strength: Optional[str] = None
+    has_url: Optional[bool] = None
+    tags: Optional[str] = None
+
+
+@dataclass
 class SearchResult:
     """搜索结果"""
     account: Account
@@ -97,6 +107,48 @@ class SearchService:
             
             pinyin_matches.sort(key=lambda x: x.confidence, reverse=True)
             results.extend(pinyin_matches)
+        
+        return results
+    
+    def search_advanced(self, query: str, accounts: List[Account], filter: SearchFilter) -> List[SearchResult]:
+        sync_results = self.search(query, accounts)
+        results = [r for r in sync_results if r.match_type in ('exact', 'pinyin')]
+        
+        if filter.category:
+            results = [r for r in results if r.account.category == filter.category]
+        
+        if filter.strength and filter.strength != '全部':
+            from core.password_strength import evaluate_password_strength
+            filtered = []
+            for r in results:
+                strength = evaluate_password_strength(r.account.password or '')
+                if strength['label'] == filter.strength:
+                    filtered.append(r)
+            results = filtered
+        
+        if filter.date_from or filter.date_to:
+            from datetime import datetime
+            filtered = []
+            for r in results:
+                created = r.account.created_at
+                if created:
+                    if isinstance(created, str):
+                        created = datetime.fromisoformat(created.replace('Z', '+00:00'))
+                    if filter.date_from:
+                        dt_from = datetime.fromisoformat(filter.date_from)
+                        if created < dt_from:
+                            continue
+                    if filter.date_to:
+                        dt_to = datetime.fromisoformat(filter.date_to)
+                        dt_to = dt_to.replace(hour=23, minute=59, second=59)
+                        if created > dt_to:
+                            continue
+                filtered.append(r)
+            results = filtered
+        
+        if filter.tags:
+            filtered = [r for r in results if filter.tags.lower() in (r.account.tags or '').lower()]
+            results = filtered
         
         return results
     
@@ -200,6 +252,10 @@ class SearchService:
     
     def clear_history(self):
         """清空搜索历史"""
+        self._search_history.clear()
+    
+    def clear_search_history(self):
+        """清空搜索历史 (别名)"""
         self._search_history.clear()
     
     def search_by_category(self, category: str, accounts: List[Account] = None) -> List[Account]:

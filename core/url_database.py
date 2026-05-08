@@ -4,6 +4,7 @@
 """
 import logging
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
@@ -23,6 +24,7 @@ class URLDatabaseManager:
         self.db_path = db_path
         self.conn = None
         self.cursor = None
+        self._lock = threading.RLock()
         
         # 确保目录存在
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -44,61 +46,73 @@ class URLDatabaseManager:
     
     def _create_tables(self):
         """创建数据表结构"""
-        # 网址收藏表
-        self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS urls (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                url TEXT NOT NULL,
-                category TEXT NOT NULL DEFAULT '其他',
-                tags TEXT DEFAULT '[]',
-                related_account_id INTEGER,
-                visit_count INTEGER DEFAULT 0,
-                ai_remark TEXT DEFAULT '',
-                remark TEXT DEFAULT '',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+        with self._lock:
+            # 网址收藏表
+            self.cursor.execute("""
+                CREATE TABLE IF NOT EXISTS urls (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    url TEXT NOT NULL,
+                    category TEXT NOT NULL DEFAULT '其他',
+                    tags TEXT DEFAULT '[]',
+                    related_account_id INTEGER,
+                    password TEXT DEFAULT '',
+                    visit_count INTEGER DEFAULT 0,
+                    ai_remark TEXT DEFAULT '',
+                    remark TEXT DEFAULT '',
+                    is_favorite INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
         
-        # 分类统计视图
-        self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS url_categories (
-                name TEXT PRIMARY KEY,
-                count INTEGER DEFAULT 0
-            )
-        """)
+            # 分类统计视图
+            self.cursor.execute("""
+                CREATE TABLE IF NOT EXISTS url_categories (
+                    name TEXT PRIMARY KEY,
+                    count INTEGER DEFAULT 0
+                )
+            """)
         
-        # 分类排序表
-        self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS category_order (
-                category TEXT PRIMARY KEY,
-                sort_index INTEGER NOT NULL
-            )
-        """)
+            # 分类排序表
+            self.cursor.execute("""
+                CREATE TABLE IF NOT EXISTS category_order (
+                    category TEXT PRIMARY KEY,
+                    sort_index INTEGER NOT NULL
+                )
+            """)
         
-        # 回收站表（网址库独立回收站）
-        self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS url_recycle_bin (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                original_id INTEGER NOT NULL,
-                title TEXT,
-                url TEXT,
-                category TEXT,
-                tags TEXT,
-                ai_remark TEXT,
-                remark TEXT,
-                deleted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                expires_at TIMESTAMP,
-                is_restored INTEGER DEFAULT 0,
-                restored_at TIMESTAMP
-            )
-        """)
-        self.cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_url_recycle_expires ON url_recycle_bin(expires_at) WHERE is_restored = 0
-        """)
+            # 回收站表（网址库独立回收站）
+            self.cursor.execute("""
+                CREATE TABLE IF NOT EXISTS url_recycle_bin (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    original_id INTEGER NOT NULL,
+                    title TEXT,
+                    url TEXT,
+                    category TEXT,
+                    tags TEXT,
+                    password TEXT DEFAULT '',
+                    ai_remark TEXT,
+                    remark TEXT,
+                    deleted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TIMESTAMP,
+                    is_restored INTEGER DEFAULT 0,
+                    restored_at TIMESTAMP
+                )
+            """)
+            self.cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_url_recycle_expires ON url_recycle_bin(expires_at) WHERE is_restored = 0
+            """)
         
-        self.conn.commit()
+            # 保险箱配置表（用于存储泄露检测等缓存结果）
+            self.cursor.execute("""
+                CREATE TABLE IF NOT EXISTS vault_config (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                )
+            """)
+        
+            self.conn.commit()
     
     def close(self):
         """关闭数据库连接"""
@@ -109,15 +123,26 @@ class URLDatabaseManager:
     
     def _ensure_columns(self):
         """确保 urls 表包含所有必要列（自动迁移）"""
-        self.cursor.execute("PRAGMA table_info(urls)")
-        columns = {row['name'] for row in self.cursor.fetchall()}
+        with self._lock:
+            self.cursor.execute("PRAGMA table_info(urls)")
+            columns = {row['name'] for row in self.cursor.fetchall()}
         
-        if 'ai_remark' not in columns:
-            self.cursor.execute("ALTER TABLE urls ADD COLUMN ai_remark TEXT DEFAULT ''")
-        if 'remark' not in columns:
-            self.cursor.execute("ALTER TABLE urls ADD COLUMN remark TEXT DEFAULT ''")
+            if 'ai_remark' not in columns:
+                self.cursor.execute("ALTER TABLE urls ADD COLUMN ai_remark TEXT DEFAULT ''")
+            if 'remark' not in columns:
+                self.cursor.execute("ALTER TABLE urls ADD COLUMN remark TEXT DEFAULT ''")
+            if 'password' not in columns:
+                self.cursor.execute("ALTER TABLE urls ADD COLUMN password TEXT DEFAULT ''")
+            if 'is_favorite' not in columns:
+                self.cursor.execute("ALTER TABLE urls ADD COLUMN is_favorite INTEGER DEFAULT 0")
         
-        self.conn.commit()
+            # 同时确保 url_recycle_bin 表有此列
+            self.cursor.execute("PRAGMA table_info(url_recycle_bin)")
+            rb_columns = {row['name'] for row in self.cursor.fetchall()}
+            if 'password' not in rb_columns:
+                self.cursor.execute("ALTER TABLE url_recycle_bin ADD COLUMN password TEXT DEFAULT ''")
+        
+            self.conn.commit()
     
     # ==================== 网址表操作 ====================
     
@@ -131,21 +156,23 @@ class URLDatabaseManager:
         Returns:
             新网址 ID
         """
-        self.cursor.execute("""
-            INSERT INTO urls (title, url, category, tags, related_account_id, ai_remark, remark)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (
-            url_data.get('title', ''),
-            url_data.get('url', ''),
-            url_data.get('category', '其他'),
-            url_data.get('tags', '[]'),
-            url_data.get('related_account_id'),
-            url_data.get('ai_remark', ''),
-            url_data.get('remark', '')
-        ))
+        with self._lock:
+            self.cursor.execute("""
+                INSERT INTO urls (title, url, category, tags, related_account_id, password, ai_remark, remark)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                url_data.get('title', ''),
+                url_data.get('url', ''),
+                url_data.get('category', '其他'),
+                url_data.get('tags', '[]'),
+                url_data.get('related_account_id'),
+                url_data.get('password', ''),
+                url_data.get('ai_remark', ''),
+                url_data.get('remark', '')
+            ))
         
-        self.conn.commit()
-        return self.cursor.lastrowid
+            self.conn.commit()
+            return self.cursor.lastrowid
     
     def update_url(self, url_id: int, url_data: Dict[str, Any]) -> bool:
         """
@@ -158,52 +185,57 @@ class URLDatabaseManager:
         Returns:
             是否成功
         """
-        fields = []
-        values = []
+        with self._lock:
+            fields = []
+            values = []
         
-        if 'title' in url_data:
-            fields.append("title = ?")
-            values.append(url_data['title'])
+            if 'title' in url_data:
+                fields.append("title = ?")
+                values.append(url_data['title'])
         
-        if 'url' in url_data:
-            fields.append("url = ?")
-            values.append(url_data['url'])
+            if 'url' in url_data:
+                fields.append("url = ?")
+                values.append(url_data['url'])
         
-        if 'category' in url_data:
-            fields.append("category = ?")
-            values.append(url_data['category'])
+            if 'category' in url_data:
+                fields.append("category = ?")
+                values.append(url_data['category'])
         
-        if 'tags' in url_data:
-            fields.append("tags = ?")
-            values.append(url_data['tags'])
+            if 'tags' in url_data:
+                fields.append("tags = ?")
+                values.append(url_data['tags'])
         
-        if 'related_account_id' in url_data:
-            fields.append("related_account_id = ?")
-            values.append(url_data['related_account_id'])
+            if 'related_account_id' in url_data:
+                fields.append("related_account_id = ?")
+                values.append(url_data['related_account_id'])
         
-        if 'visit_count' in url_data:
-            fields.append("visit_count = ?")
-            values.append(url_data['visit_count'])
+            if 'visit_count' in url_data:
+                fields.append("visit_count = ?")
+                values.append(url_data['visit_count'])
         
-        if 'ai_remark' in url_data:
-            fields.append("ai_remark = ?")
-            values.append(url_data['ai_remark'])
+            if 'ai_remark' in url_data:
+                fields.append("ai_remark = ?")
+                values.append(url_data['ai_remark'])
         
-        if 'remark' in url_data:
-            fields.append("remark = ?")
-            values.append(url_data['remark'])
+            if 'remark' in url_data:
+                fields.append("remark = ?")
+                values.append(url_data['remark'])
         
-        if not fields:
-            return False
+            if 'password' in url_data:
+                fields.append("password = ?")
+                values.append(url_data['password'])
         
-        fields.append("updated_at = CURRENT_TIMESTAMP")
-        values.append(url_id)
+            if not fields:
+                return False
         
-        sql = f"UPDATE urls SET {', '.join(fields)} WHERE id = ?"
-        self.cursor.execute(sql, values)
-        self.conn.commit()
+            fields.append("updated_at = CURRENT_TIMESTAMP")
+            values.append(url_id)
         
-        return self.cursor.rowcount > 0
+            sql = f"UPDATE urls SET {', '.join(fields)} WHERE id = ?"
+            self.cursor.execute(sql, values)
+            self.conn.commit()
+        
+            return self.cursor.rowcount > 0
     
     def delete_url(self, url_id: int) -> bool:
         """
@@ -215,107 +247,114 @@ class URLDatabaseManager:
         Returns:
             是否成功
         """
-        self.cursor.execute("DELETE FROM urls WHERE id = ?", (url_id,))
-        self.conn.commit()
-        return self.cursor.rowcount > 0
+        with self._lock:
+            self.cursor.execute("DELETE FROM urls WHERE id = ?", (url_id,))
+            self.conn.commit()
+            return self.cursor.rowcount > 0
     
     def soft_delete_url(self, url_id: int, url_data: dict) -> bool:
         """将网址移入回收站（软删除），并删除原记录"""
-        try:
-            from datetime import datetime, timedelta
-            expires_at = datetime.now() + timedelta(days=30)
-            self.cursor.execute("""
-                INSERT INTO url_recycle_bin (original_id, title, url, category, tags, ai_remark, remark, expires_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                url_id,
-                url_data.get('title', ''),
-                url_data.get('url', ''),
-                url_data.get('category', '其他'),
-                url_data.get('tags', '[]'),
-                url_data.get('ai_remark', ''),
-                url_data.get('remark', ''),
-                expires_at
-            ))
-            self.cursor.execute("DELETE FROM urls WHERE id = ?", (url_id,))
-            self.conn.commit()
-            return True
-        except Exception as e:
-            self.conn.rollback()
-            logger.error("soft_delete_url error: %s", e)
-            return False
+        with self._lock:
+            try:
+                from datetime import datetime, timedelta
+                expires_at = datetime.now() + timedelta(days=30)
+                self.cursor.execute("""
+                    INSERT INTO url_recycle_bin (original_id, title, url, category, tags, password, ai_remark, remark, expires_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    url_id,
+                    url_data.get('title', ''),
+                    url_data.get('url', ''),
+                    url_data.get('category', '其他'),
+                    url_data.get('tags', '[]'),
+                    url_data.get('password', ''),
+                    url_data.get('ai_remark', ''),
+                    url_data.get('remark', ''),
+                    expires_at
+                ))
+                self.cursor.execute("DELETE FROM urls WHERE id = ?", (url_id,))
+                self.conn.commit()
+                return True
+            except Exception as e:
+                self.conn.rollback()
+                logger.error("soft_delete_url error: %s", e)
+                return False
     
     def get_recycle_bin_items(self, include_expired: bool = False) -> List[Dict[str, Any]]:
         """获取回收站条目列表"""
-        try:
-            if include_expired:
-                self.cursor.execute(
-                    "SELECT * FROM url_recycle_bin WHERE is_restored = 0 ORDER BY deleted_at DESC"
-                )
-            else:
-                self.cursor.execute(
-                    "SELECT * FROM url_recycle_bin WHERE is_restored = 0 AND expires_at > datetime('now') ORDER BY deleted_at DESC"
-                )
-            rows = self.cursor.fetchall()
-            return [dict(row) for row in rows]
-        except Exception as e:
-            logger.error("get_recycle_bin_items error: %s", e)
-            return []
+        with self._lock:
+            try:
+                if include_expired:
+                    self.cursor.execute(
+                        "SELECT * FROM url_recycle_bin WHERE is_restored = 0 ORDER BY deleted_at DESC"
+                    )
+                else:
+                    self.cursor.execute(
+                        "SELECT * FROM url_recycle_bin WHERE is_restored = 0 AND expires_at > datetime('now') ORDER BY deleted_at DESC"
+                    )
+                rows = self.cursor.fetchall()
+                return [dict(row) for row in rows]
+            except Exception as e:
+                logger.error("get_recycle_bin_items error: %s", e)
+                return []
     
     def restore_url(self, recycle_id: int) -> Optional[Dict[str, Any]]:
         """从回收站恢复网址，返回恢复后的数据（含新ID）"""
-        try:
-            self.cursor.execute("SELECT * FROM url_recycle_bin WHERE id = ?", (recycle_id,))
-            row = self.cursor.fetchone()
-            if not row:
+        with self._lock:
+            try:
+                self.cursor.execute("SELECT * FROM url_recycle_bin WHERE id = ?", (recycle_id,))
+                row = self.cursor.fetchone()
+                if not row:
+                    return None
+            
+                url_data = dict(row)
+                url_data.pop('id', None)
+                url_data.pop('original_id', None)
+                url_data.pop('deleted_at', None)
+                url_data.pop('expires_at', None)
+                url_data.pop('is_restored', None)
+                url_data.pop('restored_at', None)
+            
+                new_id = self.insert_url(url_data)
+            
+                self.cursor.execute(
+                    "UPDATE url_recycle_bin SET is_restored = 1, restored_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (recycle_id,)
+                )
+                self.conn.commit()
+            
+                url_data['id'] = new_id
+                return url_data
+            except Exception as e:
+                self.conn.rollback()
+                logger.error("restore_url error: %s", e)
                 return None
-            
-            url_data = dict(row)
-            url_data.pop('id', None)
-            url_data.pop('original_id', None)
-            url_data.pop('deleted_at', None)
-            url_data.pop('expires_at', None)
-            url_data.pop('is_restored', None)
-            url_data.pop('restored_at', None)
-            
-            new_id = self.insert_url(url_data)
-            
-            self.cursor.execute(
-                "UPDATE url_recycle_bin SET is_restored = 1, restored_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (recycle_id,)
-            )
-            self.conn.commit()
-            
-            url_data['id'] = new_id
-            return url_data
-        except Exception as e:
-            self.conn.rollback()
-            logger.error("restore_url error: %s", e)
-            return None
     
     def permanently_delete_recycle_item(self, recycle_id: int) -> bool:
         """永久删除回收站条目"""
-        try:
-            self.cursor.execute("DELETE FROM url_recycle_bin WHERE id = ?", (recycle_id,))
-            self.conn.commit()
-            return self.cursor.rowcount > 0
-        except Exception as e:
-            self.conn.rollback()
-            logger.error("permanently_delete_recycle_item error: %s", e)
-            return False
+        with self._lock:
+            try:
+                self.cursor.execute("DELETE FROM url_recycle_bin WHERE id = ?", (recycle_id,))
+                self.conn.commit()
+                return self.cursor.rowcount > 0
+            except Exception as e:
+                self.conn.rollback()
+                logger.error("permanently_delete_recycle_item error: %s", e)
+                return False
     
     def cleanup_expired_recycle_bin(self, days: int = 30) -> int:
         """清理超过保留期的回收站条目"""
-        try:
-            self.cursor.execute(
-                "DELETE FROM url_recycle_bin WHERE is_restored = 0 AND expires_at < datetime('now')"
-            )
-            self.conn.commit()
-            return self.cursor.rowcount
-        except Exception as e:
-            self.conn.rollback()
-            logger.error("cleanup_expired_recycle_bin error: %s", e)
-            return 0
+        with self._lock:
+            try:
+                self.cursor.execute(
+                    "DELETE FROM url_recycle_bin WHERE is_restored = 0 AND expires_at < datetime('now')"
+                )
+                self.conn.commit()
+                return self.cursor.rowcount
+            except Exception as e:
+                self.conn.rollback()
+                logger.error("cleanup_expired_recycle_bin error: %s", e)
+                return 0
     
     def get_url_by_id(self, url_id: int) -> Optional[Dict[str, Any]]:
         """
@@ -327,13 +366,14 @@ class URLDatabaseManager:
         Returns:
             网址数据字典，不存在返回 None
         """
-        self.cursor.execute("SELECT * FROM urls WHERE id = ?", (url_id,))
-        row = self.cursor.fetchone()
+        with self._lock:
+            self.cursor.execute("SELECT * FROM urls WHERE id = ?", (url_id,))
+            row = self.cursor.fetchone()
         
-        if not row:
-            return None
+            if not row:
+                return None
         
-        return dict(row)
+            return dict(row)
     
     def get_all_urls(self) -> List[Dict[str, Any]]:
         """
@@ -342,10 +382,11 @@ class URLDatabaseManager:
         Returns:
             网址数据列表（按添加时间倒序）
         """
-        self.cursor.execute("SELECT * FROM urls ORDER BY created_at DESC")
-        rows = self.cursor.fetchall()
+        with self._lock:
+            self.cursor.execute("SELECT * FROM urls ORDER BY created_at DESC")
+            rows = self.cursor.fetchall()
         
-        return [dict(row) for row in rows]
+            return [dict(row) for row in rows]
     
     def get_urls_by_category(self, category: str) -> List[Dict[str, Any]]:
         """
@@ -357,13 +398,14 @@ class URLDatabaseManager:
         Returns:
             网址数据列表
         """
-        self.cursor.execute(
-            "SELECT * FROM urls WHERE category = ? ORDER BY created_at DESC",
-            (category,)
-        )
-        rows = self.cursor.fetchall()
+        with self._lock:
+            self.cursor.execute(
+                "SELECT * FROM urls WHERE category = ? ORDER BY created_at DESC",
+                (category,)
+            )
+            rows = self.cursor.fetchall()
         
-        return [dict(row) for row in rows]
+            return [dict(row) for row in rows]
     
     def search_urls(self, keyword: str) -> List[Dict[str, Any]]:
         """
@@ -375,16 +417,17 @@ class URLDatabaseManager:
         Returns:
             匹配的网址列表
         """
-        keyword = f"%{keyword}%"
-        self.cursor.execute(
-            """SELECT * FROM urls 
-               WHERE title LIKE ? OR url LIKE ? OR tags LIKE ? OR ai_remark LIKE ? OR remark LIKE ?
-               ORDER BY created_at DESC""",
-            (keyword, keyword, keyword, keyword, keyword)
-        )
-        rows = self.cursor.fetchall()
+        with self._lock:
+            keyword = f"%{keyword}%"
+            self.cursor.execute(
+                """SELECT * FROM urls 
+                   WHERE title LIKE ? OR url LIKE ? OR tags LIKE ? OR ai_remark LIKE ? OR remark LIKE ?
+                   ORDER BY created_at DESC""",
+                (keyword, keyword, keyword, keyword, keyword)
+            )
+            rows = self.cursor.fetchall()
         
-        return [dict(row) for row in rows]
+            return [dict(row) for row in rows]
     
     def get_urls_by_account(self, account_id: int) -> List[Dict[str, Any]]:
         """
@@ -396,13 +439,14 @@ class URLDatabaseManager:
         Returns:
             网址数据列表
         """
-        self.cursor.execute(
-            "SELECT * FROM urls WHERE related_account_id = ? ORDER BY created_at DESC",
-            (account_id,)
-        )
-        rows = self.cursor.fetchall()
+        with self._lock:
+            self.cursor.execute(
+                "SELECT * FROM urls WHERE related_account_id = ? ORDER BY created_at DESC",
+                (account_id,)
+            )
+            rows = self.cursor.fetchall()
         
-        return [dict(row) for row in rows]
+            return [dict(row) for row in rows]
     
     def increment_visit_count(self, url_id: int):
         """
@@ -411,29 +455,32 @@ class URLDatabaseManager:
         Args:
             url_id: 网址 ID
         """
-        self.cursor.execute(
-            "UPDATE urls SET visit_count = visit_count + 1 WHERE id = ?",
-            (url_id,)
-        )
-        self.conn.commit()
+        with self._lock:
+            self.cursor.execute(
+                "UPDATE urls SET visit_count = visit_count + 1 WHERE id = ?",
+                (url_id,)
+            )
+            self.conn.commit()
     
     def get_category_orders(self) -> Dict[str, int]:
         """获取分类自定义排序（category -> sort_index）"""
-        try:
-            self.cursor.execute("SELECT category, sort_index FROM category_order")
-            return {row['category']: row['sort_index'] for row in self.cursor.fetchall()}
-        except Exception:
-            return {}
+        with self._lock:
+            try:
+                self.cursor.execute("SELECT category, sort_index FROM category_order")
+                return {row['category']: row['sort_index'] for row in self.cursor.fetchall()}
+            except Exception:
+                return {}
     
     def save_category_orders(self, orders: Dict[str, int]):
         """保存分类自定义排序"""
-        self.cursor.execute("DELETE FROM category_order")
-        for category, sort_index in orders.items():
-            self.cursor.execute(
-                "INSERT INTO category_order (category, sort_index) VALUES (?, ?)",
-                (category, sort_index)
-            )
-        self.conn.commit()
+        with self._lock:
+            self.cursor.execute("DELETE FROM category_order")
+            for category, sort_index in orders.items():
+                self.cursor.execute(
+                    "INSERT INTO category_order (category, sort_index) VALUES (?, ?)",
+                    (category, sort_index)
+                )
+            self.conn.commit()
     
     def get_categories(self) -> List[str]:
         """
@@ -444,22 +491,23 @@ class URLDatabaseManager:
         Returns:
             分类名称列表
         """
-        # 1. 从数据表中读取实际使用的分类
-        self.cursor.execute(
-            "SELECT DISTINCT category FROM urls WHERE category IS NOT NULL AND category != ''"
-        )
-        db_cats = {row['category'] for row in self.cursor.fetchall()}
+        with self._lock:
+            # 1. 从数据表中读取实际使用的分类
+            self.cursor.execute(
+                "SELECT DISTINCT category FROM urls WHERE category IS NOT NULL AND category != ''"
+            )
+            db_cats = {row['category'] for row in self.cursor.fetchall()}
         
-        # 2. 从排序表中读取所有已记录的分类（包含空分类）
-        try:
-            self.cursor.execute("SELECT category FROM category_order")
-            order_cats = {row['category'] for row in self.cursor.fetchall()}
-        except Exception:
-            order_cats = set()
+            # 2. 从排序表中读取所有已记录的分类（包含空分类）
+            try:
+                self.cursor.execute("SELECT category FROM category_order")
+                order_cats = {row['category'] for row in self.cursor.fetchall()}
+            except Exception:
+                order_cats = set()
         
-        # 3. 合并、去重、排序
-        all_cats = sorted(db_cats | order_cats)
-        return all_cats
+            # 3. 合并、去重、排序
+            all_cats = sorted(db_cats | order_cats)
+            return all_cats
     
     def update_url_field(self, url_id: int, field: str, value: Any) -> bool:
         """
@@ -473,17 +521,18 @@ class URLDatabaseManager:
         Returns:
             是否成功
         """
-        allowed = {'title', 'url', 'category', 'tags', 'related_account_id', 
-                   'visit_count', 'ai_remark', 'remark'}
-        if field not in allowed:
-            raise ValueError(f"不允许修改的字段: {field}")
+        with self._lock:
+            allowed = {'title', 'url', 'category', 'tags', 'related_account_id', 
+                       'visit_count', 'ai_remark', 'remark'}
+            if field not in allowed:
+                raise ValueError(f"不允许修改的字段: {field}")
         
-        self.cursor.execute(
-            f"UPDATE urls SET {field} = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (value, url_id)
-        )
-        self.conn.commit()
-        return self.cursor.rowcount > 0
+            self.cursor.execute(
+                f"UPDATE urls SET {field} = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (value, url_id)
+            )
+            self.conn.commit()
+            return self.cursor.rowcount > 0
     
     def find_by_url(self, url: str) -> Optional[Dict[str, Any]]:
         """
@@ -495,37 +544,40 @@ class URLDatabaseManager:
         Returns:
             网址数据字典，不存在返回 None
         """
-        self.cursor.execute("SELECT * FROM urls WHERE url = ? LIMIT 1", (url,))
-        row = self.cursor.fetchone()
-        return dict(row) if row else None
+        with self._lock:
+            self.cursor.execute("SELECT * FROM urls WHERE url = ? LIMIT 1", (url,))
+            row = self.cursor.fetchone()
+            return dict(row) if row else None
     
     def rename_category(self, old_name: str, new_name: str) -> int:
-        self.cursor.execute(
-            "UPDATE urls SET category = ? WHERE category = ?",
-            (new_name, old_name)
-        )
-        self.conn.commit()
-        return self.cursor.rowcount
+        with self._lock:
+            self.cursor.execute(
+                "UPDATE urls SET category = ? WHERE category = ?",
+                (new_name, old_name)
+            )
+            self.conn.commit()
+            return self.cursor.rowcount
     
     def rename_category_order(self, old_name: str, new_name: str) -> bool:
         """同步重命名 category_order 表中的分类记录（包括子类前缀）"""
-        try:
-            # 1. 精确匹配的旧分类
-            self.cursor.execute(
-                "UPDATE category_order SET category = ? WHERE category = ?",
-                (new_name, old_name)
-            )
-            # 2. 如果是旧分类是一级分类，同步更新所有子类
-            if '>' not in old_name:
+        with self._lock:
+            try:
+                # 1. 精确匹配的旧分类
                 self.cursor.execute(
-                    "UPDATE category_order SET category = ? || SUBSTR(category, ?) WHERE category LIKE ?",
-                    (new_name, len(old_name) + 1, f"{old_name}>%")
+                    "UPDATE category_order SET category = ? WHERE category = ?",
+                    (new_name, old_name)
                 )
-            self.conn.commit()
-            return True
-        except Exception as e:
-            logger.error("rename_category_order failed: %s", e)
-            return False
+                # 2. 如果是旧分类是一级分类，同步更新所有子类
+                if '>' not in old_name:
+                    self.cursor.execute(
+                        "UPDATE category_order SET category = ? || SUBSTR(category, ?) WHERE category LIKE ?",
+                        (new_name, len(old_name) + 1, f"{old_name}>%")
+                    )
+                self.conn.commit()
+                return True
+            except Exception as e:
+                logger.error("rename_category_order failed: %s", e)
+                return False
 
     def delete_category(self, category_name: str) -> int:
         """删除分类：
@@ -533,27 +585,28 @@ class URLDatabaseManager:
         - 一级分类：该一级及其所有子类下的条目移至'其他'
         同时清理 category_order 表
         """
-        if '>' in category_name:
-            # 删除二级分类：精确匹配，去掉二级部分
-            parent = category_name.split('>')[0].strip()
+        with self._lock:
+            if '>' in category_name:
+                # 删除二级分类：精确匹配，去掉二级部分
+                parent = category_name.split('>')[0].strip()
+                self.cursor.execute(
+                    "UPDATE urls SET category = ? WHERE category = ?",
+                    (parent, category_name)
+                )
+            else:
+                # 删除一级分类：匹配自身及所有子类
+                self.cursor.execute(
+                    "UPDATE urls SET category = '其他' WHERE category = ? OR category LIKE ?",
+                    (category_name, f"{category_name}>%")
+                )
+            affected = self.cursor.rowcount
+            # 同步清理 category_order 表
             self.cursor.execute(
-                "UPDATE urls SET category = ? WHERE category = ?",
-                (parent, category_name)
+                "DELETE FROM category_order WHERE category = ?",
+                (category_name,)
             )
-        else:
-            # 删除一级分类：匹配自身及所有子类
-            self.cursor.execute(
-                "UPDATE urls SET category = '其他' WHERE category = ? OR category LIKE ?",
-                (category_name, f"{category_name}>%")
-            )
-        affected = self.cursor.rowcount
-        # 同步清理 category_order 表
-        self.cursor.execute(
-            "DELETE FROM category_order WHERE category = ?",
-            (category_name,)
-        )
-        self.conn.commit()
-        return affected
+            self.conn.commit()
+            return affected
 
     def promote_category(self, old_path: str) -> bool:
         """
@@ -562,81 +615,35 @@ class URLDatabaseManager:
         - 更新 urls 表
         - 更新 category_order 表
         """
-        try:
-            new_name = old_path.split('>', 1)[1].strip()
+        with self._lock:
+            try:
+                new_name = old_path.split('>', 1)[1].strip()
 
-            self.cursor.execute("SELECT 1 FROM category_order WHERE category = ?", (new_name,))
-            if self.cursor.fetchone():
-                return False
+                self.cursor.execute("SELECT 1 FROM category_order WHERE category = ?", (new_name,))
+                if self.cursor.fetchone():
+                    return False
 
-            self.cursor.execute(
-                "UPDATE urls SET category = ? WHERE category = ?",
-                (new_name, old_path)
-            )
-
-            self.cursor.execute(
-                "SELECT sort_index FROM category_order WHERE category = ?",
-                (old_path,)
-            )
-            row = self.cursor.fetchone()
-            old_sort_index = row[0] if row else None
-
-            self.cursor.execute(
-                "DELETE FROM category_order WHERE category = ?",
-                (old_path,)
-            )
-
-            if old_sort_index is not None:
                 self.cursor.execute(
-                    "INSERT INTO category_order (category, sort_index) VALUES (?, ?)",
-                    (new_name, old_sort_index)
+                    "UPDATE urls SET category = ? WHERE category = ?",
+                    (new_name, old_path)
                 )
-            else:
-                self.cursor.execute("SELECT MAX(sort_index) FROM category_order")
+
+                self.cursor.execute(
+                    "SELECT sort_index FROM category_order WHERE category = ?",
+                    (old_path,)
+                )
                 row = self.cursor.fetchone()
-                max_idx = row[0] if row and row[0] is not None else -1
+                old_sort_index = row[0] if row else None
+
                 self.cursor.execute(
-                    "INSERT INTO category_order (category, sort_index) VALUES (?, ?)",
-                    (new_name, max_idx + 1)
+                    "DELETE FROM category_order WHERE category = ?",
+                    (old_path,)
                 )
 
-            self.conn.commit()
-            return True
-        except Exception as e:
-            self.conn.rollback()
-            logger.error("promote_category failed: %s", e)
-            return False
-
-    def reparent_category(self, old_path: str, new_path: str) -> int:
-        """将 old_path 精确匹配的分类条目更新为 new_path，并同步更新 category_order"""
-        try:
-            self.cursor.execute(
-                "UPDATE urls SET category = ? WHERE category = ?",
-                (new_path, old_path)
-            )
-
-            self.cursor.execute(
-                "SELECT sort_index FROM category_order WHERE category = ?",
-                (old_path,)
-            )
-            row = self.cursor.fetchone()
-            old_sort_index = row[0] if row else None
-
-            self.cursor.execute(
-                "DELETE FROM category_order WHERE category = ?",
-                (old_path,)
-            )
-
-            # 如果 new_path 已存在于 category_order 中，保留其现有 sort_index，不覆盖
-            self.cursor.execute(
-                "SELECT 1 FROM category_order WHERE category = ?",
-                (new_path,)
-            )
-            if not self.cursor.fetchone():
                 if old_sort_index is not None:
                     self.cursor.execute(
                         "INSERT INTO category_order (category, sort_index) VALUES (?, ?)",
-                        (new_path, old_sort_index)
+                        (new_name, old_sort_index)
                     )
                 else:
                     self.cursor.execute("SELECT MAX(sort_index) FROM category_order")
@@ -644,12 +651,108 @@ class URLDatabaseManager:
                     max_idx = row[0] if row and row[0] is not None else -1
                     self.cursor.execute(
                         "INSERT INTO category_order (category, sort_index) VALUES (?, ?)",
-                        (new_path, max_idx + 1)
+                        (new_name, max_idx + 1)
                     )
 
+                self.conn.commit()
+                return True
+            except Exception as e:
+                self.conn.rollback()
+                logger.error("promote_category failed: %s", e)
+                return False
+
+    def reparent_category(self, old_path: str, new_path: str) -> int:
+        """将 old_path 精确匹配的分类条目更新为 new_path，并同步更新 category_order"""
+        with self._lock:
+            try:
+                self.cursor.execute(
+                    "UPDATE urls SET category = ? WHERE category = ?",
+                    (new_path, old_path)
+                )
+
+                self.cursor.execute(
+                    "SELECT sort_index FROM category_order WHERE category = ?",
+                    (old_path,)
+                )
+                row = self.cursor.fetchone()
+                old_sort_index = row[0] if row else None
+
+                self.cursor.execute(
+                    "DELETE FROM category_order WHERE category = ?",
+                    (old_path,)
+                )
+
+                # 如果 new_path 已存在于 category_order 中，保留其现有 sort_index，不覆盖
+                self.cursor.execute(
+                    "SELECT 1 FROM category_order WHERE category = ?",
+                    (new_path,)
+                )
+                if not self.cursor.fetchone():
+                    if old_sort_index is not None:
+                        self.cursor.execute(
+                            "INSERT INTO category_order (category, sort_index) VALUES (?, ?)",
+                            (new_path, old_sort_index)
+                        )
+                    else:
+                        self.cursor.execute("SELECT MAX(sort_index) FROM category_order")
+                        row = self.cursor.fetchone()
+                        max_idx = row[0] if row and row[0] is not None else -1
+                        self.cursor.execute(
+                            "INSERT INTO category_order (category, sort_index) VALUES (?, ?)",
+                            (new_path, max_idx + 1)
+                        )
+
+                self.conn.commit()
+                return self.cursor.rowcount
+            except Exception as e:
+                self.conn.rollback()
+                logger.error("reparent_category failed: %s", e)
+                return 0
+
+    # ==================== 泄露检测结果缓存 ====================
+
+    def _get_vault_config(self, key: str) -> Optional[str]:
+        """获取配置项"""
+        with self._lock:
+            self.cursor.execute("SELECT value FROM vault_config WHERE key = ?", (key,))
+            row = self.cursor.fetchone()
+            return row['value'] if row else None
+
+    def _set_vault_config(self, key: str, value: str):
+        """设置配置项"""
+        with self._lock:
+            self.cursor.execute(
+                "INSERT OR REPLACE INTO vault_config (key, value) VALUES (?, ?)",
+                (key, value)
+            )
             self.conn.commit()
-            return self.cursor.rowcount
-        except Exception as e:
-            self.conn.rollback()
-            logger.error("reparent_category failed: %s", e)
-            return 0
+
+    def get_breach_results(self, vault_type: str = 'urls') -> Optional[dict]:
+        """读取上次泄露检测结果"""
+        import json
+        with self._lock:
+            val = self._get_vault_config(f'breach_results_{vault_type}')
+            if val:
+                try:
+                    return json.loads(val)
+                except Exception:
+                    return None
+            return None
+
+    def save_breach_results(self, vault_type: str = 'urls', breached_ids: list = None, total_checked: int = 0):
+        """保存泄露检测结果"""
+        import json
+        from datetime import datetime
+        with self._lock:
+            data = {
+                'breached_ids': breached_ids or [],
+                'total_checked': total_checked,
+                'checked_at': datetime.now().isoformat()
+            }
+            self._set_vault_config(f'breach_results_{vault_type}', json.dumps(data))
+
+    def clear_breach_results(self, vault_type: str = 'urls'):
+        """清除泄露检测结果"""
+        with self._lock:
+            self.cursor.execute("DELETE FROM vault_config WHERE key = ?", (f'breach_results_{vault_type}',))
+            self.conn.commit()

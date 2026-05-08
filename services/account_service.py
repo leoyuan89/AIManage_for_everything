@@ -298,6 +298,20 @@ class AccountService:
         
         return self.db.reparent_category(old_path, new_path) > 0
     
+    def toggle_favorite(self, account_id: int) -> bool:
+        """Toggle favorite status for an account, returns new status"""
+        current = self.get_account(account_id)
+        if not current:
+            return False
+        new_status = not current.is_favorite
+        self.db.cursor.execute("UPDATE accounts SET is_favorite = ? WHERE id = ?", (int(new_status), account_id))
+        self.db.conn.commit()
+        return new_status
+
+    def get_favorites(self) -> List[Account]:
+        """Get all favorited accounts"""
+        return [a for a in self.get_all_accounts() if a.is_favorite]
+    
     def get_accounts_grouped(self) -> dict:
         """
         按首字母分组获取账号

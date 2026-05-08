@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QPushButton
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QColor
 
 from core.crypto import CryptoManager
 from core.theme_manager import ThemeManager, ThemeColors
@@ -84,12 +84,16 @@ class LockScreen(QWidget):
         self.txt_password.setEchoMode(QLineEdit.EchoMode.Password)
         self.txt_password.setPlaceholderText("主密码")
         self.txt_password.setFixedHeight(44)
+        bg_color = QColor(colors.bg_card)
+        bg_color.setAlpha(26)
+        border_color = QColor(colors.border_default)
+        border_color.setAlpha(77)
         self.txt_password.setStyleSheet(f"""
             QLineEdit {{
-                background-color: rgba(255, 255, 255, 0.1);
-                border: 1px solid rgba(255, 255, 255, 0.3);
+                background-color: rgba({bg_color.red()}, {bg_color.green()}, {bg_color.blue()}, {bg_color.alpha() / 255.0:.2f});
+                border: 1px solid rgba({border_color.red()}, {border_color.green()}, {border_color.blue()}, {border_color.alpha() / 255.0:.2f});
                 border-radius: 6px;
-                color: {colors.text_on_dark};
+                color: {colors.text_primary};
                 padding: 0 12px;
                 font-size: 14px;
             }}
@@ -178,13 +182,14 @@ class LockScreen(QWidget):
             with open(self.config_path, 'r', encoding='utf-8') as f:
                 config = json.load(f)
             salt = bytes.fromhex(config['salt'])
+            iterations = config.get('iterations', 600000)
         except Exception as e:
             self._show_error(f"读取配置失败: {e}")
             return
         
         # 用输入的密码 + salt 创建 CryptoManager
         try:
-            test_crypto = CryptoManager(password, salt)
+            test_crypto = CryptoManager(password, salt, iterations=iterations)
         except Exception as e:
             self._show_error("密码验证失败")
             self._record_failure()
@@ -210,21 +215,17 @@ class LockScreen(QWidget):
         self.unlocked.emit()
     
     def _verify_password_with_db(self, test_crypto: CryptoManager) -> bool:
-        """
-        通过尝试解密数据库记录验证密码。
-        从数据库读取一条加密记录的原始密文，用测试 crypto 解密。
+        """验证密码：直接比较派生密钥，无需解密（速度更快）"""
+        if self.db.crypto and hasattr(self.db.crypto, '_key'):
+            return test_crypto._key == self.db.crypto._key
         
-        Returns:
-            True 表示密码正确
-        """
-        # 获取一条原始加密数据（不经过 DatabaseManager 的自动解密）
+        # 回退：数据库 crypto 不存在时，尝试解密验证
         self.db.cursor.execute(
             "SELECT username, password FROM accounts LIMIT 1"
         )
         row = self.db.cursor.fetchone()
         
         if row:
-            # 尝试解密 username 或 password 字段
             encrypted_fields = [row['username'], row['password']]
             for field in encrypted_fields:
                 if field and isinstance(field, str) and len(field) > 20:
@@ -233,15 +234,9 @@ class LockScreen(QWidget):
                         return True
                     except Exception:
                         continue
-            # 如果所有字段都解密失败，说明密码错误
             return False
-        else:
-            # 数据库为空，无法通过记录验证。
-            # 退而比较密钥：如果数据库 crypto 存在，比较派生密钥
-            if self.db.crypto and hasattr(self.db.crypto, '_key'):
-                return test_crypto._key == self.db.crypto._key
-            # 没有任何办法验证，保守返回 False
-            return False
+        
+        return False
     
     def _record_failure(self):
         """记录一次失败尝试"""

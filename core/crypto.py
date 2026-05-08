@@ -4,6 +4,7 @@
 """
 import os
 import hashlib
+import hmac
 import base64
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -17,30 +18,40 @@ class CryptoManager:
     SALT_LENGTH = 32  # 盐值长度（字节）
     KEY_LENGTH = 32   # AES-256 密钥长度（字节）
     NONCE_LENGTH = 12 # GCM nonce 长度（字节）
-    ITERATIONS = 100000  # PBKDF2 迭代次数
+    ITERATIONS = 600000  # PBKDF2 迭代次数（OWASP 2023 推荐）
     
-    def __init__(self, master_password: str, salt: bytes = None):
+    def __init__(self, master_password: str, salt: bytes = None, iterations: int = None):
         """
         初始化加密管理器
         
         Args:
             master_password: 用户主密码
             salt: 盐值（首次使用不传，自动生成新盐值）
+            iterations: PBKDF2 迭代次数（默认 ITERATIONS=100000）
         """
+        if iterations is None:
+            iterations = self.ITERATIONS
+        self._iterations = iterations
+        
         if salt is None:
             self._salt = os.urandom(self.SALT_LENGTH)
         else:
             self._salt = salt
         
         # 派生加密密钥
-        self._key = self._derive_key(master_password, self._salt)
+        self._key = self._derive_key(master_password, self._salt, self._iterations)
     
     @property
     def salt(self) -> bytes:
         """获取当前盐值（用于保存到配置文件）"""
         return self._salt
     
-    def _derive_key(self, password: str, salt: bytes) -> bytes:
+    @property
+    def iterations(self) -> int:
+        """获取当前迭代次数"""
+        return self._iterations
+    
+    def _derive_key(self, password: str, salt: bytes, iterations: int) -> bytes:
         """
         使用 PBKDF2 派生密钥
         
@@ -55,7 +66,7 @@ class CryptoManager:
             algorithm=hashes.SHA256(),
             length=self.KEY_LENGTH,
             salt=salt,
-            iterations=self.ITERATIONS
+            iterations=iterations
         )
         return kdf.derive(password.encode('utf-8'))
     
@@ -139,18 +150,22 @@ class CryptoManager:
         Returns:
             True 表示密码正确
         """
-        test_key = self._derive_key(password, self._salt)
-        return test_key == self._key
+        test_key = self._derive_key(password, self._salt, self._iterations)
+        return hmac.compare_digest(test_key, self._key)
     
-    def change_password(self, new_password: str) -> None:
+    def change_password(self, new_password: str, iterations: int = None) -> None:
         """
         更换主密码：重新生成盐值和密钥
         
         Args:
             new_password: 新密码明文
+            iterations: 新密码的迭代次数（默认使用 ITERATIONS=600000）
         """
+        if iterations is None:
+            iterations = self.ITERATIONS
+        self._iterations = iterations
         self._salt = os.urandom(self.SALT_LENGTH)
-        self._key = self._derive_key(new_password, self._salt)
+        self._key = self._derive_key(new_password, self._salt, self._iterations)
     
     def hash_for_cache(self, text: str) -> str:
         """

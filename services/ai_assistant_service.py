@@ -11,6 +11,11 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+import os
+_prompt_path = os.path.join(os.path.dirname(__file__), '..', 'prompts', 'classify_prompt.txt')
+with open(_prompt_path, 'r', encoding='utf-8') as f:
+    CLASSIFY_PROMPT = f.read()
+
 from core.database import DatabaseManager
 from models.account import Account
 from models.url_item import URLItem
@@ -206,6 +211,7 @@ class AIAssistantService:
                         if isinstance(tags, list):
                             tags_str = ','.join(tags)
                     except Exception:
+                        logger.debug("账号标签解析失败: %s", acc.tags, exc_info=True)
                         tags_str = str(acc.tags)
                 remark = acc.remark or ''
                 lines.append(f"{acc.id} | {acc.app_name} | {acc.category or '未分类'} | {tags_str} | {remark}")
@@ -226,6 +232,7 @@ class AIAssistantService:
                         if isinstance(tags, list):
                             tags_str = ','.join(tags)
                     except Exception:
+                        logger.debug("网址标签解析失败: %s", u_tags, exc_info=True)
                         tags_str = str(u_tags)
                 remark = (getattr(u, 'remark', '') or '')[:20]
                 ai_remark = (getattr(u, 'ai_remark', '') or '')[:20]
@@ -473,11 +480,7 @@ class AIAssistantService:
                 if history_lines:
                     history_str = "\n\n之前的对话：\n" + "\n".join(history_lines) + "\n"
         
-        prompt = f"""你是密码管理软件的AI助手。请根据用户的指令和当前数据库信息，分析用户需求并返回结构化结果。\n\n当前数据库中的账号信息如下：{scope_hint}\n{db_summary}\n{history_str}用户当前说："{enhanced_query}"\n\n重要规则：\n1. 记住之前的对话上下文。如果用户说"确认"、"好的"、"执行吧"等，通常是对你之前建议的确认，请返回对应的 action 和 params。\n2. 你只是一个建议助手，**没有执行任何操作的权限**，也**不存在"系统后台"或"已提交"**的说法。\n3. 当用户要求添加备注或整理分类时，你必须在<回复>中**逐条列出具体的建议内容**。\n4. 你的回复必须包含可操作的具体信息，不要含糊其辞。\n5. **严格区分 search 和 list**：用户说"找出...相关的"、"查找..."、"搜索..."、"有哪些..."时，action 必须是 search；只有用户明确说"列出全部"、"显示所有"时，才用 list。\n6. **matched_ids**: 如果你识别出了与用户查询相关的账号，请在 matched_ids 中列出它们的 ID。
-7. **分类工具专用规则**：当你决定调用 `smart_classify_accounts` 或 `smart_classify_urls` 时，<回复>中必须只输出一句简洁的确认（如"已生成分类预览，请确认"），**禁止**输出分类分析、禁止列出账号、禁止给出建议。所有分类结果以预览表格形式展示，不由你输出。\n8. **数据范围提示**：如果上方数据库信息标注了"仅包含某分类"，你只应基于这些条目给出建议，不要引用未提供的其他分类条目。\n\n请按以下格式返回分析结果（严格遵循格式，不要添加额外说明）：\n\n<思考>\n[你的分析过程，用中文，说明用户想要什么，数据库中有哪些相关信息]\n</思考>\n\n<动作>\naction: [search|filter|list|reorganize|add_remark|delete|add|get_category_tree|explain]\nparams: [JSON格式参数]\nmatched_ids: [相关的账号ID列表，如 [174, 175, 211]]\n</动作>\n\n<回复>\n[给用户的自然语言回复，友好简洁。如果涉及建议，必须逐条列出具体内容。]\n</回复>\n\n<query_summary>查询核心语义摘要（10字以内）</query_summary>\n\n说明：\n- search: 用户要求"找出...相关的"、"查找..."、"搜索..."时使用。params={{"keywords": ["关键词1", "关键词2"]}}。关键词应提取用户query中的核心概念词（如"学习"、"支付"），不要包含"所有"、"相关"等泛词。\n- filter: 按分类/标签筛选，params={{"category": "工作"}} 或 {{"category": "工作>开发工具"}} 或 {{"tag": "支付"}}\n- list: 仅当用户明确要求"列出全部"、"显示所有账号"时使用。params={{"scope": "all|uncategorized"}}\n- reorganize: 建议重新整理分类，params={{"changes": [{{"target_id": 1, "field": "category", "new_value": "工作>开发工具", "reason": "..."}}]}}\n- add_remark: 建议添加AI备注，params={{"changes": [{{"target_id": 1, "field": "ai_remark", "new_value": "备注内容"}}]}}\n- delete: 删除条目，params={{"target_ids": [1, 2, 3], "query_description": "删掉所有分类为未整理的网址", "item_type": "account|url"}}
-- add: 新增条目，params={{"item_type": "account|url", "fields": {{"app_name": "B站", "username": "abc@qq.com", "password": "123456", "url": "https://www.bilibili.com", "category": "娱乐>视频", "remark": "", "tags": []}}}}
-- get_category_tree: 获取当前分类树结构，params={{"item_type": "account|url"}}
-- explain: 仅解释回答，不操作数据，params={{}}\n\n输出："""
+        prompt = CLASSIFY_PROMPT.format(scope_hint=scope_hint, db_summary=db_summary, history_str=history_str, enhanced_query=enhanced_query)
         
         full_text = ""
         seen_thinking_open = False
@@ -612,6 +615,7 @@ class AIAssistantService:
             
         except Exception as e:
             error_msg = str(e)
+            logger.exception("process_query_stream exception")
             self._add_message('assistant', f"处理失败: {error_msg}", mode=mode)
             return {
                 "success": False,
@@ -669,6 +673,7 @@ class AIAssistantService:
         try:
             existing_categories = repo.get_categories() if hasattr(repo, 'get_categories') else []
         except Exception:
+            logger.warning("获取分类列表失败", exc_info=True)
             existing_categories = []
         from core.category_utils import build_category_tree
         tree = build_category_tree([c for c in existing_categories if c and c != '全部'])
@@ -1233,7 +1238,7 @@ class AIAssistantService:
                         ollama = OllamaClient(model=ai_manager.get_state().model_name or "gemma4:4b")
                         parsed_items, failed_chunks = BatchAddProcessor.parse_batch_text(text, vault_type_for_batch, ollama)
                 except Exception:
-                    pass
+                    logger.warning("批量添加文本解析失败", exc_info=True)
             if not parsed_items:
                 parsed_items = params.get('items', [])
             

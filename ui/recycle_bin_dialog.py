@@ -8,8 +8,11 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 from typing import Optional
+import logging
 
 from core.theme_manager import ThemeManager, ThemeColors
+
+logger = logging.getLogger(__name__)
 
 
 class RecycleBinDialog(QDialog):
@@ -104,7 +107,8 @@ class RecycleBinDialog(QDialog):
                     exp = datetime.fromisoformat(expires.replace('Z', '+00:00'))
                     days = (exp - datetime.now()).days
                     self.table.setItem(i, 5, QTableWidgetItem(f"{days}天"))
-                except:
+                except Exception:
+                    logger.debug("回收站条目剩余天数计算失败", exc_info=True)
                     self.table.setItem(i, 5, QTableWidgetItem("-"))
             else:
                 self.table.setItem(i, 5, QTableWidgetItem("30天"))

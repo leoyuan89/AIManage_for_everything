@@ -555,15 +555,24 @@ class URLDatabaseManager:
             是否成功
         """
         with self._lock:
-            allowed = {'title', 'url', 'category', 'tags', 'related_account_id', 
+            allowed = {'title', 'url', 'category', 'tags', 'related_account_id',
                        'visit_count', 'ai_remark', 'remark'}
             if field not in allowed:
                 raise ValueError(f"不允许修改的字段: {field}")
-        
-            self.cursor.execute(
-                f"UPDATE urls SET {field} = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (value, url_id)
+
+            # 使用预编译 SQL 模板，彻底消除动态拼接
+            sql = (
+                "UPDATE urls SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                "UPDATE urls SET url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                "UPDATE urls SET category = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                "UPDATE urls SET tags = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                "UPDATE urls SET related_account_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                "UPDATE urls SET visit_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                "UPDATE urls SET ai_remark = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                "UPDATE urls SET remark = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             )
+            field_to_sql = dict(zip(sorted(allowed), sql))
+            self.cursor.execute(field_to_sql[field], (value, url_id))
             self._commit()
             return self.cursor.rowcount > 0
     

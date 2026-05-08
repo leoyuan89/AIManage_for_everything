@@ -1468,12 +1468,7 @@ class MainWindow(QMainWindow):
         self._search_completer.setCompletionMode(QCompleter.CompletionMode.UnfilteredPopupCompletion)
         self.search_box.setCompleter(self._search_completer)
         
-        original_focus_in = self.search_box.focusInEvent
-        def _update_search_completer(e):
-            history = self.search_service.get_search_history()
-            self._search_model.setStringList(history)
-            original_focus_in(e)
-        self.search_box.focusInEvent = _update_search_completer
+        self.search_box.installEventFilter(self)
         self._search_completer.activated.connect(self.on_search)
         
         # 筛选切换按钮
@@ -6896,9 +6891,14 @@ class MainWindow(QMainWindow):
         QApplication.instance().installEventFilter(self)
     
     def eventFilter(self, watched, event):
-        """事件过滤器：检测用户活动，重置空闲定时器"""
+        """事件过滤器：检测用户活动，重置空闲定时器；更新搜索历史"""
         event_type = event.type()
-        
+
+        # 搜索框获得焦点时更新补全历史
+        if watched == self.search_box and event_type == event.Type.FocusIn:
+            history = self.search_service.get_search_history()
+            self._search_model.setStringList(history)
+
         # 检测用户活动，重置空闲定时器
         if self._idle_timer and self._lock_screen and not self._lock_screen.isVisible():
             if event_type in (

@@ -229,3 +229,65 @@ def dropEvent(self, event):
 - **db_summary 是更大的隐患**：`build_db_summary` 上传了500条带URL的数据（`max_items=500`），比工具内部prompt更膨胀，是第一轮决策调用prompt达3万字符的元凶
 
 ---
+
+## 2026-05-09 | 批量操作模式下切换类别出现大量一闪而过的白色弹窗
+
+### 现象
+用户在批量操作（勾选模式）下切换左侧类别时，页面中央会出现大量一闪而过的白色小矩形弹窗，数量和当前类别下的条目数量基本一致。非批量模式下正常。
+
+### 排查过程
+1. 最初怀疑是 `QMessageBox` 被循环调用，但排查所有代码未发现循环弹窗逻辑
+2. 注意到 `main_window.py` 中存在 DEBUG 拦截代码（替换 `QMessageBox`/`QInputDialog` 静态方法并记录 `traceback.format_stack`），但去掉后问题仍存在
+3. 聚焦到 `AccountListItem` / `URLListItem` 的创建过程：
+   - `AccountListItem(..., parent=None)` → `super().__init__(None)` 创建瞬间为独立窗口
+   - `QCheckBox()` 无 parent → `setVisible(True)` 时也成为独立窗口
+   - 虽然随后 `setItemWidget`/`addWidget` 将其收归，但在主线程繁忙（批量模式下同时重建类别树+加载列表）时，裸窗口存在时间被拉长，肉眼可见
+
+### 根因
+1. **列表项 widget 创建无父窗口**：`AccountListItem` / `URLListItem` 创建时 `parent` 默认为 `None`
+2. **内部 checkbox 创建无父窗口**：`QCheckBox()` 未传 parent，批量模式下 `setVisible(True)` 会将其显示为独立窗口
+
+### 解决方案
+1. **所有 6 处创建列表项的地方传入 `parent=self.account_list`**：`load_accounts()`、`load_urls()`、搜索/筛选/AI高亮/炽阳推荐加载
+2. **`QCheckBox(self)` 传入 parent**：让 checkbox 一出生就有父窗口
+3. **调整 `setVisible` 顺序**：先 `addWidget` 再 `setVisible`，彻底杜绝裸窗口闪现
+
+### 经验总结
+- PyQt 中 `QWidget(parent=None)` 创建时就是独立顶层窗口，即使马上被 `setItemWidget` 收归，在事件循环有机会处理时仍会短暂显示
+- `QCheckBox()` 等子控件同理，`setVisible(True)` 前必须确保已有父窗口或已被 `addWidget`
+- 批量模式下主线程压力更大（同时触发 `_reload_categories()` + `load_accounts()` + 大量 widget 创建），裸窗口的闪现更容易被肉眼捕获
+
+---
+
+## 2026-05-09 | 批量操作点击勾选闪退
+
+### 现象
+用户在批量导入预览表格（`BatchAddPreviewWidget`）或主界面批量选择模式下，点击 checkbox 勾选条目后程序直接闪退，无 Python traceback，Windows 退出码为 `-1073740791 (0xC0000409)` 或类似访问冲突错误。
+
+### 排查过程
+1. **排除主界面 checkbox 回调异常**：审查 `AccountListItem._on_check_state_changed` 和 `on_account_clicked`，发现 `on_check_changed` 回调在 `_enter_selection_mode` 中未被设置，但不会直接导致闪退
+2. **聚焦 `BatchAddPreviewWidget`**：表格使用 `QTableView` + `QAbstractTableModel`，`flags()` 中设置了 `ItemIsUserCheckable`，`data()` 返回 `Qt.CheckState`，`setData()` 正常更新状态
+3. **发现 `CategoryDelegate` 局部变量**：`set_items()` 中 `delegate = CategoryDelegate(...)` 是局部变量，`setItemDelegateForColumn` 不增加 Qt 引用计数。虽然设置了 parent，但 PyQt GC 回收 wrapper 后 Qt 仍可能访问悬空指针，导致 segfault
+4. **发现 Qt 回调中未捕获异常**：`_get_status_color()` 中 `status.startswith(...)` 若碰到 `None`，会在 `data()` 回调中抛出 `AttributeError`，PyQt6 无法安全抛回 C++ 事件循环，直接终止
+5. **审查主界面批量模式**：`AccountListItem` 缺少 `self._compact_mode` 初始化；5 处列表项创建仍缺少 `parent=self.account_list`（`debug_journal.md` 同日已记录白色弹窗问题但未完全修复）
+
+### 根因
+1. **`CategoryDelegate` 作为局部变量被回收**：`BatchAddPreviewWidget.set_items()` 中委托未保存为实例变量，Python GC 回收后 Qt 访问悬空 C++ 指针 → segfault
+2. **`_get_status_color` 未做空值保护**：`status` 为 `None` 时 `startswith()` 抛出 `AttributeError`，在 Qt `data()` 回调中未捕获 = 闪退
+3. **`AccountListItem._compact_mode` 未初始化**：`set_compact_mode()` 访问未定义属性 → `AttributeError`
+4. **`_enter_selection_mode` 遗漏 `on_check_changed`**：列表在非选择模式下加载后进入批量模式，checkbox 显示但无回调，状态不同步
+5. **widget 创建缺少 parent**：5 处 `AccountListItem`/`URLListItem` 未传入 `parent=self.account_list`，裸窗口在批量模式下闪现/不稳定
+
+### 解决方案
+1. `BatchAddPreviewWidget`：委托保存为 `self._category_delegate`
+2. `_get_status_color`：增加 `if not status: return None` 保护；`data()` 中增加 `try/except` 兜底
+3. `AccountListItem.__init__`：添加 `self._compact_mode = False`
+4. `_enter_selection_mode`：循环中补设置 `widget.on_check_changed`
+5. `main_window.py`：5 处列表项创建统一传入 `parent=self.account_list`
+
+### 经验总结
+- **PyQt 中 `setItemDelegateForColumn` 不接管所有权**：任何设置给 view 的委托、editor、model 等，若生命周期需要超过当前函数，必须保存为实例变量
+- **Qt 回调（data/flags/createEditor 等）中绝不允许抛异常**：PyQt6 无法将 Python 异常传递回 C++，结果一定是 segfault/闪退。所有可能出错的地方必须 `try/except` 并返回安全默认值
+- **parent=None 的 widget 是独立顶层窗口**：即使随后被 `setItemWidget`/`addWidget` 收归，在事件循环有机会处理时仍会短暂显示，且在批量操作等高并发 UI 场景下更容易触发 Qt 内部状态不一致
+
+---

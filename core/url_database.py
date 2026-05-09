@@ -70,7 +70,7 @@ class URLDatabaseManager:
     def _commit(self):
         """提交事务，支持嵌套事务（事务期间自动跳过）"""
         if self._transaction_depth == 0:
-            self._commit()
+            self.conn.commit()
 
     def transaction(self):
         """返回事务上下文管理器"""

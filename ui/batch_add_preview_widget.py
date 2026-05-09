@@ -89,7 +89,10 @@ class BatchItemTableModel(QAbstractTableModel):
             return self._get_display_data(item, col)
 
         if role == Qt.ItemDataRole.ForegroundRole and col == self.columnCount() - 1:
-            return self._get_status_color(item.status)
+            try:
+                return self._get_status_color(item.status)
+            except Exception:
+                return None
 
         return None
 
@@ -118,6 +121,8 @@ class BatchItemTableModel(QAbstractTableModel):
 
     def _get_status_color(self, status: str):
         colors = ThemeManager.instance().colors
+        if not status:
+            return None
         if status == "就绪":
             return QColor(colors.accent_green)
         elif status.startswith("重复"):
@@ -351,9 +356,9 @@ class BatchAddPreviewWidget(QWidget):
         self._model = BatchItemTableModel(items, vault_type, categories, parent=self)
         self._table.setModel(self._model)
 
-        # 设置分类列委托
-        delegate = CategoryDelegate(categories, self._table)
-        self._table.setItemDelegateForColumn(self._model._category_col, delegate)
+        # 设置分类列委托（必须保存为实例变量，防止被 Python GC 回收后 Qt 访问悬空指针）
+        self._category_delegate = CategoryDelegate(categories, self._table)
+        self._table.setItemDelegateForColumn(self._model._category_col, self._category_delegate)
 
         # 调整列宽
         self._table.resizeColumnsToContents()

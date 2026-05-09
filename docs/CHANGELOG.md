@@ -6,6 +6,17 @@
 
 ---
 
+## [未发布] — 2026-05-09
+
+### 修复
+- **批量导入预览表格点击 checkbox 闪退**：`CategoryDelegate` 作为局部变量被 Python GC 回收后 Qt 访问悬空指针，改为保存为实例变量 `self._category_delegate`
+- **`BatchItemTableModel.data()` 未捕获异常**：`_get_status_color()` 中 `status` 为 `None` 时 `startswith()` 在 Qt 回调中抛出 `AttributeError`，PyQt6 无法抛回 C++ 事件循环导致直接终止，增加空值保护和 `try/except` 兜底
+- **`AccountListItem` 缺少 `_compact_mode` 初始化**：紧凑视图模式下触发 `AttributeError`
+- **`_enter_selection_mode` 遗漏 `on_check_changed` 设置**：列表在非选择模式下加载后进入批量模式，checkbox 显示但无回调，勾选状态不同步
+
+### 优化
+- **`main_window.py` 5 处列表项创建统一传入 `parent=self.account_list`**：`AccountListItem`/`URLListItem` 创建时杜绝裸窗口，消除批量模式下的白色弹窗闪现和 Qt 内部状态不稳定
+
 ## [未发布] — 2026-05-07
 
 ### 新增

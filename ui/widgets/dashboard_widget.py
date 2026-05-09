@@ -93,6 +93,17 @@ class DashboardWidget(QScrollArea):
         hl = QVBoxLayout(self._health_container)
         hl.setContentsMargins(0, 0, 0, 0)
         hl.setSpacing(6)
+        
+        # 拆分容器：密码强度 / 重复密码组 / 泄露检测
+        self._strength_container = QWidget()
+        QVBoxLayout(self._strength_container).setContentsMargins(0, 0, 0, 0)
+        self._strength_container.layout().setSpacing(6)
+        self._reused_container = QWidget()
+        QVBoxLayout(self._reused_container).setContentsMargins(0, 0, 0, 0)
+        self._reused_container.layout().setSpacing(6)
+        self._breach_container = QWidget()
+        QVBoxLayout(self._breach_container).setContentsMargins(0, 0, 0, 0)
+        self._breach_container.layout().setSpacing(6)
 
     def set_vault(self, vault):
         vault_changed = vault != self.vault
@@ -136,7 +147,7 @@ class DashboardWidget(QScrollArea):
         while lay.count():
             item = lay.takeAt(0)
             w = item.widget()
-            if w is self._health_container:
+            if w in (self._health_container, self._strength_container, self._reused_container, self._breach_container):
                 self._clear_layout(w.layout())
                 continue
             if w:
@@ -214,22 +225,35 @@ class DashboardWidget(QScrollArea):
             acts.addWidget(btn)
         acts.addStretch(); lay.addLayout(acts)
 
-        # ===== health check container =====
+        # ===== 按库类型渲染不同首页内容 =====
         if vault == 'accounts':
-            lay.addWidget(self._health_container)
+            # 密码库：密码强度 → 最近添加 → 重复密码组 → 泄露检测
+            lay.addWidget(self._strength_container)
+            self._render_recent(lay, accounts, c)
+            lay.addWidget(self._reused_container)
+            lay.addWidget(self._breach_container)
 
             if self._health_results is None:
                 QTimer.singleShot(30, self._run_health_check)
             elif self._health_results:
-                self._render_health(accounts, c, ww)
+                self._render_strength(accounts, c, ww)
+                self._render_reused(accounts, c, ww)
+                self._render_breach(accounts, c, ww)
+        else:
+            # 网址库：只保留最近添加
+            self._render_recent(lay, accounts, c)
 
-        # ===== recent items =====
+        lay.addStretch()
+        self._built = True
+
+    def _render_recent(self, lay, accounts, c):
+        """渲染最近添加列表"""
         lay.addSpacing(8)
         lbl_recent = QLabel("最近添加")
         lbl_recent.setFont(QFont("Microsoft YaHei", 13, QFont.Weight.Bold))
         lbl_recent.setStyleSheet(f"color:{c.text_primary};")
         lay.addWidget(lbl_recent)
-        
+
         def sk(a):
             return getattr(a, 'created_at', '') or ''
         for acc in sorted(accounts, key=sk, reverse=True)[:8]:
@@ -245,9 +269,6 @@ class DashboardWidget(QScrollArea):
             fl.addWidget(QLabel(cat))
             f.mousePressEvent = lambda e, a=acc: self._action('edit', a)
             lay.addWidget(f)
-
-        lay.addStretch()
-        self._built = True
 
     def _run_health_check(self):
         accounts = self.account_service.get_all_accounts()
@@ -269,7 +290,11 @@ class DashboardWidget(QScrollArea):
         self._health_results = results
         self._strength_counts = strength_counts
         accounts = self.account_service.get_all_accounts()
-        self._render_health(accounts, ThemeManager.instance().colors, self.viewport().width() - 40)
+        c = ThemeManager.instance().colors
+        ww = self.viewport().width() - 40
+        self._render_strength(accounts, c, ww)
+        self._render_reused(accounts, c, ww)
+        self._render_breach(accounts, c, ww)
 
     def _clear_layout(self, layout):
         """彻底清理 layout 中的所有 widget 和嵌套 layout"""
@@ -281,24 +306,16 @@ class DashboardWidget(QScrollArea):
             elif item.layout():
                 self._clear_layout(item.layout())
 
-    def _render_health(self, accounts, c, ww):
-        # 先停止 timer、断开进度条引用，避免清理时访问已删除对象
-        if hasattr(self, '_breach_refresh_timer') and self._breach_refresh_timer:
-            self._breach_refresh_timer.stop()
-            self._breach_refresh_timer = None
-        self._breach_progress = None
-        
-        lay = self._health_container.layout()
+    def _render_strength(self, accounts, c, ww):
+        """渲染密码强度分布到 _strength_container"""
+        lay = self._strength_container.layout()
         self._clear_layout(lay)
-        results = self._health_results
         
-        # ===== strength distribution =====
         lbl = QLabel("密码强度分布"); lbl.setFont(QFont("Microsoft YaHei", 13, QFont.Weight.Bold))
         lbl.setStyleSheet(f"color:{c.text_primary};")
         lay.addWidget(lbl)
         
         sc = getattr(self, '_strength_counts', None) or {"弱": 0, "中": 0, "强": 0, "极强": 0}
-        
         cmap = {"弱": c.accent_red, "中": c.accent_orange, "强": c.accent_green, "极强": c.accent_blue}
         total = max(len(accounts), 1)
         
@@ -320,7 +337,14 @@ class DashboardWidget(QScrollArea):
             lc.mousePressEvent = lambda e, l=level: self._action('strength', l)
             row.addWidget(lc); row.addStretch(); lay.addLayout(row)
 
-        # ===== reused groups =====
+    def _render_reused(self, accounts, c, ww):
+        """渲染重复密码组到 _reused_container"""
+        lay = self._reused_container.layout()
+        self._clear_layout(lay)
+        results = self._health_results
+        if not results:
+            return
+        
         rc = len(results['reused_groups'])
         if rc > 0:
             lbl = QLabel(f"重复密码组 ({rc})"); lbl.setFont(QFont("Microsoft YaHei", 13, QFont.Weight.Bold))
@@ -330,7 +354,6 @@ class DashboardWidget(QScrollArea):
             for gi, group in enumerate(results['reused_groups'][:8]):
                 names = [a.app_name for a in group]
                 cnt_label = f"{len(group)} 个账号"
-                # expandable group header — 整体背景色卡片
                 is_dark = c.bg_primary == '#1E1E1E'
                 if is_dark:
                     group_bg = c.accent_blue_bg
@@ -363,14 +386,25 @@ class DashboardWidget(QScrollArea):
                 header.enterEvent = _on_enter
                 header.leaveEvent = _on_leave
 
-                # store group data
                 header._group = group
                 header._expanded = False
                 header._container = None
+                header._parent_layout = lay
                 header.mousePressEvent = lambda e, h=header: self._toggle_group(h, c)
                 lay.addWidget(header)
 
-        # ===== breach check =====
+    def _render_breach(self, accounts, c, ww):
+        """渲染泄露密码检测到 _breach_container"""
+        # 先停止 timer、断开进度条引用
+        if hasattr(self, '_breach_refresh_timer') and self._breach_refresh_timer:
+            self._breach_refresh_timer.stop()
+            self._breach_refresh_timer = None
+        self._breach_progress = None
+        
+        lay = self._breach_container.layout()
+        self._clear_layout(lay)
+        results = self._health_results
+        
         lay.addSpacing(4)
         lbl = QLabel("泄露密码检测"); lbl.setFont(QFont("Microsoft YaHei", 13, QFont.Weight.Bold))
         lbl.setStyleSheet(f"color:{c.text_primary};")
@@ -408,7 +442,6 @@ class DashboardWidget(QScrollArea):
         if self._breach_checked and not self._breach_running:
             breached = self._breach_ids or results.get('breached_ids', [])
             if breached:
-                # 按密码 SHA256 哈希分组
                 pwd_groups = {}
                 for bid in breached:
                     acc = self.account_service.get_account(bid) if self.vault == 'accounts' else None
@@ -434,7 +467,6 @@ class DashboardWidget(QScrollArea):
                     group_bg = c.accent_orange_bg
                     group_hover = '#FDE8D8'
 
-                # 多账号组：按个数降序
                 for group in multi_groups:
                     header = QFrame()
                     header.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -463,10 +495,10 @@ class DashboardWidget(QScrollArea):
                     header._group = group
                     header._expanded = False
                     header._container = None
+                    header._parent_layout = lay
                     header.mousePressEvent = lambda e, h=header: self._toggle_group(h, c)
                     lay.addWidget(header)
 
-                # 单账号：合并为一组
                 if single_accounts:
                     header = QFrame()
                     header.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -495,6 +527,7 @@ class DashboardWidget(QScrollArea):
                     header._group = single_accounts
                     header._expanded = False
                     header._container = None
+                    header._parent_layout = lay
                     header.mousePressEvent = lambda e, h=header: self._toggle_group(h, c)
                     lay.addWidget(header)
             else:
@@ -505,6 +538,12 @@ class DashboardWidget(QScrollArea):
             hint = QLabel("暂无检测记录，请点击按钮开始检测")
             hint.setStyleSheet(f"color:{c.text_tertiary}; font-size:11px;")
             lay.addWidget(hint)
+
+    def _render_health(self, accounts, c, ww):
+        """兼容旧代码：同时渲染三个 section（用于非拆分调用路径）"""
+        self._render_strength(accounts, c, ww)
+        self._render_reused(accounts, c, ww)
+        self._render_breach(accounts, c, ww)
 
     def _toggle_group(self, header, c):
         if header._expanded:
@@ -527,9 +566,10 @@ class DashboardWidget(QScrollArea):
             vl.addWidget(f)
         header._container = container
         # insert after header
-        idx = self._health_container.layout().indexOf(header)
+        target_layout = getattr(header, '_parent_layout', None) or self._health_container.layout()
+        idx = target_layout.indexOf(header)
         if idx >= 0:
-            self._health_container.layout().insertWidget(idx + 1, container)
+            target_layout.insertWidget(idx + 1, container)
 
     def _refresh_breach_progress(self):
         if hasattr(self, '_breach_progress') and self._breach_progress:

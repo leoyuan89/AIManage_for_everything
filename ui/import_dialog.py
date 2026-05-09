@@ -155,6 +155,21 @@ class ImportDialog(QDialog):
         lbl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(lbl_title)
         
+        # ===== 导入方式选择 =====
+        mode_layout = QHBoxLayout()
+        lbl_mode = QLabel("导入方式:")
+        lbl_mode.setStyleSheet(f"color: {colors.text_primary}; font-size: 13px;")
+        mode_layout.addWidget(lbl_mode)
+        
+        self.cmb_import_mode = QComboBox()
+        self.cmb_import_mode.setMinimumWidth(280)
+        self.cmb_import_mode.addItem("普通导入（Markdown/文本/Excel/加密备份）", "normal")
+        self.cmb_import_mode.addItem("从其他管理器导入（Bitwarden/LastPass）", "manager")
+        self.cmb_import_mode.currentIndexChanged.connect(self._on_mode_changed)
+        mode_layout.addWidget(self.cmb_import_mode)
+        mode_layout.addStretch()
+        layout.addLayout(mode_layout)
+        
         # ===== 文件选择区 =====
         file_group = QGroupBox("选择文件")
         file_layout = QHBoxLayout(file_group)
@@ -255,14 +270,31 @@ class ImportDialog(QDialog):
         
         layout.addLayout(bottom_layout)
     
+    def _on_mode_changed(self):
+        """导入方式切换"""
+        mode = self.cmb_import_mode.currentData()
+        if mode == 'manager':
+            self.txt_file_path.setPlaceholderText("选择 Bitwarden 或 LastPass 导出的 CSV/JSON 文件")
+        else:
+            self.txt_file_path.setPlaceholderText("选择 Markdown (.md)、文本 (.txt)、Excel (.xlsx) 或加密备份 (.vault) 文件")
+    
     def on_browse(self):
         """浏览文件"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "选择导入文件",
-            "",
-            "支持的文件 (*.md *.txt *.xlsx *.xls *.vault);;Markdown (*.md);;文本文件 (*.txt);;Excel (*.xlsx *.xls);;加密备份 (*.vault)"
-        )
+        mode = self.cmb_import_mode.currentData()
+        if mode == 'manager':
+            file_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "选择导入文件",
+                "",
+                "所有支持格式 (*.csv *.json);;CSV 文件 (*.csv);;JSON 文件 (*.json)"
+            )
+        else:
+            file_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "选择导入文件",
+                "",
+                "支持的文件 (*.md *.txt *.xlsx *.xls *.vault);;Markdown (*.md);;文本文件 (*.txt);;Excel (*.xlsx *.xls);;加密备份 (*.vault)"
+            )
         
         if not file_path:
             return
@@ -271,7 +303,9 @@ class ImportDialog(QDialog):
         self.txt_file_path.setText(file_path)
         
         try:
-            if file_path.endswith('.vault'):
+            if mode == 'manager':
+                self._parse_manager_file(file_path)
+            elif file_path.endswith('.vault'):
                 # 弹出密码输入对话框（必须在主线程）
                 from PyQt6.QtWidgets import QInputDialog, QLineEdit
                 password, ok = QInputDialog.getText(
@@ -294,6 +328,67 @@ class ImportDialog(QDialog):
                 self.btn_import.setEnabled(len(self.import_items) > 0)
         except Exception as e:
             QMessageBox.critical(self, "解析失败", f"无法解析文件：\n{str(e)}")
+    
+    def _parse_manager_file(self, file_path: str):
+        """解析其他密码管理器导出的文件"""
+        from services.import_service import ManagerImportService
+        
+        fmt = ManagerImportService.detect_format(file_path)
+        if fmt == 'unknown':
+            QMessageBox.warning(self, "无法识别", "无法识别该文件格式，请确认文件来自 Bitwarden 或 LastPass")
+            return
+        
+        fmt_labels = {
+            'bitwarden_csv': 'Bitwarden CSV',
+            'bitwarden_json': 'Bitwarden JSON',
+            'lastpass_csv': 'LastPass CSV',
+        }
+        
+        try:
+            fmt, items = ManagerImportService.parse(file_path)
+        except Exception as e:
+            QMessageBox.critical(self, "解析失败", f"无法解析文件：\n{str(e)}")
+            return
+        
+        if not items:
+            QMessageBox.information(self, "提示", "文件中没有找到可导入的条目")
+            return
+        
+        # 转换为 ImportItem
+        self.import_items = []
+        for item in items:
+            import_item = ImportItem(
+                app_name=item.get('app_name', ''),
+                username=item.get('username', ''),
+                password=item.get('password', ''),
+                url=item.get('url', ''),
+                category=item.get('category', '其他'),
+                remark=item.get('remark', ''),
+            )
+            # 验证有效性
+            if import_item.app_name and import_item.username and import_item.password:
+                import_item.valid = True
+            else:
+                import_item.valid = False
+                missing = []
+                if not import_item.app_name:
+                    missing.append('应用名')
+                if not import_item.username:
+                    missing.append('账号')
+                if not import_item.password:
+                    missing.append('密码')
+                import_item.error_msg = f"缺少字段：{', '.join(missing)}"
+            self.import_items.append(import_item)
+        
+        self.file_type = fmt_labels.get(fmt, fmt)
+        self.refresh_table()
+        self.update_stats()
+        self.btn_import.setEnabled(len(self.import_items) > 0)
+        
+        QMessageBox.information(
+            self, "解析成功",
+            f"检测到 {fmt_labels.get(fmt, fmt)} 格式，共 {len(items)} 个条目。"
+        )
     
     def _parse_vault_file(self, file_path: str) -> List[ImportItem]:
         """解析加密备份文件 (.vault)"""

@@ -18,11 +18,12 @@ from PyQt6.QtWidgets import (
     QLabel, QFrame, QSplitter, QMessageBox, QApplication,
     QMenu, QCheckBox, QDialog, QInputDialog, QTextBrowser, QTextEdit,
     QTableWidget, QTableWidgetItem, QHeaderView,
-    QDateEdit, QComboBox, QStackedWidget, QCalendarWidget
+    QDateEdit, QComboBox, QStackedWidget, QCalendarWidget, QSizePolicy
 )
 from PyQt6.QtCore import Qt, QSize, QTimer, QThread, pyqtSignal, QPoint, QStringListModel, QDate
 from PyQt6.QtGui import QIcon, QFont, QColor
 from PyQt6.QtWidgets import QCompleter
+
 
 from core.database import DatabaseManager
 from core.clipboard import ClipboardManager
@@ -1607,6 +1608,8 @@ class MainWindow(QMainWindow):
         # ==================== 高级筛选面板 ====================
         self.filter_panel = QWidget()
         self.filter_panel.setVisible(False)
+        self.filter_panel.setMaximumHeight(44)
+        self.filter_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.filter_panel.setStyleSheet(f"background-color: {colors.bg_secondary}; border-bottom: 1px solid {colors.border_default};")
         filter_wrap_layout = QHBoxLayout(self.filter_panel)
         filter_wrap_layout.setContentsMargins(8, 4, 8, 4)
@@ -1645,6 +1648,7 @@ class MainWindow(QMainWindow):
         filter_wrap_layout.addWidget(self.lbl_filter_category)
         self.filter_category = QComboBox()
         self.filter_category.setStyleSheet(combo_style)
+        self.filter_category.setMinimumWidth(80)
         self.filter_category.addItem("全部", None)
         filter_wrap_layout.addWidget(self.filter_category)
         
@@ -1655,7 +1659,7 @@ class MainWindow(QMainWindow):
         self.filter_date_from.setStyleSheet(date_style)
         self.filter_date_from.setCalendarPopup(True)
         self.filter_date_from.setDate(QDate.currentDate().addYears(-1))
-        self.filter_date_from.setMinimumWidth(120)
+        self.filter_date_from.setMinimumWidth(95)
         self.filter_date_from.setDisplayFormat("yyyy-MM-dd")
         self.filter_date_from.setToolTip("默认起始时间将自动设为数据最早记录")
         filter_wrap_layout.addWidget(self.filter_date_from)
@@ -1666,7 +1670,7 @@ class MainWindow(QMainWindow):
         self.filter_date_to.setStyleSheet(date_style)
         self.filter_date_to.setCalendarPopup(True)
         self.filter_date_to.setDate(QDate.currentDate())
-        self.filter_date_to.setMinimumWidth(120)
+        self.filter_date_to.setMinimumWidth(95)
         self.filter_date_to.setDisplayFormat("yyyy-MM-dd")
         filter_wrap_layout.addWidget(self.filter_date_to)
         
@@ -1675,7 +1679,7 @@ class MainWindow(QMainWindow):
         filter_wrap_layout.addWidget(self.lbl_filter_strength)
         self.filter_strength = QComboBox()
         self.filter_strength.setStyleSheet(combo_style)
-        self.filter_strength.setMinimumWidth(100)
+        self.filter_strength.setMinimumWidth(70)
         self.filter_strength.addItems(["全部", "弱", "中", "强", "极强"])
         filter_wrap_layout.addWidget(self.filter_strength)
         
@@ -1809,7 +1813,6 @@ class MainWindow(QMainWindow):
         self.category_tree.setHeaderHidden(True)
         self.category_tree.setColumnCount(1)
         # 新增：占满父容器高度
-        from PyQt6.QtWidgets import QSizePolicy
         self.category_tree.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._category_tree_normal_style = f"""
             QTreeWidget {{
@@ -2398,14 +2401,6 @@ class MainWindow(QMainWindow):
         
         bottom_layout.addSpacing(10)
         
-        # 从其他管理器导入按钮
-        btn_import_manager = QPushButton("导入")
-        btn_import_manager.setFixedHeight(36)
-        btn_import_manager.clicked.connect(self._on_import_from_manager)
-        bottom_layout.addWidget(btn_import_manager)
-        
-        bottom_layout.addSpacing(10)
-        
         # 导出按钮
         btn_export = QPushButton("导出")
         btn_export.setFixedHeight(36)
@@ -2422,9 +2417,10 @@ class MainWindow(QMainWindow):
         
         bottom_layout.addSpacing(10)
         
-        # 批量删除按钮
-        self.btn_batch_delete = QPushButton("批量删除")
+        # 批量操作按钮
+        self.btn_batch_delete = QPushButton("批量操作")
         self.btn_batch_delete.setFixedHeight(36)
+        self.btn_batch_delete.setToolTip("批量删除、移动分类、编辑标签等")
         self.btn_batch_delete.clicked.connect(self._enter_selection_mode)
         bottom_layout.addWidget(self.btn_batch_delete)
         
@@ -2617,7 +2613,10 @@ class MainWindow(QMainWindow):
             item.setData(Qt.ItemDataRole.UserRole, account)
             self.account_list.addItem(item)
             
-            widget = AccountListItem(account, selection_mode=self._selection_mode)
+            widget = AccountListItem(account, selection_mode=self._selection_mode, parent=self.account_list)
+            widget.hide()  # 防止无parent时短暂显示为独立窗口
+            if self._selection_mode:
+                widget.on_check_changed = lambda checked, aid=account.id: self._on_item_checkbox_changed(aid, checked)
             if self._selection_mode and account.id in self._selected_ids:
                 widget.set_checked(True)
             if is_compact:
@@ -3116,9 +3115,12 @@ class MainWindow(QMainWindow):
             list_item.setData(Qt.ItemDataRole.UserRole, url_item)
             self.account_list.addItem(list_item)
             
-            widget = URLListItem(url_item, selection_mode=self._selection_mode)
+            widget = URLListItem(url_item, selection_mode=self._selection_mode, parent=self.account_list)
+            widget.hide()  # 防止无parent时短暂显示为独立窗口
             if self._selection_mode:
                 uid = getattr(url_item, 'id', None) or (url_item.get('id') if isinstance(url_item, dict) else None)
+                if uid:
+                    widget.on_check_changed = lambda checked, id=uid: self._on_item_checkbox_changed(id, checked)
                 if uid and uid in self._selected_ids:
                     widget.set_checked(True)
             if is_compact:
@@ -3236,9 +3238,11 @@ class MainWindow(QMainWindow):
             list_item.setSizeHint(QSize(self.account_list.width() - 20, 56))
             list_item.setData(Qt.ItemDataRole.UserRole, url_item)
             self.account_list.addItem(list_item)
-            widget = URLListItem(url_item, selection_mode=self._selection_mode)
+            widget = URLListItem(url_item, selection_mode=self._selection_mode, parent=self.account_list)
             if self._selection_mode:
                 uid = getattr(url_item, 'id', None) or (url_item.get('id') if isinstance(url_item, dict) else None)
+                if uid:
+                    widget.on_check_changed = lambda checked, id=uid: self._on_item_checkbox_changed(id, checked)
                 if uid and uid in self._selected_ids:
                     widget.set_checked(True)
             self.account_list.setItemWidget(list_item, widget)
@@ -3604,6 +3608,12 @@ class MainWindow(QMainWindow):
             widget = self.account_list.itemWidget(item)
             if widget and hasattr(widget, 'set_selection_mode'):
                 widget.set_selection_mode(True)
+                # 补设置 checkbox 回调（列表若在非选择模式下加载，on_check_changed 为 None）
+                data = item.data(Qt.ItemDataRole.UserRole)
+                if data and hasattr(widget, 'on_check_changed'):
+                    item_id = getattr(data, 'id', None) or (data.get('id') if isinstance(data, dict) else None)
+                    if item_id is not None:
+                        widget.on_check_changed = lambda checked, id=item_id: self._on_item_checkbox_changed(id, checked)
         
         self._update_bottom_bar_for_selection()
     
@@ -3660,6 +3670,14 @@ class MainWindow(QMainWindow):
                         self._selected_ids.add(uid)
         # 刷新复选框状态
         self._update_selection_checkboxes()
+        self._update_bottom_bar_for_selection()
+    
+    def _on_item_checkbox_changed(self, item_id: int, checked: bool):
+        """列表项 checkbox 状态变化时同步更新选中集合"""
+        if checked:
+            self._selected_ids.add(item_id)
+        else:
+            self._selected_ids.discard(item_id)
         self._update_bottom_bar_for_selection()
     
     def _update_selection_checkboxes(self):
@@ -3725,6 +3743,7 @@ class MainWindow(QMainWindow):
     def _execute_batch_categorize(self):
         """执行批量分类"""
         if not self._selected_ids:
+            QMessageBox.information(self, "提示", "请先勾选要操作的条目")
             return
         
         if self.current_vault == 'accounts':
@@ -3775,6 +3794,7 @@ class MainWindow(QMainWindow):
     def _execute_batch_tag(self):
         """执行批量标签"""
         if not self._selected_ids:
+            QMessageBox.information(self, "提示", "请先勾选要操作的条目")
             return
         
         mode, ok = QInputDialog.getItem(
@@ -3890,26 +3910,32 @@ class MainWindow(QMainWindow):
         if self._selection_mode:
             # 选择模式下：切换复选框
             data = item.data(Qt.ItemDataRole.UserRole)
-            if data and hasattr(data, 'id'):
+            if data:
                 widget = self.account_list.itemWidget(item)
                 if widget and hasattr(widget, 'set_checked') and hasattr(widget, 'is_checked'):
-                    new_state = not widget.is_checked()
-                    widget.set_checked(new_state)
-                    if new_state:
-                        self._selected_ids.add(data.id)
-                    else:
-                        self._selected_ids.discard(data.id)
-                    self._update_bottom_bar_for_selection()
-            elif data and isinstance(data, dict) and 'id' in data:
-                widget = self.account_list.itemWidget(item)
-                if widget and hasattr(widget, 'set_checked') and hasattr(widget, 'is_checked'):
-                    new_state = not widget.is_checked()
-                    widget.set_checked(new_state)
-                    if new_state:
-                        self._selected_ids.add(data['id'])
-                    else:
-                        self._selected_ids.discard(data['id'])
-                    self._update_bottom_bar_for_selection()
+                    # 判断点击的是不是 checkbox（QCheckBox 被点击时会自己改变状态）
+                    under_mouse = QApplication.instance().widgetAt(QCursor.pos())
+                    is_checkbox = under_mouse is widget.checkbox
+                    if not is_checkbox and under_mouse:
+                        p = under_mouse.parent()
+                        while p:
+                            if p is widget.checkbox:
+                                is_checkbox = True
+                                break
+                            p = p.parent()
+                    
+                    if not is_checkbox:
+                        # 点击非 checkbox 区域，手动翻转
+                        widget.set_checked(not widget.is_checked())
+                    
+                    # 同步选中状态（以 checkbox 当前状态为准）
+                    item_id = getattr(data, 'id', None) or (data.get('id') if isinstance(data, dict) else None)
+                    if item_id is not None:
+                        if widget.is_checked():
+                            self._selected_ids.add(item_id)
+                        else:
+                            self._selected_ids.discard(item_id)
+                        self._update_bottom_bar_for_selection()
             return
         
         data = item.data(Qt.ItemDataRole.UserRole)
@@ -4235,7 +4261,12 @@ class MainWindow(QMainWindow):
                 item.setSizeHint(QSize(max(self.account_list.width() - 20, 50), 48))
                 item.setData(Qt.ItemDataRole.UserRole, url_item)
                 self.account_list.addItem(item)
-                widget = URLListItem(url_item)
+                widget = URLListItem(url_item, parent=self.account_list)
+                widget.hide()  # 防止无parent时短暂显示为独立窗口
+                if self._selection_mode:
+                    uid = getattr(url_item, 'id', None) or (url_item.get('id') if isinstance(url_item, dict) else None)
+                    if uid:
+                        widget.on_check_changed = lambda checked, id=uid: self._on_item_checkbox_changed(id, checked)
                 self.account_list.setItemWidget(item, widget)
                 total_displayed += 1
         if total_displayed == 0:
@@ -4310,7 +4341,10 @@ class MainWindow(QMainWindow):
                 if result.match_type == 'pinyin':
                     badges.append(("拼音", "#FF9800"))
                 
-                widget = AccountListItem(result.account, badges=badges, selection_mode=self._selection_mode)
+                widget = AccountListItem(result.account, badges=badges, selection_mode=self._selection_mode, parent=self.account_list)
+                widget.hide()  # 防止无parent时短暂显示为独立窗口
+                if self._selection_mode:
+                    widget.on_check_changed = lambda checked, aid=result.account.id: self._on_item_checkbox_changed(aid, checked)
                 if self._selection_mode and result.account.id in self._selected_ids:
                     widget.set_checked(True)
                 self.account_list.setItemWidget(item, widget)
@@ -6362,7 +6396,10 @@ class MainWindow(QMainWindow):
             self.account_list.addItem(item)
             
             badges = [("炽阳推荐", "#1565C0")]
-            widget = AccountListItem(account, badges=badges, selection_mode=self._selection_mode)
+            widget = AccountListItem(account, badges=badges, selection_mode=self._selection_mode, parent=self.account_list)
+            widget.hide()  # 防止无parent时短暂显示为独立窗口
+            if self._selection_mode:
+                widget.on_check_changed = lambda checked, aid=account.id: self._on_item_checkbox_changed(aid, checked)
             if self._selection_mode and account.id in self._selected_ids:
                 widget.set_checked(True)
             self.account_list.setItemWidget(item, widget)
@@ -6776,7 +6813,7 @@ class MainWindow(QMainWindow):
                      ["给 GitHub 生成一条备注并加上", "帮刚才找到的账号都生成备注"]),
                     ("智能整理", "AI 自动分析数据并建议分类方案，支持细分二级子类。",
                      ["帮我把教育类的账号细分一下二级分类", "整理一下重复的网址"]),
-                    ("批量删除", "将条目移入回收站，超过 50 条时额外二次确认。",
+                    ("批量操作", "将条目移入回收站、批量修改分类或标签，超过 50 条时额外二次确认。",
                      ["删除所有分类是测试的账号", "把刚才筛选出来的网址删掉"]),
                     ("生成强密码", "生成随机高强度密码，可指定长度和字符类型。",
                      ["生成一个 16 位的强密码", "帮我生成不含特殊字符的 12 位密码"]),
@@ -7060,7 +7097,7 @@ class MainWindow(QMainWindow):
             if self.current_category == '__dashboard__':
                 self.dashboard.refresh()
         elif action == 'import':
-            self._on_import_from_manager()
+            self.on_batch_import()
     
     def on_health_check(self):
         """打开密码健康检查对话框"""

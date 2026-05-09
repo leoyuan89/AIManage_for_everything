@@ -4,6 +4,9 @@ from PyQt6.QtCore import Qt
 from core.theme_manager import ThemeManager
 from core.clipboard import ClipboardManager
 
+# 模块级单例，避免每个列表项都创建一个 ClipboardManager
+_clipboard_manager = ClipboardManager()
+
 
 class URLListItem(QWidget):
     """自定义网址列表项（支持标识徽章、选择模式）"""
@@ -15,7 +18,8 @@ class URLListItem(QWidget):
         self.url_item = url_item
         self.badges = badges or []
         self._compact_mode = False
-        self._clipboard = ClipboardManager()
+        self._clipboard = _clipboard_manager
+        self.on_check_changed = None  # 外部传入的回调: callable(checked: bool)
         self.setup_ui(selection_mode)
     
     def set_compact_mode(self, enabled: bool):
@@ -50,10 +54,11 @@ class URLListItem(QWidget):
         layout.setSpacing(10)
         
         # 复选框
-        self.checkbox = QCheckBox()
+        self.checkbox = QCheckBox(self)
         self.checkbox.setFixedSize(24, 24)
-        self.checkbox.setVisible(selection_mode)
+        self.checkbox.toggled.connect(self._on_check_state_changed)
         layout.addWidget(self.checkbox)
+        self.checkbox.setVisible(selection_mode)
         
         # 收藏星标
         is_fav = self.url_item.get('is_favorite', False) if isinstance(self.url_item, dict) else getattr(self.url_item, 'is_favorite', False)
@@ -200,7 +205,14 @@ class URLListItem(QWidget):
         return self.checkbox.isChecked()
     
     def set_checked(self, checked: bool):
+        self.checkbox.blockSignals(True)
         self.checkbox.setChecked(checked)
+        self.checkbox.blockSignals(False)
+    
+    def _on_check_state_changed(self, state):
+        """checkbox 状态变化时回调外部"""
+        if self.on_check_changed:
+            self.on_check_changed(bool(state))
     
     def set_column_visible(self, column, visible):
         mapping = {

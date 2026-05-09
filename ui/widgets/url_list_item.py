@@ -18,6 +18,7 @@ class URLListItem(QWidget):
         self.url_item = url_item
         self.badges = badges or []
         self._compact_mode = False
+        self._checkbox_clicked = False  # 标记 checkbox 是否被直接点击（避免 itemClicked 重复翻转）
         self._clipboard = _clipboard_manager
         self.on_check_changed = None  # 外部传入的回调: callable(checked: bool)
         self.setup_ui(selection_mode)
@@ -205,12 +206,14 @@ class URLListItem(QWidget):
         return self.checkbox.isChecked()
     
     def set_checked(self, checked: bool):
+        self._checkbox_clicked = False
         self.checkbox.blockSignals(True)
         self.checkbox.setChecked(checked)
         self.checkbox.blockSignals(False)
     
     def _on_check_state_changed(self, state):
         """checkbox 状态变化时回调外部"""
+        self._checkbox_clicked = True
         if self.on_check_changed:
             self.on_check_changed(bool(state))
     

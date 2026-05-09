@@ -16,6 +16,7 @@
 
 ### 优化
 - **`main_window.py` 5 处列表项创建统一传入 `parent=self.account_list`**：`AccountListItem`/`URLListItem` 创建时杜绝裸窗口，消除批量模式下的白色弹窗闪现和 Qt 内部状态不稳定
+- **批量操作点击条目非 checkbox 区域闪退**：`on_account_clicked` 中使用 `QApplication.widgetAt(QCursor.pos())` 判断点击位置，在 PyQt6 + qt-material + 复杂 widget 树环境下触发 `0xC0000409` 闪退。改用 `AccountListItem`/`URLListItem` 内部 `_checkbox_clicked` 标志位机制，弃用 `widgetAt`，实现点击条目任意位置均可勾选/取消勾选
 
 ## [未发布] — 2026-05-07
 

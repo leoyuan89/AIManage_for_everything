@@ -3908,25 +3908,17 @@ class MainWindow(QMainWindow):
     def on_account_clicked(self, item):
         """账号/网址点击事件"""
         if self._selection_mode:
-            # 选择模式下：切换复选框
+            # 选择模式下：点击条目任意位置都切换勾选状态
             data = item.data(Qt.ItemDataRole.UserRole)
             if data:
                 widget = self.account_list.itemWidget(item)
                 if widget and hasattr(widget, 'set_checked') and hasattr(widget, 'is_checked'):
-                    # 判断点击的是不是 checkbox（QCheckBox 被点击时会自己改变状态）
-                    under_mouse = QApplication.instance().widgetAt(QCursor.pos())
-                    is_checkbox = under_mouse is widget.checkbox
-                    if not is_checkbox and under_mouse:
-                        p = under_mouse.parent()
-                        while p:
-                            if p is widget.checkbox:
-                                is_checkbox = True
-                                break
-                            p = p.parent()
-                    
-                    if not is_checkbox:
-                        # 点击非 checkbox 区域，手动翻转
+                    # 如果 checkbox 被直接点击，它的 toggled 信号已经翻转过状态，
+                    # _on_check_state_changed 会设置 _checkbox_clicked = True，
+                    # 这里只需要同步 _selected_ids，不要再翻一次
+                    if not getattr(widget, '_checkbox_clicked', False):
                         widget.set_checked(not widget.is_checked())
+                    widget._checkbox_clicked = False  # 重置标志
                     
                     # 同步选中状态（以 checkbox 当前状态为准）
                     item_id = getattr(data, 'id', None) or (data.get('id') if isinstance(data, dict) else None)

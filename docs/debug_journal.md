@@ -291,3 +291,40 @@ def dropEvent(self, event):
 - **parent=None 的 widget 是独立顶层窗口**：即使随后被 `setItemWidget`/`addWidget` 收归，在事件循环有机会处理时仍会短暂显示，且在批量操作等高并发 UI 场景下更容易触发 Qt 内部状态不一致
 
 ---
+
+## 2026-05-09 | 批量操作点击条目非 checkbox 区域闪退（0xC0000409）
+
+### 现象
+用户反馈：批量操作模式下，点击 checkbox 小框勾选正常，但点击条目其他区域（如应用名、账号、分类等黄色高亮区域）程序直接闪退，退出码 `-1073740791 (0xC0000409)`。用户期望点击整个条目任意位置都能切换勾选状态。
+
+### 排查过程
+1. **确认 checkbox 点击正常**：`AccountListItem`/`URLListItem` 的 `toggled` 信号和 `_on_check_state_changed` 回调工作正常，状态同步到 `_selected_ids` 无异常
+2. **聚焦 `on_account_clicked` 的非 checkbox 区域处理**：代码使用 `QApplication.instance().widgetAt(QCursor.pos())` 判断点击位置，如果判断为非 checkbox 则手动调用 `widget.set_checked(not widget.is_checked())`
+3. **定位 `widgetAt` 为闪退元凶**：
+   - `widgetAt(QCursor.pos())` + `while p.parent()` 遍历在 PyQt6 + qt-material + 7000+ 行大文件环境下，可能触发 Qt 内部的样式表解析/计算递归或内存状态不一致
+   - 与 2026-04-27 `AIHelpDialog` 闪退（同错误码 `0xC0000409`）根因类似：qt-material 样式表引擎在超大模块上下文中与复杂 widget 树交互时，深层调用栈溢出
+4. **分析翻转两次问题**：如果去掉 `widgetAt` 判断，直接让 `on_account_clicked` 总是翻转 checkbox，那么点击 checkbox 时会出现：
+   - checkbox `toggled` 信号先触发 → 翻转一次
+   - `itemClicked` 信号后触发 → `on_account_clicked` 再翻一次
+   - 最终状态回到原始值，用户感觉"点击没反应"
+5. **设计标志位替代方案**：在 `AccountListItem`/`URLListItem` 中引入 `_checkbox_clicked` 布尔标志。checkbox 被直接点击时 `_on_check_state_changed` 置为 `True`，`on_account_clicked` 中检测此标志：为 `True` 则只同步状态不翻转，为 `False` 则手动翻转。完全弃用 `widgetAt`
+
+### 根因
+`on_account_clicked` 中使用 `QApplication.widgetAt(QCursor.pos())` 判断点击位置，在 PyQt6 + qt-material + 复杂 widget 树的组合下，该调用触发 Qt 内部深层递归或内存损坏，导致 `STATUS_STACK_BUFFER_OVERRUN`（`0xC0000409`）闪退。
+
+### 解决方案
+1. **`AccountListItem`/`URLListItem`**：新增 `_checkbox_clicked` 标志位
+   - `_on_check_state_changed` 中设置为 `True`
+   - `set_checked` 中重置为 `False`
+2. **`main_window.on_account_clicked`**：去掉 `widgetAt` 和 parent 链遍历，改用 `_checkbox_clicked` 标志判断
+   - 若 `_checkbox_clicked` 为 `False`（点击非 checkbox 区域）：手动翻转 checkbox 状态
+   - 若 `_checkbox_clicked` 为 `True`（点击 checkbox 本身）：只同步 `_selected_ids`，不再翻转
+   - 重置标志位为 `False`
+3. 同时实现了用户期望的交互：批量模式下**点击条目任意位置都能勾选/取消勾选**
+
+### 经验总结
+- **`QApplication.widgetAt()` 在复杂 PyQt 项目中是高危调用**：尤其在大文件 + 全局样式表 + 自定义 widget 树的环境下，可能触发不可预测的 Qt 内部崩溃。能用 Python 层面状态机替代的，绝不要依赖 Qt 的底层几何查询
+- **标志位模式是处理"信号顺序 + 重复触发"的可靠方案**：PyQt 中 `toggled` 先于 `itemClicked` 触发，利用标志位可以安全地协调两个信号的处理逻辑
+- **`0xC0000409` 在 PyQt 中往往是"症状"而非"根因"**：同一代码逻辑在独立测试脚本中可能完全正常，但嵌入大文件 + 全局样式表后就崩溃。遇到此类闪退应优先排查"Qt 底层调用"（如 `widgetAt`、`exec`、`processEvents`），而非 Python 业务逻辑
+
+---

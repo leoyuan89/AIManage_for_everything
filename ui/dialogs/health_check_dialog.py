@@ -56,7 +56,8 @@ Keep it concise, each recommendation on one line starting with a number.
         
         try:
             ai_manager = AIServiceManager.instance()
-            ollama = OllamaClient(model=ai_manager.get_state().model_name or "gemma4:4b")
+            # TODO(P0-3): 迁移到 AIServiceManager.submit_task() 异步执行，避免主线程阻塞
+            ollama = OllamaClient(model=ai_manager.get_state().model_name or "gemma4:4b", timeout=30)
             
             full_response = ""
             for token in ollama.generate_stream(prompt, temperature=0.5):
@@ -587,7 +588,13 @@ class HealthCheckDialog(QDialog):
     def _make_weak_item(self, acc, strength) -> QListWidgetItem:
         try:
             c = self._colors
-            badge_color = strength.get('color', c.accent_red)
+            badge_color_map = {
+                "弱": c.accent_red,
+                "中": c.accent_orange,
+                "强": c.accent_green,
+                "极强": c.accent_blue,
+            }
+            badge_color = badge_color_map.get(strength['label'], c.accent_red)
             username = getattr(acc, 'mask_username', lambda: acc.username or '')()
             text = f"{acc.app_name}  —  {username}  [{strength['label']}]  —  {acc.category or '未分类'}"
             item = QListWidgetItem(text)
@@ -896,7 +903,8 @@ Keep it concise, each recommendation on one line starting with a number.
             from services.ai_service_manager import AIServiceManager
             from ai.ollama_client import OllamaClient
             ai_manager = AIServiceManager.instance()
-            ollama = OllamaClient(model=ai_manager.get_state().model_name or "gemma4:4b")
+            # TODO(P0-3): 迁移到 AIServiceManager.submit_task() 异步执行，避免主线程阻塞
+            ollama = OllamaClient(model=ai_manager.get_state().model_name or "gemma4:4b", timeout=30)
 
             full_response = ""
             for token in ollama.generate_stream(prompt, temperature=0.5):

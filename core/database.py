@@ -37,6 +37,20 @@ from datetime import datetime, timedelta
 logger = logging.getLogger(__name__)
 
 
+def _mask_username(username: str) -> str:
+    """对用户名进行脱敏处理"""
+    if not username:
+        return ''
+    if '@' in username:
+        local, domain = username.split('@', 1)
+        if local:
+            return local[0] + '****@' + domain
+        return '****@' + domain
+    if len(username) < 3:
+        return '****'
+    return username[0] + '****' + username[-1]
+
+
 class DatabaseManager:
     """数据库管理器：处理 SQLite 连接、建表、加密字段透明处理"""
     
@@ -495,6 +509,37 @@ class DatabaseManager:
             rows = self.cursor.fetchall()
             return [self._decrypt_row(dict(row)) for row in rows]
 
+    def search_accounts(self, keywords: List[str]) -> List[Dict[str, Any]]:
+        """
+        SQL 层关键词搜索账号
+        
+        Args:
+            keywords: 关键词列表
+            
+        Returns:
+            匹配的账号数据列表（明文），最多 500 条
+        """
+        with self._lock:
+            valid_keywords = [kw for kw in keywords if kw and str(kw).strip()]
+            if not valid_keywords:
+                return []
+
+            conditions = []
+            params = []
+            for kw in valid_keywords:
+                like_pattern = f"%{kw}%"
+                conditions.append(
+                    "(app_name LIKE ? OR username LIKE ? OR category LIKE ? OR tags LIKE ?)"
+                )
+                params.extend([like_pattern, like_pattern, like_pattern, like_pattern])
+
+            where_clause = " OR ".join(conditions)
+            sql = f"SELECT * FROM accounts WHERE {where_clause} ORDER BY app_name LIMIT 500"
+
+            self.cursor.execute(sql, params)
+            rows = self.cursor.fetchall()
+            return [self._decrypt_row(dict(row)) for row in rows]
+
     def get_categories(self) -> List[str]:
         """
         获取所有账号分类（去重，排除空值）。
@@ -923,19 +968,7 @@ class DatabaseManager:
                 data_json = json.dumps(account_data, ensure_ascii=False, default=str)
                 encrypted = self._encrypt_field(data_json)
             
-                username = account_data.get('username', '')
-                if username:
-                    if '@' in username:
-                        local, domain = username.split('@', 1)
-                        if len(local) <= 2:
-                            username = '**@' + domain
-                        else:
-                            username = local[0] + '***' + local[-1] + '@' + domain
-                    else:
-                        if len(username) <= 4:
-                            username = username[0] + '***' + username[-1] if len(username) >= 2 else '****'
-                        else:
-                            username = username[:3] + '****' + username[-3:]
+                username = _mask_username(account_data.get('username', ''))
             
                 app_name = account_data.get('app_name', '')
                 url = account_data.get('url', '')

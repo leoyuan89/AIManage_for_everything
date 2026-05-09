@@ -192,15 +192,9 @@ class AccountRepository(VaultRepository):
         return Account.from_dict(data) if data else None
     
     def search(self, keywords: List[str]) -> SearchResult:
-        accounts = self.get_all()
-        matched = []
-        matched_ids = []
-        
-        for acc in accounts:
-            text = f"{acc.app_name} {acc.username} {acc.category} {acc.remark or ''} {acc.ai_remark or ''}"
-            if any(kw.lower() in text.lower() for kw in keywords if kw and str(kw).strip()):
-                matched.append(acc)
-                matched_ids.append(acc.id)
+        rows = self.db.search_accounts(keywords)
+        matched = [Account.from_dict(d) for d in rows]
+        matched_ids = [a.id for a in matched]
         
         return SearchResult(
             items=matched, matched_ids=matched_ids,
@@ -386,20 +380,9 @@ class URLRepository(VaultRepository):
         return URLItem.from_dict(data) if data else None
     
     def search(self, keywords: List[str]) -> SearchResult:
-        urls = self.get_all()
-        matched = []
-        matched_ids = []
-        
-        for u in urls:
-            text = f"{u.title} {u.url} {u.category} {u.remark or ''} {u.ai_remark or ''}"
-            try:
-                tags = u.get_tags_list()
-                text += ' ' + ' '.join(tags)
-            except Exception:
-                pass
-            if any(kw.lower() in text.lower() for kw in keywords if kw and str(kw).strip()):
-                matched.append(u)
-                matched_ids.append(u.id)
+        rows = self.db.search_urls(keywords)
+        matched = [URLItem.from_dict(d) for d in rows]
+        matched_ids = [u.id for u in matched]
         
         return SearchResult(
             items=matched, matched_ids=matched_ids,

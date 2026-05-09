@@ -129,7 +129,7 @@ class URLService:
         Returns:
             匹配的网址列表
         """
-        urls_data = self.db.search_urls(keyword)
+        urls_data = self.db.search_urls([keyword])
         return [URLItem.from_dict(data) for data in urls_data]
     
     def get_related_urls(self, account_id: int) -> List[URLItem]:

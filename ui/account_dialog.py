@@ -23,6 +23,7 @@ from core.theme_manager import ThemeManager, ThemeColors
 from services.account_service import AccountService
 from services.category_service import CategoryService
 from services.ai_service_manager import AIServiceManager
+from services.ai_remark_service import AIRemarkService
 from services.ai_worker_thread import AIStatus
 from models.account import Account
 
@@ -503,6 +504,7 @@ class AccountDialog(QDialog):
         
         # 接入 AIServiceManager 单例
         self._ai_manager = AIServiceManager.instance()
+        self.ai_remark_service = AIRemarkService()
         t5 = time.perf_counter(); _perf_log("AIServiceManager.instance()", t4, t5)
         
         self.account = account
@@ -1346,29 +1348,22 @@ class AccountDialog(QDialog):
 
         self._update_strength_suggestions()
     
-    def _get_strength_color(self, level: str) -> str:
-        """根据安全等级文本获取颜色"""
+    def _get_strength_color(self, level: str) -> tuple:
+        """根据安全等级文本获取 (color, bg_color) 元组"""
         colors = ThemeManager.instance().colors
         color_map = {
-            "弱": colors.accent_red,
-            "中": colors.accent_orange,
-            "强": colors.accent_green,
-            "极强": colors.accent_blue
+            "弱": (colors.accent_red, colors.accent_red_bg),
+            "中": (colors.accent_orange, colors.accent_orange_bg),
+            "强": (colors.accent_green, colors.accent_green_bg),
+            "极强": (colors.accent_blue, colors.accent_blue_bg)
         }
-        return color_map.get(level, colors.text_tertiary)
+        return color_map.get(level, (colors.text_tertiary, colors.bg_secondary))
     
-    def _show_strength_label(self, level: str, color: str):
+    def _show_strength_label(self, level: str, colors_tuple: tuple):
         """显示指定等级的强度标签"""
-        colors = ThemeManager.instance().colors
+        color, bg_color = colors_tuple
         self.lbl_password_strength.show()
         self.lbl_password_strength.setText(f"  密码强度：{level}  ")
-        bg_color = {
-            colors.accent_red: colors.accent_red_bg,
-            colors.accent_orange: colors.accent_orange_bg,
-            colors.accent_green: colors.accent_green_bg,
-            colors.accent_blue: colors.accent_blue_bg,
-            colors.text_tertiary: colors.bg_secondary
-        }.get(color, colors.bg_secondary)
         self.lbl_password_strength.setStyleSheet(f"""
             QLabel {{
                 color: {color};
@@ -1449,7 +1444,7 @@ class AccountDialog(QDialog):
         self.btn_ai_remark.setText("生成中...")
         
         remark = self.txt_remark.toPlainText().strip()
-        task_id = self._ai_manager.generate_remark_async(app_name, url, category, remark)
+        task_id = self.ai_remark_service.generate_ai_remark_async(app_name, url, category, remark)
         self._pending_remark_task = task_id
     
     def _on_remark_result(self, task_id, result):

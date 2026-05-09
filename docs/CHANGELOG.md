@@ -13,10 +13,23 @@
 - **`BatchItemTableModel.data()` 未捕获异常**：`_get_status_color()` 中 `status` 为 `None` 时 `startswith()` 在 Qt 回调中抛出 `AttributeError`，PyQt6 无法抛回 C++ 事件循环导致直接终止，增加空值保护和 `try/except` 兜底
 - **`AccountListItem` 缺少 `_compact_mode` 初始化**：紧凑视图模式下触发 `AttributeError`
 - **`_enter_selection_mode` 遗漏 `on_check_changed` 设置**：列表在非选择模式下加载后进入批量模式，checkbox 显示但无回调，勾选状态不同步
+- **`services/sync_service.py` 密包非原子写入 + `ITERATIONS` 未注入**：改为临时文件 `os.replace()` 原子替换，并注入 `crypto_manager.iterations` 到 PWA 模板
+- **`services/ai_assistant_service.py` Legacy Build 方法无事务**：`_execute_build_action_with_transaction_legacy` 添加 `with tx_db.transaction():` 包裹，并补充审计日志
+- **全项目 `OllamaClient` 主线程阻塞**：所有直接实例化处添加 `timeout=30`，`ai_remark_service.py` 改为走 `AIServiceManager.generate_remark_async()` 异步队列
+- **`core/repositories.py` 搜索全表加载**：`AccountRepository.search()` / `URLRepository.search()` 改为 SQL 层 `LIKE` 查询，避免全量解密加载
+- **`core/database.py` 回收站脱敏逻辑不完整**：提取 `_mask_username()` 统一脱敏规则，邮箱/非邮箱统一处理
+- **`ui/main_window.py` 日志级别不当**：13 处 `logger.info` 记录异常改为 `logger.exception`，4 处改为 `logger.error`
+- **`core/crypto.py` 注释错误**：`ITERATIONS` 默认值注释从 100000 修正为 600000
+- **`ui/main_window.py` UTF-8 BOM 污染**：去除文件头 BOM，修复工具链兼容性
 
 ### 优化
 - **`main_window.py` 5 处列表项创建统一传入 `parent=self.account_list`**：`AccountListItem`/`URLListItem` 创建时杜绝裸窗口，消除批量模式下的白色弹窗闪现和 Qt 内部状态不稳定
 - **批量操作点击条目非 checkbox 区域闪退**：`on_account_clicked` 中使用 `QApplication.widgetAt(QCursor.pos())` 判断点击位置，在 PyQt6 + qt-material + 复杂 widget 树环境下触发 `0xC0000409` 闪退。改用 `AccountListItem`/`URLListItem` 内部 `_checkbox_clicked` 标志位机制，弃用 `widgetAt`，实现点击条目任意位置均可勾选/取消勾选
+- **`ui/main_window.py` AI 聊天全量重绘**：流式输出阶段改为增量 `_ai_append_token_html()` 追加，安全定时器降为 1 秒全量重建，显著降低长对话 CPU 占用
+- **`core/password_strength.py` 硬编码颜色收敛 ThemeColors**：`evaluate_password_strength()` 仅返回语义标签，UI 层统一从 `ThemeManager.instance().colors` 动态取色
+- **`services/ai_worker_thread.py` latency 实际测量**：任务执行前后记录 `time.perf_counter()` 差值，状态指标恢复意义
+- **`services/ai_assistant_service.py` 清理无用 `inherited_ids`**：移除 `ReferenceResolver.resolve()` 的未使用返回值和 `tool_context` 中的传递
+- **`ai/ollama_client.py` 移除未使用变量**：清理 `generate_tool_call` 中的 `tool_suffix_hint`
 
 ## [未发布] — 2026-05-07
 

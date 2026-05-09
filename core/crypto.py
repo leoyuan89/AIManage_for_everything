@@ -27,7 +27,7 @@ class CryptoManager:
         Args:
             master_password: 用户主密码
             salt: 盐值（首次使用不传，自动生成新盐值）
-            iterations: PBKDF2 迭代次数（默认 ITERATIONS=100000）
+            iterations: PBKDF2 迭代次数（默认 ITERATIONS=600000，OWASP 2023 推荐）
         """
         if iterations is None:
             iterations = self.ITERATIONS

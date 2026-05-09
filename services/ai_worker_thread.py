@@ -128,6 +128,7 @@ class AIWorkerThread(QThread):
                 self._ollama_client = OllamaClient(
                     model=self._config["model"],
                     host=self._config["host"],
+                    timeout=self._config["timeout"],
                 )
             return self._ollama_client
 
@@ -251,8 +252,10 @@ class AIWorkerThread(QThread):
         """消费单个任务"""
         client = self._get_client()
         result = None
+        latency_ms = 0.0
 
         try:
+            t0 = time.perf_counter()
             if task.task_type == AITaskType.CATEGORIZE:
                 result = client.categorize(
                     task.payload.get("app_name", ""),
@@ -297,12 +300,15 @@ class AIWorkerThread(QThread):
             else:
                 raise ValueError(f"未知任务类型: {task.task_type}")
 
+            latency_ms = (time.perf_counter() - t0) * 1000.0
+
             # 任务成功：顺带更新状态（复用同一次 HTTP 连接后的状态感知）
-            self._update_state_post_task(client, success=True)
+            self._update_state_post_task(client, success=True, latency_ms=latency_ms)
             self.task_finished.emit(task.task_id, result)
 
         except Exception as e:
-            self._update_state_post_task(client, success=False, error=str(e))
+            latency_ms = (time.perf_counter() - t0) * 1000.0 if 't0' in dir() else 0.0
+            self._update_state_post_task(client, success=False, error=str(e), latency_ms=latency_ms)
             self.task_failed.emit(task.task_id, str(e))
 
     def _generate_remark(self, client: OllamaClient, payload: Dict[str, Any]) -> str:
@@ -337,14 +343,14 @@ class AIWorkerThread(QThread):
         # 备注完整保留，不做截断
         return remark
 
-    def _update_state_post_task(self, client: OllamaClient, success: bool = True, error: str = ""):
+    def _update_state_post_task(self, client: OllamaClient, success: bool = True, error: str = "", latency_ms: float = 0.0):
         """任务执行后附带更新一次状态"""
         now = time.time()
         if success:
             snapshot = AIStateSnapshot(
                 status=AIStatus.ONLINE,
                 model_name=client.model,
-                response_latency_ms=0.0,
+                response_latency_ms=latency_ms,
                 last_probe_time=now,
                 error_message="",
             )
@@ -355,7 +361,7 @@ class AIWorkerThread(QThread):
             snapshot = AIStateSnapshot(
                 status=current.status,
                 model_name=client.model,
-                response_latency_ms=0.0,
+                response_latency_ms=latency_ms,
                 last_probe_time=now,
                 error_message=error,
             )

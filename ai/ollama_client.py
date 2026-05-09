@@ -743,7 +743,6 @@ class OllamaClient:
         """
         tools_text = json.dumps(tools, ensure_ascii=False, indent=2)
         vault_label = '密码库（账号）' if vault_type == 'accounts' else '网址库'
-        tool_suffix_hint = '以 "_accounts" 结尾' if vault_type == 'accounts' else '以 "_urls" 结尾'
 
         prompt = f"""你是密码管理软件的AI助手。请根据用户请求、当前分类体系和可用工具，决定下一步操作。
 

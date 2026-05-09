@@ -8,7 +8,7 @@ def evaluate_password_strength(password: str) -> dict:
     """
     评估密码强度
     
-    返回 {"score": 0-4, "label": "弱/中/强/极强", "color": "#..."}
+    返回 {"score": 0-4, "label": "弱/中/强/极强"}
     
     评分规则：
     - 0-1分：弱（长度<8，或纯数字/纯字母）
@@ -17,7 +17,7 @@ def evaluate_password_strength(password: str) -> dict:
     - 4分：极强（长度>=16，含四种字符类型：大写/小写/数字/特殊字符）
     """
     if not password:
-        return {"score": 0, "label": "弱", "color": "#f44336"}
+        return {"score": 0, "label": "弱"}
     
     length = len(password)
     
@@ -43,7 +43,7 @@ def evaluate_password_strength(password: str) -> dict:
         else:
             score = 1
     
-    # 标签和颜色映射
+    # 标签映射
     labels = {
         0: "弱",
         1: "弱",
@@ -51,26 +51,10 @@ def evaluate_password_strength(password: str) -> dict:
         3: "强",
         4: "极强"
     }
-    colors = {
-        0: "#f44336",   # 红色
-        1: "#f44336",   # 红色
-        2: "#FF9800",   # 橙色
-        3: "#4CAF50",   # 绿色
-        4: "#2196F3"    # 蓝色
-    }
-    bg_colors = {
-        0: "#ffebee",
-        1: "#ffebee",
-        2: "#fff3e0",
-        3: "#e8f5e9",
-        4: "#e3f2fd"
-    }
     
     return {
         "score": score,
-        "label": labels.get(score, "弱"),
-        "color": colors.get(score, "#f44336"),
-        "bg_color": bg_colors.get(score, "#ffebee")
+        "label": labels.get(score, "弱")
     }
 
 

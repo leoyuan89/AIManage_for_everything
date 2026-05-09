@@ -1,4 +1,4 @@
-﻿"""
+"""
 主窗口模块
 包含：分类导航、账号列表、搜索框、底部工具栏
 """
@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QDateEdit, QComboBox, QStackedWidget, QCalendarWidget, QSizePolicy
 )
 from PyQt6.QtCore import Qt, QSize, QTimer, QThread, pyqtSignal, QPoint, QStringListModel, QDate
-from PyQt6.QtGui import QIcon, QFont, QColor
+from PyQt6.QtGui import QIcon, QFont, QColor, QTextCursor
 from PyQt6.QtWidgets import QCompleter
 
 
@@ -205,7 +205,7 @@ class AIQueryThread(QThread):
                         self.result_token.emit(batch)
                         result_buffer.clear()
                 except Exception as e:
-                    logger.debug(f" Emit error: {e}")
+                    logger.warning(f" Emit error: {e}")
                 last_emit_time[0] = now
         
         logger.debug(f" Entering process_query_stream, mode={self.mode}")
@@ -225,7 +225,7 @@ class AIQueryThread(QThread):
                 logger.debug(f" Final result emit ({len(batch)} chars)")
                 self.result_token.emit(batch)
         except Exception as e:
-            logger.debug(f" Final emit error: {e}")
+            logger.warning(f" Final emit error: {e}")
         
         json_str = _json.dumps(result, ensure_ascii=False)
         logger.debug(f" Emitting result_ready, json_len={len(json_str)}")
@@ -5171,13 +5171,14 @@ class MainWindow(QMainWindow):
             scrollbar = self.thinking_area.verticalScrollBar()
             scrollbar.setValue(scrollbar.maximum())
         except Exception as e:
-            logger.info(f" _on_thinking_token error: {e}")
+            logger.exception(f" _on_thinking_token error: {e}")
     
     def _on_result_token(self, segment: str):
         """接收 result 段落，追加到对话历史并刷新 UI
 
-        分段输出模式：将段落追加到历史最后一条 assistant 消息，
-        使用防抖定时器延迟刷新，避免高频 setHtml 导致 CPU 飙升。
+        增量追加模式：将段落追加到历史最后一条 assistant 消息，
+        使用 QTextCursor 直接插入 HTML，避免高频 setHtml 导致 CPU 飙升。
+        同时保留 1 秒安全定时器，定期全量重建修复可能的 HTML 损坏。
         """
         if not getattr(self, '_ai_query_running', False):
             return
@@ -5185,18 +5186,20 @@ class MainWindow(QMainWindow):
             if (self.ai_assistant._history and
                 self.ai_assistant._history[-1].role == 'assistant'):
                 self.ai_assistant._history[-1].content += segment
-                # 防抖刷新：重启定时器，150ms 内无新 token 才执行全量刷新
+                # 增量追加：直接插入 HTML，避免全量重建
+                self._ai_append_token_html(segment)
+                # 安全定时器：每 1 秒执行一次全量重建，修复可能的 HTML 损坏
                 if self._ai_refresh_timer is None:
                     from PyQt6.QtCore import QTimer
                     self._ai_refresh_timer = QTimer(self)
                     self._ai_refresh_timer.setSingleShot(True)
                     self._ai_refresh_timer.timeout.connect(self._ai_update_chat_display)
                 self._ai_refresh_timer.stop()
-                self._ai_refresh_timer.start(150)
+                self._ai_refresh_timer.start(1000)
             else:
                 logger.info(" _on_result_token: no assistant msg to append")
         except Exception as e:
-            logger.info(f" _on_result_token error: {e}")
+            logger.exception(f" _on_result_token error: {e}")
     
     def _on_ai_copy_result(self):
         """复制 AI 回复到剪贴板"""
@@ -5327,7 +5330,7 @@ class MainWindow(QMainWindow):
                 if affected_ids:
                     self.highlight_matched_accounts(affected_ids, query_text="AI本次修改")
         except Exception as e:
-            logger.info(f" _on_action_preview_confirmed exception: {e}")
+            logger.error(f" _on_action_preview_confirmed exception: {e}")
             logger.exception("Unhandled exception")
             result_msg = f"❌ 执行失败：{str(e)}"
         
@@ -5533,9 +5536,9 @@ class MainWindow(QMainWindow):
                     if affected_ids:
                         self.highlight_matched_accounts(affected_ids, query_text="AI本次修改")
                 except Exception as e:
-                    logger.info(f" Highlight affected items error: {e}")
+                    logger.exception(f" Highlight affected items error: {e}")
         except Exception as e:
-            logger.info(f" ReAct preview confirmed error: {e}")
+            logger.error(f" ReAct preview confirmed error: {e}")
             logger.exception("Unhandled exception")
             result_msg = f"❌ 执行失败：{str(e)}"
         
@@ -5744,7 +5747,7 @@ class MainWindow(QMainWindow):
                     summary = self.ai_assistant.build_db_summary(urls=urls, vault_type='urls')
                 self.ai_assistant.conversation_context.set_db_summary(summary, self.current_vault)
             except Exception as e:
-                logger.info(f" Warmup error: {e}")
+                logger.exception(f" Warmup error: {e}")
             # 预热完成后继续往下执行，不要 return，直接处理用户的查询
         
         # 防止重复提交（如果已有查询在进行中，忽略）
@@ -5851,7 +5854,7 @@ class MainWindow(QMainWindow):
             result = json.loads(result_json)
             logger.info(f" Parsed result: action={result.get('action')}, mode={self._ai_mode}, success={result.get('success')}")
         except json.JSONDecodeError as e:
-            logger.info(f" JSON decode error: {e}")
+            logger.exception(f" JSON decode error: {e}")
             result = {
                 "success": False,
                 "thinking": "",
@@ -5894,7 +5897,7 @@ class MainWindow(QMainWindow):
             self.thinking_area.hide()
             logger.debug("[MainWindow] Stream UI cleaned")
         except Exception as e:
-            logger.info(f" Stream UI clean error: {e}")
+            logger.exception(f" Stream UI clean error: {e}")
         
         # 重新渲染历史为 HTML
         self._ai_update_chat_display()
@@ -5941,7 +5944,7 @@ class MainWindow(QMainWindow):
                             else:
                                 result['response'] += f"\n\n❌ 未找到匹配的{item_name}"
                         except Exception as e:
-                            logger.info(f" Fallback search error: {e}")
+                            logger.exception(f" Fallback search error: {e}")
                             result['response'] += f"\n\n❌ 未找到匹配的{item_name}"
                 elif action == 'list':
                     scope = params.get('scope', 'all')
@@ -5964,7 +5967,7 @@ class MainWindow(QMainWindow):
                 if not result.get('success', True):
                     self._append_ai_system_msg(f"处理出错：{result.get('error', '未知错误')}")
             except Exception as e:
-                logger.info(f" Plan mode handling error: {e}")
+                logger.error(f" Plan mode handling error: {e}")
                 logger.exception("Unhandled exception")
                 self._append_ai_system_msg(f"处理出错：{str(e)}")
             return
@@ -6037,7 +6040,7 @@ class MainWindow(QMainWindow):
                     self._ai_update_chat_display()
                     self.ai_action_buttons.show()
         except Exception as e:
-            logger.info(f" Build mode handling error: {e}")
+            logger.error(f" Build mode handling error: {e}")
             logger.exception("Unhandled exception")
             self._append_ai_system_msg(f"处理出错：{str(e)}")
     
@@ -6210,10 +6213,22 @@ class MainWindow(QMainWindow):
         self._ai_update_chat_display()
     
     def _ai_start_typing(self, full_text: str):
-        """直接显示完整文本（不逐字打字，先测试稳定性）"""
+        """设置 assistant 消息内容并执行一次全量重建，为后续增量追加做准备"""
         if self.ai_assistant._history and self.ai_assistant._history[-1].role == 'assistant':
             self.ai_assistant._history[-1].content = full_text
         self._ai_update_chat_display()
+    
+    def _ai_append_token_html(self, token: str):
+        """使用 QTextCursor 在 result_area 末尾增量追加 HTML token"""
+        colors = ThemeManager.instance().colors
+        cursor = self.result_area.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        escaped = self._escape_html(token).replace('\n', '<br>')
+        html = f'<span style="color: {colors.text_primary};">{escaped}</span>'
+        cursor.insertHtml(html)
+        # 自动滚动到底部
+        scrollbar = self.result_area.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
     
     def _ai_update_chat_display(self):
         """根据对话历史重新渲染整个聊天区域为 HTML"""
@@ -6221,7 +6236,7 @@ class MainWindow(QMainWindow):
         try:
             history = self.ai_assistant.get_history()
         except Exception as e:
-            logger.info(f" get_history error: {e}")
+            logger.exception(f" get_history error: {e}")
             return
         
         html_parts = []
@@ -6233,7 +6248,7 @@ class MainWindow(QMainWindow):
                 welcome_html = self._markdown_to_html(self._ai_welcome_md())
                 html_parts.append(f'<div style="padding:10px;">{welcome_html}</div>')
             except Exception as e:
-                logger.info(f" Welcome render error: {e}")
+                logger.exception(f" Welcome render error: {e}")
         
         # 渲染每条消息
         for idx, msg in enumerate(history):
@@ -6251,7 +6266,7 @@ class MainWindow(QMainWindow):
                         f'{self._escape_html(msg.content)}</div>'
                     )
             except Exception as e:
-                logger.info(f" Message render error at idx={idx}: {e}")
+                logger.exception(f" Message render error at idx={idx}: {e}")
                 # 跳过这条消息，继续渲染其他
                 continue
         
@@ -6266,20 +6281,20 @@ class MainWindow(QMainWindow):
         try:
             self.result_area.setHtml(full_html)
         except Exception as e:
-            logger.info(f" setHtml error: {e}")
+            logger.exception(f" setHtml error: {e}")
             # 降级：只显示纯文本
             try:
                 plain_text = '\n'.join(f"{m.role}: {m.content}" for m in history)
                 self.result_area.setPlainText(plain_text)
             except Exception as e2:
-                logger.info(f" setPlainText fallback error: {e2}")
+                logger.exception(f" setPlainText fallback error: {e2}")
         
         # 滚动到底部
         try:
             scrollbar = self.result_area.verticalScrollBar()
             scrollbar.setValue(scrollbar.maximum())
         except Exception as e:
-            logger.info(f" Scrollbar error: {e}")
+            logger.exception(f" Scrollbar error: {e}")
     
     def _escape_html(self, text: str) -> str:
         """转义 HTML 特殊字符"""

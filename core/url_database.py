@@ -444,26 +444,35 @@ class URLDatabaseManager:
         
             return [dict(row) for row in rows]
     
-    def search_urls(self, keyword: str) -> List[Dict[str, Any]]:
+    def search_urls(self, keywords: List[str]) -> List[Dict[str, Any]]:
         """
-        搜索网址
+        SQL 层关键词搜索网址
         
         Args:
-            keyword: 搜索关键词
+            keywords: 搜索关键词列表
             
         Returns:
-            匹配的网址列表
+            匹配的网址列表，最多 500 条
         """
         with self._lock:
-            keyword = f"%{keyword}%"
-            self.cursor.execute(
-                """SELECT * FROM urls 
-                   WHERE title LIKE ? OR url LIKE ? OR tags LIKE ? OR ai_remark LIKE ? OR remark LIKE ?
-                   ORDER BY created_at DESC""",
-                (keyword, keyword, keyword, keyword, keyword)
-            )
+            valid_keywords = [kw for kw in keywords if kw and str(kw).strip()]
+            if not valid_keywords:
+                return []
+
+            conditions = []
+            params = []
+            for kw in valid_keywords:
+                like_pattern = f"%{kw}%"
+                conditions.append(
+                    "(title LIKE ? OR url LIKE ? OR category LIKE ? OR tags LIKE ?)"
+                )
+                params.extend([like_pattern, like_pattern, like_pattern, like_pattern])
+
+            where_clause = " OR ".join(conditions)
+            sql = f"SELECT * FROM urls WHERE {where_clause} ORDER BY created_at DESC LIMIT 500"
+
+            self.cursor.execute(sql, params)
             rows = self.cursor.fetchall()
-        
             return [dict(row) for row in rows]
     
     def get_urls_by_account(self, account_id: int) -> List[Dict[str, Any]]:

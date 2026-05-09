@@ -252,7 +252,8 @@ class AIAssistantService:
                 return {"matched_ids": [], "reasoning": "Ollama 未初始化", "confidence_scores": {}}
             from ai.ollama_client import OllamaClient
             state = ai_manager.get_state()
-            ollama = OllamaClient(model=state.model_name or "gemma4:4b")
+            # TODO(P0-3): 迁移到 AIServiceManager.submit_task() 异步执行，避免主线程阻塞
+            ollama = OllamaClient(model=state.model_name or "gemma4:4b", timeout=30)
             return ollama.semantic_match(query, items_summary)
         except Exception as e:
             return {"matched_ids": [], "reasoning": f"语义查询异常: {e}", "confidence_scores": {}}
@@ -321,7 +322,8 @@ class AIAssistantService:
             ai_manager = AIServiceManager.instance()
             from ai.ollama_client import OllamaClient
             state = ai_manager.get_state()
-            ollama = OllamaClient(model=state.model_name or "gemma4:4b")
+            # TODO(P0-3): 迁移到 AIServiceManager.submit_task() 异步执行，避免主线程阻塞
+            ollama = OllamaClient(model=state.model_name or "gemma4:4b", timeout=30)
             result = ollama.parse_command(
                 enhanced_query, db_summary, history,
                 conversation_history=conversation_history
@@ -494,7 +496,8 @@ class AIAssistantService:
             ai_manager = AIServiceManager.instance()
             from ai.ollama_client import OllamaClient
             state = ai_manager.get_state()
-            ollama = OllamaClient(model=state.model_name or "gemma4:4b")
+            # TODO(P0-3): 迁移到 AIServiceManager.submit_task() 异步执行，避免主线程阻塞
+            ollama = OllamaClient(model=state.model_name or "gemma4:4b", timeout=30)
             token_count = 0
             for token in ollama.generate_stream(prompt, temperature=0.2):
                 token_count += 1
@@ -668,7 +671,7 @@ class AIAssistantService:
 
         # 1. 指代消解（先处理，以便后续根据查询内容筛选）
         from services.conversation_context import ReferenceResolver
-        enhanced_query, inherited_ids = ReferenceResolver.resolve(query, self.conversation_context)
+        enhanced_query = ReferenceResolver.resolve(query, self.conversation_context)[0]
 
         # 2. 构建分类树（先用总数，后续根据大模型解析的目标分类更新）
         repo = RepositoryFactory.get_repository(vault_type)
@@ -699,7 +702,8 @@ class AIAssistantService:
         from ai.ollama_client import OllamaClient
         from services.ai_service_manager import AIServiceManager
         ai_manager = AIServiceManager.instance()
-        ollama = OllamaClient(model=ai_manager.get_state().model_name or "gemma4:4b")
+        # TODO(P0-3): 迁移到 AIServiceManager.submit_task() 异步执行，避免主线程阻塞
+        ollama = OllamaClient(model=ai_manager.get_state().model_name or "gemma4:4b", timeout=30)
         
         tools = []
         for tool in ToolRegistry.list():
@@ -763,7 +767,6 @@ class AIAssistantService:
             "accounts": filtered_items if vault_type == 'accounts' else None,
             "urls": filtered_items if vault_type == 'urls' else None,
             "vault_type": vault_type,
-            "inherited_ids": inherited_ids,
             "db": self.db,
             "url_db": self.url_db,
             "repo": RepositoryFactory.get_repository(vault_type),
@@ -1237,7 +1240,8 @@ class AIAssistantService:
                     from services.ai_service_manager import AIServiceManager
                     ai_manager = AIServiceManager.instance()
                     if ai_manager.is_available():
-                        ollama = OllamaClient(model=ai_manager.get_state().model_name or "gemma4:4b")
+                        # TODO(P0-3): 迁移到 AIServiceManager.submit_task() 异步执行，避免主线程阻塞
+                        ollama = OllamaClient(model=ai_manager.get_state().model_name or "gemma4:4b", timeout=30)
                         parsed_items, failed_chunks = BatchAddProcessor.parse_batch_text(text, vault_type_for_batch, ollama)
                 except Exception:
                     logger.warning("批量添加文本解析失败", exc_info=True)
@@ -1570,73 +1574,83 @@ class AIAssistantService:
         affected_ids = []
         error_msg = None
         fail_ids = []
+        success = True
+        result_msg = ""
+
+        if action_type == 'delete' and not action_preview.get('_force'):
+            target_ids = [item['target_id'] for item in executable_items]
+            if len(target_ids) > 50:
+                return {
+                    "success": False,
+                    "needs_confirmation": True,
+                    "affected_count": len(target_ids),
+                    "message": f"即将删除 {len(target_ids)} 条记录，数量较多，请确认",
+                    "preview": action_preview
+                }
+
+        tx_db = self.db if vault_type == 'accounts' else (self.url_db or self.db)
 
         logger.info("execute_build_action_with_transaction starting, items=%d, vault=%s", len(executable_items), vault_type)
 
-        if action_type == 'delete':
-            if not action_preview.get('_force'):
-                target_ids = [item['target_id'] for item in executable_items]
-
-                if len(target_ids) > 50:
-                    return {
-                        "success": False,
-                        "needs_confirmation": True,
-                        "affected_count": len(target_ids),
-                        "message": f"即将删除 {len(target_ids)} 条记录，数量较多，请确认",
-                        "preview": action_preview
-                    }
-
-            for item in executable_items:
-                target_id = item['target_id']
-                item_vault_type = 'urls' if item.get('item_type') == 'url' else 'accounts'
-                try:
-                    repo = RepositoryFactory.get_repository(item_vault_type)
-                    repo.soft_delete(target_id)
-                    affected_ids.append(target_id)
-                except Exception as e:
-                    fail_ids.append((target_id, str(e)))
-
-            success = len(fail_ids) == 0
-            result_msg = f"删除完成：成功 {len(affected_ids)} 条" + (f"，失败 {len(fail_ids)} 条" if fail_ids else "")
-            logger.info("Delete completed, success=%d, fail=%d", len(affected_ids), len(fail_ids))
-        elif action_type in ('batch_add_account', 'batch_add_url'):
-            repo = RepositoryFactory.get_repository(vault_type)
-            from services.batch_add_processor import BatchAddProcessor
-            batch_items = [item['batch_item'] for item in executable_items]
-            batch_result = BatchAddProcessor.execute_batch_add(batch_items, repo)
-            affected_ids = batch_result.get('inserted_ids', [])
-            success = batch_result.get('success', 0) > 0 or len(affected_ids) > 0
-            result_msg = f"批量导入完成：成功 {batch_result.get('success', 0)} 条，跳过 {batch_result.get('skip', 0)} 条，失败 {batch_result.get('fail', 0)} 条"
-            logger.info("Batch add completed, success=%s", batch_result.get('success', 0))
-        else:
-            repo = RepositoryFactory.get_repository(vault_type)
-            item_type_name = repo.get_item_type_name()
-
-            for item in executable_items:
-                try:
-                    if action_type in ('reorganize', 'add_remark'):
+        try:
+            with tx_db.transaction():
+                if action_type == 'delete':
+                    for item in executable_items:
                         target_id = item['target_id']
-                        field = item['field']
-                        new_value = item['new_value']
-                        logger.debug("UPDATE id=%s, field=%s, new_value=%s", target_id, field, new_value)
-                        repo.update_field(target_id, field, new_value)
-                        affected_ids.append(target_id)
+                        item_vault_type = 'urls' if item.get('item_type') == 'url' else 'accounts'
+                        try:
+                            repo = RepositoryFactory.get_repository(item_vault_type)
+                            repo.soft_delete(target_id)
+                            affected_ids.append(target_id)
+                        except Exception as e:
+                            fail_ids.append((target_id, str(e)))
 
-                    elif action_type == 'add':
-                        fields = item['fields']
-                        new_id = repo.insert(fields)
-                        affected_ids.append(new_id)
+                    success = len(fail_ids) == 0
+                    result_msg = f"删除完成：成功 {len(affected_ids)} 条" + (f"，失败 {len(fail_ids)} 条" if fail_ids else "")
+                    logger.info("Delete completed, success=%d, fail=%d", len(affected_ids), len(fail_ids))
+                elif action_type in ('batch_add_account', 'batch_add_url'):
+                    repo = RepositoryFactory.get_repository(vault_type)
+                    from services.batch_add_processor import BatchAddProcessor
+                    batch_items = [item['batch_item'] for item in executable_items]
+                    batch_result = BatchAddProcessor.execute_batch_add(batch_items, repo)
+                    affected_ids = batch_result.get('inserted_ids', [])
+                    success = batch_result.get('success', 0) > 0 or len(affected_ids) > 0
+                    result_msg = f"批量导入完成：成功 {batch_result.get('success', 0)} 条，跳过 {batch_result.get('skip', 0)} 条，失败 {batch_result.get('fail', 0)} 条"
+                    logger.info("Batch add completed, success=%s", batch_result.get('success', 0))
+                else:
+                    repo = RepositoryFactory.get_repository(vault_type)
+                    item_type_name = repo.get_item_type_name()
 
-                except Exception as e:
-                    tid = item.get('target_id', item.get('fields', {}).get('app_name', 'unknown'))
-                    logger.exception("Item execution failed: %s, error=%s", tid, e)
-                    fail_ids.append((tid, str(e)))
+                    for item in executable_items:
+                        try:
+                            if action_type in ('reorganize', 'add_remark'):
+                                target_id = item['target_id']
+                                field = item['field']
+                                new_value = item['new_value']
+                                logger.debug("UPDATE id=%s, field=%s, new_value=%s", target_id, field, new_value)
+                                repo.update_field(target_id, field, new_value)
+                                affected_ids.append(target_id)
 
-            success = len(fail_ids) == 0
-            result_msg = f"成功执行 {action_type}，共影响 {len(affected_ids)} 个{item_type_name}"
-            if fail_ids:
-                result_msg += f"，失败 {len(fail_ids)} 条"
-            logger.info("Execution completed, success=%d, fail=%d", len(affected_ids), len(fail_ids))
+                            elif action_type == 'add':
+                                fields = item['fields']
+                                new_id = repo.insert(fields)
+                                affected_ids.append(new_id)
+
+                        except Exception as e:
+                            tid = item.get('target_id', item.get('fields', {}).get('app_name', 'unknown'))
+                            logger.exception("Item execution failed: %s, error=%s", tid, e)
+                            fail_ids.append((tid, str(e)))
+
+                    success = len(fail_ids) == 0
+                    result_msg = f"成功执行 {action_type}，共影响 {len(affected_ids)} 个{item_type_name}"
+                    if fail_ids:
+                        result_msg += f"，失败 {len(fail_ids)} 条"
+                    logger.info("Execution completed, success=%d, fail=%d", len(affected_ids), len(fail_ids))
+        except Exception as e:
+            logger.exception("Transaction failed, all changes rolled back")
+            success = False
+            error_msg = str(e)
+            result_msg = f"操作失败，已回滚：{e}"
 
         # 写入审计日志
         try:

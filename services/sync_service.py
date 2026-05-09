@@ -177,15 +177,18 @@ class SyncService:
         # 5. 注入加密数据和 salt 到模板变量
         html_content = template.replace('{{ENCRYPTED_DATA}}', encrypted_data)
         html_content = html_content.replace('{{SALT_BASE64}}', salt_b64)
+        html_content = html_content.replace('{{ITERATIONS}}', str(crypto_manager.iterations))
         html_content = html_content.replace('{{GENERATED_AT}}', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
         html_content = html_content.replace('{{ACCOUNT_COUNT}}', str(len(accounts_data)))
         html_content = html_content.replace('{{URL_COUNT}}', str(len(urls_data)))
         
-        # 6. 写出 HTML 文件
+        # 6. 原子写入 HTML 文件（先写临时文件，成功后替换）
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
-        with open(output_path, 'w', encoding='utf-8') as f:
+        tmp_path = output_path.with_suffix('.tmp')
+        with open(tmp_path, 'w', encoding='utf-8') as f:
             f.write(html_content)
+        os.replace(str(tmp_path), str(output_path))
         
         return str(output_path)

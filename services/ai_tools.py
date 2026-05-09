@@ -42,7 +42,7 @@ class AITool:
         """执行工具
         Args:
             params: 工具参数
-            context: 执行上下文，包含 accounts, urls, vault_type, inherited_ids, db, url_db, repo
+            context: 执行上下文，包含 accounts, urls, vault_type, db, url_db, repo
         """
         raise NotImplementedError(f"工具 {self.name} 未实现 execute 方法")
 
@@ -235,7 +235,8 @@ class SemanticSearchAccountsTool(AITool):
         items_summary = _build_accounts_summary(accounts)
         try:
             from ai.ollama_client import OllamaClient
-            ollama = OllamaClient()
+            # TODO(P0-3): 迁移到 AIServiceManager.submit_task() 异步执行，避免主线程阻塞
+            ollama = OllamaClient(timeout=30)
             result = ollama.semantic_match(query, items_summary)
             matched_ids = result.get("matched_ids", [])
             return ToolResult(
@@ -263,7 +264,8 @@ class SemanticSearchUrlsTool(AITool):
         items_summary = _build_urls_summary(urls)
         try:
             from ai.ollama_client import OllamaClient
-            ollama = OllamaClient()
+            # TODO(P0-3): 迁移到 AIServiceManager.submit_task() 异步执行，避免主线程阻塞
+            ollama = OllamaClient(timeout=30)
             result = ollama.semantic_match(query, items_summary)
             matched_ids = result.get("matched_ids", [])
             return ToolResult(
@@ -1134,7 +1136,7 @@ class SmartClassifyAccountsTool(AITool):
         from services.ai_service_manager import AIServiceManager
         ai_manager = AIServiceManager.instance()
         state = ai_manager.get_state()
-        ollama = OllamaClient(model=state.model_name or "gemma4:4b")
+        ollama = OllamaClient(model=state.model_name or "gemma4:4b", timeout=30)
         raw = ollama.generate(prompt, temperature=0.3)
 
         # 解析JSON
@@ -1496,7 +1498,7 @@ class SmartClassifyUrlsTool(AITool):
         from services.ai_service_manager import AIServiceManager
         ai_manager = AIServiceManager.instance()
         state = ai_manager.get_state()
-        ollama = OllamaClient(model=state.model_name or "gemma4:4b")
+        ollama = OllamaClient(model=state.model_name or "gemma4:4b", timeout=30)
         raw = ollama.generate(prompt, temperature=0.3)
 
         extracted = OllamaClient._extract_json_object_robust(raw) or raw
@@ -2093,7 +2095,8 @@ class GenerateAccountRemarkTool(AITool):
         url = params.get("url", "")
         try:
             from ai.ollama_client import OllamaClient
-            ollama = OllamaClient()
+            # TODO(P0-3): 迁移到 AIServiceManager.submit_task() 异步执行，避免主线程阻塞
+            ollama = OllamaClient(timeout=30)
             prompt = f"请为密码管理软件的账号生成一句话备注。应用名：{app_name}，分类：{category}，网址：{url}。只返回一句话备注，不要其他解释。"
             remark = ollama.generate(prompt, temperature=0.3, num_predict=100)
             remark = remark.strip().strip('"').strip("'")
@@ -2123,7 +2126,8 @@ class GenerateUrlRemarkTool(AITool):
         url = params.get("url", "")
         try:
             from ai.ollama_client import OllamaClient
-            ollama = OllamaClient()
+            # TODO(P0-3): 迁移到 AIServiceManager.submit_task() 异步执行，避免主线程阻塞
+            ollama = OllamaClient(timeout=30)
             prompt = f"请为网址生成一句话备注。标题：{title}，分类：{category}，网址：{url}。只返回一句话备注，不要其他解释。"
             remark = ollama.generate(prompt, temperature=0.3, num_predict=100)
             remark = remark.strip().strip('"').strip("'")

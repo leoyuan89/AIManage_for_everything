@@ -206,7 +206,7 @@ class AIClassificationService:
             from ai.ollama_client import OllamaClient
             state = ai_manager.get_state()
             # TODO(P0-3): 迁移到 AIServiceManager.submit_task() 异步执行，避免主线程阻塞
-            ollama = OllamaClient(model=state.model_name or "gemma4:4b", timeout=30)
+            ollama = OllamaClient(model=state.model_name or "gemma4:4b", timeout=300)
             result = ollama.generate(prompt, temperature=0.3)
             
             # 提取JSON
@@ -295,7 +295,7 @@ class AIClassificationService:
             from ai.ollama_client import OllamaClient
             state = ai_manager.get_state()
             # TODO(P0-3): 迁移到 AIServiceManager.submit_task() 异步执行，避免主线程阻塞
-            ollama = OllamaClient(model=state.model_name or "gemma4:4b", timeout=30)
+            ollama = OllamaClient(model=state.model_name or "gemma4:4b", timeout=300)
             result = ollama.generate(prompt, temperature=0.3)
             json_str = self._extract_json(result)
             data = json.loads(json_str)
@@ -556,7 +556,7 @@ class AIClassificationService:
             from ai.ollama_client import OllamaClient
             state = ai_manager.get_state()
             # TODO(P0-3): 迁移到 AIServiceManager.submit_task() 异步执行，避免主线程阻塞
-            ollama = OllamaClient(model=state.model_name or "gemma4:4b", timeout=30)
+            ollama = OllamaClient(model=state.model_name or "gemma4:4b", timeout=300)
             result = ollama.generate(prompt, temperature=0.2)
             json_str = self._extract_json(result)
             data = json.loads(json_str)

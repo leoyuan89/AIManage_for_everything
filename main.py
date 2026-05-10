@@ -28,6 +28,7 @@ from core.logger import setup_logging
 from core.crypto import CryptoManager
 from core.database import DatabaseManager
 from core.theme_manager import ThemeManager, style_button_primary
+from core.constants import DATA_DIR, BACKUP_DIR, VAULT_DB_PATH, VAULT_URLS_DB_PATH
 from ui.main_window import MainWindow
 
 
@@ -215,7 +216,7 @@ class LoginDialog(QDialog):
         from PyQt6.QtWidgets import QFileDialog
         import shutil
 
-        backup_dir = os.path.join(os.path.expanduser('~'), '.local_password_vault', 'backups')
+        backup_dir = str(BACKUP_DIR)
 
         file_path, _ = QFileDialog.getOpenFileName(
             self, "选择备份文件",
@@ -227,9 +228,9 @@ class LoginDialog(QDialog):
 
         fname = os.path.basename(file_path)
         if 'urls' in fname.lower():
-            target = os.path.join(os.path.expanduser('~'), '.local_password_vault', 'vault_urls.db')
+            target = str(VAULT_URLS_DB_PATH)
         else:
-            target = os.path.join(os.path.expanduser('~'), '.local_password_vault', 'vault.db')
+            target = str(VAULT_DB_PATH)
 
         if os.path.exists(target):
             shutil.copy2(target, target + '.pre_restore')
@@ -260,7 +261,7 @@ def main():
     app.setApplicationVersion("1.0")
     
     # 数据目录
-    data_dir = Path.home() / '.local_password_vault'
+    data_dir = DATA_DIR
     data_dir.mkdir(exist_ok=True)
     
     db_path = data_dir / 'vault.db'

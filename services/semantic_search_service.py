@@ -22,6 +22,7 @@ from pathlib import Path
 from models.account import Account
 from models.url_item import URLItem
 from ai.ollama_client import OllamaClient
+from core.constants import DATA_DIR
 
 
 @dataclass
@@ -41,7 +42,7 @@ class SemanticSearchService:
     def __init__(self, ollama_client: Optional[OllamaClient] = None, 
                  data_dir: str = None):
         self.ollama = ollama_client
-        self.data_dir = Path(data_dir) if data_dir else Path.home() / '.local_password_vault'
+        self.data_dir = Path(data_dir) if data_dir else DATA_DIR
         self.data_dir.mkdir(exist_ok=True)
         
         # 向量索引文件

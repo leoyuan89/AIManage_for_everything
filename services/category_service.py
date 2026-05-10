@@ -59,7 +59,7 @@ class CategoryService:
                 from ai.ollama_client import OllamaClient
                 state = ai_manager.get_state()
                 # TODO(P0-3): 迁移到 AIServiceManager.submit_task() 异步执行，避免主线程阻塞
-                ollama = OllamaClient(model=state.model_name or "gemma4:4b", timeout=30)
+                ollama = OllamaClient(model=state.model_name or "gemma4:4b", timeout=300)
                 ai_category = ollama.categorize(app_name, url)
                 # 存入缓存
                 if use_cache:
@@ -128,7 +128,7 @@ class CategoryService:
                     from ai.ollama_client import OllamaClient
                     state = AIServiceManager.instance().get_state()
                     # TODO(P0-3): 迁移到 AIServiceManager.submit_task() 异步执行，避免主线程阻塞
-                    ollama = OllamaClient(model=state.model_name or "gemma4:4b", timeout=30)
+                    ollama = OllamaClient(model=state.model_name or "gemma4:4b", timeout=300)
                     category = ollama.categorize(app_name, url)
                     self.cache_category(app_name, category)
                 

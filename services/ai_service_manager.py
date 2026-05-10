@@ -69,7 +69,7 @@ class AIServiceManager(QObject):
         self.state_changed.emit(snapshot)
 
     # ── 配置 ──
-    def configure(self, host: str, model: str, timeout: int = 30):
+    def configure(self, host: str, model: str, timeout: int = 300):
         """更新连接配置，触发后台重新探测"""
         self._worker_thread.update_config(host, model, timeout)
 

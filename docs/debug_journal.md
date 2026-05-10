@@ -5,6 +5,34 @@
 
 ---
 
+## 2026-05-10 —— P3 改动中 QListWidget → QListView 迁移导致 0xC0000409 崩溃
+
+### 现象
+在执行 `docs/comprehensive_optimization_report_2026-05-09.md` 的 P3 任务时，将 `ui/main_window.py` 的列表渲染从 `QListWidget + setItemWidget` 迁移到 `QListView + QAbstractListModel + QStyledItemDelegate` 后，程序登录后立即崩溃，退出代码 `-1073740791 (0xC0000409)`。
+
+### 排查过程
+1. **定位崩溃阶段**：通过 `print` 逐步排查，崩溃发生在 `MainWindow.__init__` → `setup_ui()` 执行过程中
+2. **隔离变量**：将 `main_window.py` 回退到原始 `QListWidget` 版本后，程序恢复正常运行
+3. **验证 QListView 组件**：单独测试 `QListView + AccountListModel + AccountItemDelegate` 的最小化场景（无真实数据）可正常运行，说明问题出在 delegate `paint` 与真实 `Account` 数据对象交互的特定条件下
+4. **检查 agent 拆分副作用**：尝试在保留 QListWidget 的前提下提取 `AIChatRenderer` 和内部类时，agent 误删了 `highlight_matched_accounts`、`clear_account_highlight`、`_on_ai_anchor_clicked` 等方法，导致二次报错 `AttributeError`
+5. **最终方案**：恢复 `main_window.py` 为原始版本，仅添加 `core.constants` 导入和硬编码路径替换
+
+### 根因
+`QListView` 的自定义 `QStyledItemDelegate.paint()` 在渲染真实数据库中的 `Account` 对象时，某些属性访问或绘制操作与 Qt C++ 层产生冲突，触发了 `STATUS_STACK_BUFFER_OVERRUN`（`0xC0000409`）。最小化测试无法复现，说明问题与真实数据状态、qt-material 全局样式表、或 7000+ 行大文件上下文有关。
+
+### 解决方案
+1. **回退 `main_window.py`**：恢复原始 `QListWidget + setItemWidget` 实现
+2. **保留技术储备**：`ui/models/account_list_model.py`、`ui/delegates/account_item_delegate.py` 等新建文件保留但不启用，待后续充分隔离测试后再尝试迁移
+3. **补充 `models/__init__.py`**：P3 拆分过程中暴露的缺失包初始化文件
+
+### 经验总结
+- **UI 渲染层大改动必须在真实数据环境下充分测试**：最小化测试通过不代表真实场景安全
+- **报告中标注"后续迭代"的建议应严格执行**：本次 `QListView` 迁移在报告中明确标注"建议保留在后续迭代中实施"，急于集成导致了生产环境崩溃
+- **Agent 自动化大文件重构存在误删风险**：AI agent 在提取方法/类时，容易将看似相关但实际独立的方法一并删除，人工审查不可或缺
+- **`0xC0000409` 在 PyQt 自定义绘制中往往是底层渲染冲突**：优先排查 delegate paint、样式表、widget 树深度等 Qt 底层因素
+
+---
+
 ## 2026-05-07 | 主界面视图持久化：操作后自动跳回默认视图
 
 ### 现象

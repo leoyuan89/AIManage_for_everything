@@ -27,6 +27,7 @@ from PyQt6.QtWidgets import QCompleter
 
 from core.database import DatabaseManager
 from core.clipboard import ClipboardManager
+from core.constants import DATA_DIR, BACKUP_DIR, VAULT_DB_PATH, VAULT_URLS_DB_PATH, CONFIG_PATH, COMPACT_VIEW_PATH
 from core.theme_manager import (
     ThemeManager, ThemeColors, style_button_primary, style_button_danger,
     style_bar, style_panel, style_input, style_scrollbar, get_icon
@@ -1329,7 +1330,7 @@ class MainWindow(QMainWindow):
         from core.url_database import URLDatabaseManager
         from services.url_service import URLService
         
-        data_dir = Path.home() / '.local_password_vault'
+        data_dir = DATA_DIR
         data_dir.mkdir(exist_ok=True)
         url_db_path = data_dir / 'vault_urls.db'
         self._url_db = URLDatabaseManager(str(url_db_path))
@@ -3151,7 +3152,7 @@ class MainWindow(QMainWindow):
     
     def _save_compact_preference(self, enabled: bool):
         import json, os
-        config_path = os.path.join(os.path.expanduser('~'), '.local_password_vault', 'compact_view.json')
+        config_path = str(COMPACT_VIEW_PATH)
         config = {}
         try:
             with open(config_path, 'r') as f:
@@ -3165,7 +3166,7 @@ class MainWindow(QMainWindow):
     
     def _load_compact_preference(self) -> bool:
         import json, os
-        config_path = os.path.join(os.path.expanduser('~'), '.local_password_vault', 'compact_view.json')
+        config_path = str(COMPACT_VIEW_PATH)
         try:
             with open(config_path, 'r') as f:
                 config = json.load(f)
@@ -3523,7 +3524,7 @@ class MainWindow(QMainWindow):
             self._reload_categories()
 
     def _get_column_config_path(self):
-        data_dir = Path.home() / '.local_password_vault'
+        data_dir = DATA_DIR
         vault = self.current_vault
         return data_dir / f'columns_{vault}.json'
 
@@ -6082,7 +6083,7 @@ class MainWindow(QMainWindow):
             import json, os
             delay = 20
             try:
-                config_path = os.path.join(os.path.expanduser('~'), '.local_password_vault', 'config.json')
+                config_path = str(CONFIG_PATH)
                 with open(config_path, 'r', encoding='utf-8') as f:
                     config = json.load(f)
                     delay = config.get('clipboard_clear_delay', 20)
@@ -7165,17 +7166,17 @@ class MainWindow(QMainWindow):
         import shutil
         from datetime import datetime
 
-        backup_dir = os.path.join(os.path.expanduser('~'), '.local_password_vault', 'backups')
+        backup_dir = str(BACKUP_DIR)
         os.makedirs(backup_dir, exist_ok=True)
 
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
-        vault_path = os.path.join(os.path.expanduser('~'), '.local_password_vault', 'vault.db')
+        vault_path = str(VAULT_DB_PATH)
         if os.path.exists(vault_path):
             backup_path = os.path.join(backup_dir, f'vault_backup_{timestamp}.db')
             shutil.copy2(vault_path, backup_path)
 
-        urls_path = os.path.join(os.path.expanduser('~'), '.local_password_vault', 'vault_urls.db')
+        urls_path = str(VAULT_URLS_DB_PATH)
         if os.path.exists(urls_path):
             backup_path = os.path.join(backup_dir, f'urls_backup_{timestamp}.db')
             shutil.copy2(urls_path, backup_path)

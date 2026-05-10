@@ -57,7 +57,7 @@ Keep it concise, each recommendation on one line starting with a number.
         try:
             ai_manager = AIServiceManager.instance()
             # TODO(P0-3): 迁移到 AIServiceManager.submit_task() 异步执行，避免主线程阻塞
-            ollama = OllamaClient(model=ai_manager.get_state().model_name or "gemma4:4b", timeout=30)
+            ollama = OllamaClient(model=ai_manager.get_state().model_name or "gemma4:4b", timeout=300)
             
             full_response = ""
             for token in ollama.generate_stream(prompt, temperature=0.5):
@@ -904,7 +904,7 @@ Keep it concise, each recommendation on one line starting with a number.
             from ai.ollama_client import OllamaClient
             ai_manager = AIServiceManager.instance()
             # TODO(P0-3): 迁移到 AIServiceManager.submit_task() 异步执行，避免主线程阻塞
-            ollama = OllamaClient(model=ai_manager.get_state().model_name or "gemma4:4b", timeout=30)
+            ollama = OllamaClient(model=ai_manager.get_state().model_name or "gemma4:4b", timeout=300)
 
             full_response = ""
             for token in ollama.generate_stream(prompt, temperature=0.5):

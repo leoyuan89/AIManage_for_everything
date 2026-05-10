@@ -111,7 +111,7 @@ class AIWorkerThread(QThread):
         self._config = {
             "host": "http://localhost:11434",
             "model": "gemma4:4b",
-            "timeout": 30,
+            "timeout": 300,
         }
         self._ollama_client: Optional[OllamaClient] = None
 
@@ -132,7 +132,7 @@ class AIWorkerThread(QThread):
                 )
             return self._ollama_client
 
-    def update_config(self, host: str, model: str, timeout: int = 30):
+    def update_config(self, host: str, model: str, timeout: int = 300):
         """更新连接配置，触发后台重新探测"""
         with QMutexLocker(self._mutex):
             self._config = {

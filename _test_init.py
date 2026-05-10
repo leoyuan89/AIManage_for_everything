@@ -4,12 +4,13 @@ from PyQt6.QtWidgets import QApplication
 from core.theme_manager import ThemeManager
 from core.crypto import CryptoManager
 from core.database import DatabaseManager
+from core.constants import DATA_DIR
 
 app = QApplication(sys.argv)
 ThemeManager.instance().init_app(app, 'light')
 print('Theme OK')
 
-data_dir = Path.home() / '.local_password_vault'
+data_dir = DATA_DIR
 config_path = data_dir / 'config.json'
 db_path = data_dir / 'vault.db'
 

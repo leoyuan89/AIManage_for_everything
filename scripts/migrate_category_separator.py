@@ -23,6 +23,12 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+# 添加项目根目录到路径以导入常量
+_script_dir = Path(__file__).resolve().parent
+_project_root = _script_dir.parent
+sys.path.insert(0, str(_project_root))
+from core.constants import DATA_DIR
+
 
 # ---------------------------------------------------------------------------
 # 内部辅助函数
@@ -135,7 +141,7 @@ def _process_url_categories(conn: sqlite3.Connection) -> int:
 # ---------------------------------------------------------------------------
 
 def migrate() -> None:
-    data_dir = Path.home() / ".local_password_vault"
+    data_dir = DATA_DIR
 
     if not data_dir.exists():
         print(f"数据目录不存在: {data_dir}")

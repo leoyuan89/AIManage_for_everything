@@ -1,32 +1,31 @@
 """
-AI Tool Calling 基础设施（向后兼容入口）
+AI 工具子模块聚合入口
 
-⚠️ 本文件已按功能拆分为 services/tools/ 下的多个子模块：
-    - base.py          — 基础设施（PermissionLevel, ToolResult, AITool, ToolRegistry）
-    - search_tools.py  — 搜索类工具
-    - filter_tools.py  — 过滤类工具
-    - batch_tools.py   — 批量操作类工具
-    - classify_tools.py— 智能分类类工具
-    - merge_tools.py   — 合并去重类工具
-    - info_tools.py    — 详情查询和统计类工具
-    - utility_tools.py — 辅助工具类
-
-所有符号均从 services.tools 重新导出，以保持向后兼容。
+导入本模块会自动触发所有工具的 ToolRegistry 注册。
 """
 
-from services.tools import (
-    # 基础设施
+# 基础设施
+from .base import (
     PermissionLevel,
     ToolResult,
     AITool,
     ToolRegistry,
-    # 搜索类
+)
+
+# 搜索类
+from .search_tools import (
     SemanticSearchAccountsTool,
     SemanticSearchUrlsTool,
-    # 过滤类
+)
+
+# 过滤类
+from .filter_tools import (
     SemanticFilterAccountsTool,
     SemanticFilterUrlsTool,
-    # 批量操作类
+)
+
+# 批量操作类
+from .batch_tools import (
     BatchAddAccountsTool,
     BatchAddUrlsTool,
     BatchUpdateAccountsTool,
@@ -39,21 +38,33 @@ from services.tools import (
     BatchAddTagsUrlsTool,
     BatchDeleteAccountsTool,
     BatchDeleteUrlsTool,
-    # 智能分类类
+)
+
+# 智能分类类
+from .classify_tools import (
     sanitize_ai_category,
     SmartClassifyAccountsTool,
     SmartClassifyUrlsTool,
-    # 合并去重类
+)
+
+# 合并去重类
+from .merge_tools import (
     SmartMergeDuplicateAccountsTool,
     SmartMergeDuplicateUrlsTool,
-    # 详情查询类
+)
+
+# 详情查询类
+from .info_tools import (
     GetAccountDetailTool,
     GetUrlDetailTool,
     ListAllCategoriesTool,
     GetCategoryTreeTool,
     GetStatisticsTool,
     GetRecentChangesTool,
-    # 辅助工具类
+)
+
+# 辅助工具类
+from .utility_tools import (
     GenerateAccountRemarkTool,
     GenerateUrlRemarkTool,
     GeneratePasswordTool,
@@ -61,18 +72,18 @@ from services.tools import (
 )
 
 __all__ = [
-    # 基础设施
+    # base
     "PermissionLevel",
     "ToolResult",
     "AITool",
     "ToolRegistry",
-    # 搜索类
+    # search
     "SemanticSearchAccountsTool",
     "SemanticSearchUrlsTool",
-    # 过滤类
+    # filter
     "SemanticFilterAccountsTool",
     "SemanticFilterUrlsTool",
-    # 批量操作类
+    # batch
     "BatchAddAccountsTool",
     "BatchAddUrlsTool",
     "BatchUpdateAccountsTool",
@@ -85,21 +96,21 @@ __all__ = [
     "BatchAddTagsUrlsTool",
     "BatchDeleteAccountsTool",
     "BatchDeleteUrlsTool",
-    # 智能分类类
+    # classify
     "sanitize_ai_category",
     "SmartClassifyAccountsTool",
     "SmartClassifyUrlsTool",
-    # 合并去重类
+    # merge
     "SmartMergeDuplicateAccountsTool",
     "SmartMergeDuplicateUrlsTool",
-    # 详情查询类
+    # info
     "GetAccountDetailTool",
     "GetUrlDetailTool",
     "ListAllCategoriesTool",
     "GetCategoryTreeTool",
     "GetStatisticsTool",
     "GetRecentChangesTool",
-    # 辅助工具类
+    # utility
     "GenerateAccountRemarkTool",
     "GenerateUrlRemarkTool",
     "GeneratePasswordTool",

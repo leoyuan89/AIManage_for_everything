@@ -25,6 +25,13 @@
 - Ollama (gemma4:4b) - 仅支持 `/api/generate`，不支持 `/api/embeddings`
 - SQLite + cryptography (密码加密存储)
 
+## AI 大模型超时限制
+
+AI 助手调用大模型时的超时限制：
+- **最低 5 分钟（300 秒）**，最长 10 分钟（600 秒）
+- **不允许改到更低！！！**
+- 涉及文件：`ai/ollama_client.py`、`services/ai_*.py`、`ui/dialogs/health_check_dialog.py` 等所有实例化 `OllamaClient` 的位置
+
 ## 环境配置
 
 **项目专用 Conda 环境**：`D:\Anaconda\envs\Passwordmanage`

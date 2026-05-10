@@ -86,7 +86,7 @@ class QueryMixin:
                 return {"matched_ids": [], "reasoning": "Ollama 未初始化", "confidence_scores": {}}
             from ai.ollama_client import OllamaClient
             state = ai_manager.get_state()
-            # TODO(P0-3): 迁移到 AIServiceManager.submit_task() 异步执行，避免主线程阻塞
+            # 已由 AIQueryThread 在后台线程中调用，不阻塞主线程
             ollama = OllamaClient(model=state.model_name or "gemma4:4b", timeout=300)
             return ollama.semantic_match(query, items_summary)
         except Exception as e:
@@ -156,7 +156,7 @@ class QueryMixin:
             ai_manager = AIServiceManager.instance()
             from ai.ollama_client import OllamaClient
             state = ai_manager.get_state()
-            # TODO(P0-3): 迁移到 AIServiceManager.submit_task() 异步执行，避免主线程阻塞
+            # 已由 AIQueryThread 在后台线程中调用，不阻塞主线程
             ollama = OllamaClient(model=state.model_name or "gemma4:4b", timeout=300)
             result = ollama.parse_command(
                 enhanced_query, db_summary, history,
@@ -332,7 +332,7 @@ class QueryMixin:
             ai_manager = AIServiceManager.instance()
             from ai.ollama_client import OllamaClient
             state = ai_manager.get_state()
-            # TODO(P0-3): 迁移到 AIServiceManager.submit_task() 异步执行，避免主线程阻塞
+            # 已由 AIQueryThread 在后台线程中调用，不阻塞主线程
             ollama = OllamaClient(model=state.model_name or "gemma4:4b", timeout=300)
             token_count = 0
             for token in ollama.generate_stream(prompt, temperature=0.2):
@@ -543,7 +543,7 @@ class QueryMixin:
         from ai.ollama_client import OllamaClient
         from services.ai_service_manager import AIServiceManager
         ai_manager = AIServiceManager.instance()
-        # TODO(P0-3): 迁移到 AIServiceManager.submit_task() 异步执行，避免主线程阻塞
+        # 已由 AIQueryThread 在后台线程中调用，不阻塞主线程
         ollama = OllamaClient(model=ai_manager.get_state().model_name or "gemma4:4b", timeout=300)
         
         tools = []

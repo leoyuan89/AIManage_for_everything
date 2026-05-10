@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QDateEdit, QComboBox, QStackedWidget, QCalendarWidget, QSizePolicy
 )
 from PyQt6.QtCore import Qt, QSize, QTimer, QThread, pyqtSignal, QPoint, QStringListModel, QDate
-from PyQt6.QtGui import QIcon, QFont, QColor, QTextCursor
+from PyQt6.QtGui import QIcon, QFont, QColor, QTextCursor, QPainter, QPixmap, QBrush, QPen
 from PyQt6.QtWidgets import QCompleter
 
 
@@ -32,6 +32,7 @@ from core.theme_manager import (
     ThemeManager, ThemeColors, style_button_primary, style_button_danger,
     style_bar, style_panel, style_input, style_scrollbar, get_icon
 )
+from core.icon_manager import IconManager
 from services.account_service import AccountService
 from services.category_service import CategoryService
 from services.ai_classification_service import AIClassificationService
@@ -46,6 +47,7 @@ from .url_dialog import URLEditDialog
 from .export_dialog import ExportDialog
 from .settings_dialog import SettingsDialog
 from .dialogs.health_check_dialog import HealthCheckDialog
+from .dialogs.help_dialog import HelpDialog
 from .batch_add_preview_widget import BatchAddPreviewWidget
 from .lock_screen import LockScreen, IdleTimer
 from .widgets.account_list_item import AccountListItem
@@ -1249,6 +1251,7 @@ class MainWindow(QMainWindow):
     def __init__(self, db_manager: DatabaseManager, config_path: str = None):
         colors = ThemeManager.instance().colors
         super().__init__()
+        self.setWindowIcon(IconManager.app_icon())
         self.db = db_manager
         self.config_path = config_path
         self._ai_manager = AIServiceManager.instance()
@@ -1617,6 +1620,33 @@ class MainWindow(QMainWindow):
         self.btn_settings.clicked.connect(self.on_settings)
         top_layout.addWidget(self.btn_settings)
         
+        top_layout.addSpacing(10)
+        
+        # 帮助按钮（SVG 灯泡图标，默认透明背景融入工具栏）
+        colors = ThemeManager.instance().colors
+        self.btn_help = QPushButton()
+        self.btn_help.setToolTip("使用帮助")
+        self.btn_help.setFixedSize(32, 32)
+        self.btn_help.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_help.setIcon(IconManager.help_icon(size=20, color=colors.accent_orange))
+        self.btn_help.setIconSize(QSize(20, 20))
+        self.btn_help.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                border: 1px solid transparent;
+                border-radius: 6px;
+            }}
+            QPushButton:hover {{
+                background-color: {colors.accent_orange_bg};
+                border-color: {colors.accent_orange};
+            }}
+            QPushButton:pressed {{
+                background-color: {colors.accent_orange_bg};
+            }}
+        """)
+        self.btn_help.clicked.connect(self._on_show_help)
+        top_layout.addWidget(self.btn_help)
+        
         top_layout.addSpacing(8)
         
         main_layout.addWidget(self.top_bar)
@@ -1868,13 +1898,13 @@ class MainWindow(QMainWindow):
                 height: 16px;
             }}
             QTreeWidget::indicator:unchecked {{
-                border: 2px solid {colors.accent_blue_light};
+                border: 2px solid {colors.text_secondary};
                 background-color: {colors.bg_primary};
                 border-radius: 3px;
             }}
             QTreeWidget::indicator:checked {{
-                background-color: {colors.accent_blue_light};
-                border: 2px solid {colors.accent_blue_light};
+                background-color: {colors.accent_blue};
+                border: 2px solid {colors.accent_blue};
             }}
         """
         self.category_tree.set_normal_style(self._category_tree_normal_style)
@@ -1956,17 +1986,17 @@ class MainWindow(QMainWindow):
         self.lbl_list_title.setStyleSheet(f"color: {colors.text_primary}; padding-bottom: 10px;")
         title_header.addWidget(self.lbl_list_title, 1)
         
-        self.btn_compact_view = QPushButton("📋")
+        self.btn_compact_view = QPushButton()
         self.btn_compact_view.setFixedSize(28, 28)
         self.btn_compact_view.setCheckable(True)
         self.btn_compact_view.setToolTip("切换紧凑视图")
+        self.btn_compact_view.setIcon(IconManager.compact_icon(size=16, color=colors.text_secondary))
+        self.btn_compact_view.setIconSize(QSize(16, 16))
         self.btn_compact_view.setStyleSheet(f"""
             QPushButton {{
                 border: 1px solid {colors.border_default};
                 background-color: {colors.bg_tertiary};
                 border-radius: 4px;
-                font-size: 14px;
-                color: {colors.text_secondary};
             }}
             QPushButton:hover {{
                 background-color: {colors.bg_hover};
@@ -1974,7 +2004,6 @@ class MainWindow(QMainWindow):
             }}
             QPushButton:checked {{
                 background-color: {colors.accent_blue_bg};
-                color: {colors.accent_blue};
                 border-color: {colors.accent_blue};
             }}
         """)
@@ -3062,11 +3091,26 @@ class MainWindow(QMainWindow):
         
         self._save_scroll_state()
         
-        for category in self._selected_categories:
+        try:
             if self.current_vault == 'accounts':
-                self.account_service.delete_category(category)
+                db = self.account_service.db
             else:
-                self._url_service.delete_category(category)
+                db = self._url_service.db
+            with db.transaction():
+                for category in self._selected_categories:
+                    if self.current_vault == 'accounts':
+                        self.account_service._delete_category_no_commit(category)
+                    else:
+                        self._url_service._delete_category_no_commit(category)
+        except Exception as e:
+            logger.error("批量删除类别事务失败: %s", e)
+            QMessageBox.critical(
+                self,
+                "删除失败",
+                "删除失败，所有变更已回滚"
+            )
+            self._restore_scroll_state()
+            return
         
         self._selected_categories.clear()
         self._on_category_batch_delete_toggle()  # 退出选择模式
@@ -3171,7 +3215,7 @@ class MainWindow(QMainWindow):
         config_path = str(COMPACT_VIEW_PATH)
         config = {}
         try:
-            with open(config_path, 'r') as f:
+            with open(config_path, 'r', encoding='utf-8') as f:
                 config = json.load(f)
         except Exception:
             pass
@@ -3180,7 +3224,7 @@ class MainWindow(QMainWindow):
         
         def _do_save():
             try:
-                with open(config_path, 'w') as f:
+                with open(config_path, 'w', encoding='utf-8') as f:
                     json.dump(config, f)
             except Exception as e:
                 logger.warning("保存紧凑视图配置失败: %s", e)
@@ -3191,7 +3235,7 @@ class MainWindow(QMainWindow):
         import json, os
         config_path = str(COMPACT_VIEW_PATH)
         try:
-            with open(config_path, 'r') as f:
+            with open(config_path, 'r', encoding='utf-8') as f:
                 config = json.load(f)
                 return config.get(self.current_vault, False)
         except Exception:
@@ -4466,26 +4510,28 @@ class MainWindow(QMainWindow):
             self._reload_categories()
     
     def _on_import_from_manager(self):
-        """从其他密码管理器导入（Bitwarden/LastPass CSV/JSON）"""
+        """从其他密码管理器导入（Bitwarden/LastPass/1Password/KeePass CSV/JSON/XML）"""
         from services.import_service import ManagerImportService
         from PyQt6.QtWidgets import QFileDialog
 
         file_path, _ = QFileDialog.getOpenFileName(
             self, "选择导入文件",
-            "", "所有支持格式 (*.csv *.json);;CSV 文件 (*.csv);;JSON 文件 (*.json)"
+            "", "所有支持格式 (*.csv *.json *.xml);;CSV 文件 (*.csv);;JSON 文件 (*.json);;XML 文件 (*.xml)"
         )
         if not file_path:
             return
 
         fmt = ManagerImportService.detect_format(file_path)
         if fmt == 'unknown':
-            QMessageBox.warning(self, "无法识别", "无法识别该文件格式，请确认文件来自 Bitwarden 或 LastPass")
+            QMessageBox.warning(self, "无法识别", "无法识别该文件格式，请确认文件来自 Bitwarden、LastPass、1Password 或 KeePass")
             return
 
         fmt_labels = {
             'bitwarden_csv': 'Bitwarden CSV',
             'bitwarden_json': 'Bitwarden JSON',
             'lastpass_csv': 'LastPass CSV',
+            '1password_csv': '1Password CSV',
+            'keepass_xml': 'KeePass XML',
         }
 
         try:
@@ -4562,6 +4608,8 @@ class MainWindow(QMainWindow):
                     widget.on_theme_changed()
         finally:
             self.account_list.setUpdatesEnabled(True)
+        # AI 聊天区域需要全量重建以应用新主题色
+        self._ai_update_chat_display()
 
     def _reapply_styles(self, colors: ThemeColors):
         """重新应用所有静态样式（主题切换时调用）"""
@@ -4612,13 +4660,13 @@ class MainWindow(QMainWindow):
                 height: 16px;
             }}
             QTreeWidget::indicator:unchecked {{
-                border: 2px solid {colors.accent_blue_light};
+                border: 2px solid {colors.text_secondary};
                 background-color: {colors.bg_primary};
                 border-radius: 3px;
             }}
             QTreeWidget::indicator:checked {{
-                background-color: {colors.accent_blue_light};
-                border: 2px solid {colors.accent_blue_light};
+                background-color: {colors.accent_blue};
+                border: 2px solid {colors.accent_blue};
             }}
         """
         self.category_tree.set_normal_style(self._category_tree_normal_style)
@@ -4882,6 +4930,8 @@ class MainWindow(QMainWindow):
                 border-color: {colors.accent_blue};
             }}
         """)
+        self.btn_compact_view.setIcon(IconManager.compact_icon(size=16, color=colors.text_secondary))
+        self.btn_help.setIcon(IconManager.help_icon(size=20, color=colors.accent_orange))
 
         # === 筛选面板 ===
         self.filter_panel.setStyleSheet(f"background-color: {colors.bg_secondary}; border-bottom: 1px solid {colors.border_default};")
@@ -4969,6 +5019,11 @@ class MainWindow(QMainWindow):
 
         # 主题切换的样式重刷已由 _on_theme_changed 统一处理
         self.repaint()
+    
+    def _on_show_help(self):
+        """打开使用帮助对话框"""
+        dialog = HelpDialog(self)
+        dialog.exec()
     
     def _on_ai_state_changed(self, state):
         """AI 状态变化回调：更新底部状态栏"""
@@ -5252,7 +5307,7 @@ class MainWindow(QMainWindow):
 
         增量追加模式：将段落追加到历史最后一条 assistant 消息，
         使用 QTextCursor 直接插入 HTML，避免高频 setHtml 导致 CPU 飙升。
-        同时保留 1 秒安全定时器，定期全量重建修复可能的 HTML 损坏。
+        流式输出期间完全依赖增量追加，不触发全量重建。
         """
         if not getattr(self, '_ai_query_running', False):
             return
@@ -5262,14 +5317,6 @@ class MainWindow(QMainWindow):
                 self.ai_assistant._history[-1].content += segment
                 # 增量追加：直接插入 HTML，避免全量重建
                 self._ai_append_token_html(segment)
-                # 安全定时器：每 1 秒执行一次全量重建，修复可能的 HTML 损坏
-                if self._ai_refresh_timer is None:
-                    from PyQt6.QtCore import QTimer
-                    self._ai_refresh_timer = QTimer(self)
-                    self._ai_refresh_timer.setSingleShot(True)
-                    self._ai_refresh_timer.timeout.connect(self._on_ai_refresh_timeout)
-                self._ai_refresh_timer.stop()
-                self._ai_refresh_timer.start(1000)
             else:
                 logger.warning(" _on_result_token: no assistant msg to append")
         except Exception as e:
@@ -5453,12 +5500,12 @@ class MainWindow(QMainWindow):
         if self._ai_thread is not None:
             try:
                 self._ai_thread.thinking_token.disconnect(self._on_thinking_token)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("断开 thinking_token 信号失败: %s", e)
             try:
                 self._ai_thread.result_token.disconnect(self._on_result_token)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("断开 result_token 信号失败: %s", e)
             self._ai_thread.deleteLater()
             self._ai_thread = None
         
@@ -5917,13 +5964,13 @@ class MainWindow(QMainWindow):
             try:
                 self._ai_thread.thinking_token.disconnect(self._on_thinking_token)
                 logger.debug("[MainWindow] thinking_token disconnected")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("断开 thinking_token 信号失败: %s", e)
             try:
                 self._ai_thread.result_token.disconnect(self._on_result_token)
                 logger.debug("[MainWindow] result_token disconnected")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("断开 result_token 信号失败: %s", e)
             # 释放线程引用，允许 GC
             self._ai_thread = None
         
@@ -6281,21 +6328,43 @@ class MainWindow(QMainWindow):
         self.load_accounts()
     
     def _append_ai_system_msg(self, content: str):
-        """追加系统消息到 AI 对话历史"""
+        """追加系统消息到 AI 对话历史并增量显示"""
         from services.ai_assistant_service import ConversationMessage
         from datetime import datetime
         self.ai_assistant._history.append(ConversationMessage(
             role='system', content=content,
             timestamp=datetime.now().strftime("%H:%M:%S")
         ))
-        self._ai_update_chat_display()
-    
+        colors = ThemeManager.instance().colors
+        html = (
+            f'<div style="margin:8px 0;padding:6px 10px;background:{colors.bg_secondary};'
+            f'border-radius:4px;color:{colors.text_tertiary};font-size:12px;">'
+            f'{self._escape_html(content)}</div>'
+        )
+        self._ai_append_message(html)
+
     def _ai_start_typing(self, full_text: str):
-        """设置 assistant 消息内容并执行一次全量重建，为后续增量追加做准备"""
+        """设置 assistant 消息内容并增量追加初始容器，为后续增量追加做准备"""
         if self.ai_assistant._history and self.ai_assistant._history[-1].role == 'assistant':
             self.ai_assistant._history[-1].content = full_text
-        self._ai_update_chat_display()
-    
+        colors = ThemeManager.instance().colors
+        html = (
+            f'<div style="margin:8px 0;">'
+            f'<div style="font-weight:bold;color:{colors.text_primary};margin-bottom:4px;">🦁 炽阳</div>'
+            f'<span style="color:{colors.text_primary};">{self._escape_html(full_text)}</span>'
+            f'</div>'
+        )
+        self._ai_append_message(html)
+
+    def _ai_append_message(self, message_html: str):
+        """使用 QTextCursor 在 result_area 末尾追加 HTML 消息，不触发全量重建"""
+        cursor = self.result_area.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertHtml(message_html)
+        # 自动滚动到底部
+        scrollbar = self.result_area.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
     def _ai_append_token_html(self, token: str):
         """使用 QTextCursor 在 result_area 末尾增量追加 HTML token"""
         colors = ThemeManager.instance().colors
@@ -7039,6 +7108,7 @@ class LocalHelpDialog(QDialog):
     def __init__(self, parent=None):
         colors = ThemeManager.instance().colors
         super().__init__(parent)
+        self.setWindowIcon(IconManager.app_icon())
         self.setWindowTitle("炽阳 使用说明")
         self.setMinimumSize(540, 620)
         self.resize(580, 700)

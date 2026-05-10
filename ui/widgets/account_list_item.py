@@ -232,6 +232,22 @@ class AccountListItem(QWidget):
                 border: none;
                 border-bottom: 1px solid {colors.border_light};
             }}
+            #accountListItem QCheckBox::indicator {{
+                width: 18px;
+                height: 18px;
+                border-radius: 3px;
+            }}
+            #accountListItem QCheckBox::indicator:unchecked {{
+                background-color: {colors.bg_primary};
+                border: 2px solid {colors.text_secondary};
+            }}
+            #accountListItem QCheckBox::indicator:unchecked:hover {{
+                border: 2px solid {colors.accent_blue};
+            }}
+            #accountListItem QCheckBox::indicator:checked {{
+                background-color: {colors.accent_blue};
+                border: 2px solid {colors.accent_blue};
+            }}
             #accountListItem #icon_label {{
                 background-color: {color};
                 color: {colors.text_on_accent};
@@ -308,8 +324,8 @@ class AccountListItem(QWidget):
                     border-radius: 4px;
                     padding: 1px 6px;
                 """)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("密码强度评估失败: %s", e)
 
     def set_selection_mode(self, enabled: bool):
         self.checkbox.setVisible(enabled)
@@ -350,8 +366,8 @@ class AccountListItem(QWidget):
             if url:
                 self._clipboard.copy_text(url)
                 self._show_copy_toast("网址")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("复制网址失败: %s", e)
     
     def _on_copy_username(self):
         try:
@@ -359,8 +375,8 @@ class AccountListItem(QWidget):
             if username:
                 self._clipboard.copy_text(username)
                 self._show_copy_toast("账号")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("复制账号失败: %s", e)
     
     def _on_copy_password(self):
         try:
@@ -368,16 +384,16 @@ class AccountListItem(QWidget):
             if password:
                 self._clipboard.copy_text(password, is_password=True)
                 self._show_copy_toast("密码", is_password=True)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("复制密码失败: %s", e)
     
     def _show_copy_toast(self, label, is_password=False):
         try:
             parent = self.window()
             if parent and hasattr(parent, 'show_copy_toast'):
                 parent.show_copy_toast(f"{label}已复制", is_password=is_password)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("显示复制提示失败: %s", e)
     
     @staticmethod
     def _format_db_time(value) -> str:
@@ -391,7 +407,8 @@ class AccountListItem(QWidget):
                 if value.tzinfo is None:
                     value = value.replace(tzinfo=timezone.utc)
                 return value.astimezone().strftime('%Y-%m-%d')
-            except Exception:
+            except Exception as e:
+                logger.debug("时间格式化失败: %s", e)
                 return value.strftime('%Y-%m-%d')
         # 字符串格式
         try:
@@ -403,7 +420,8 @@ class AccountListItem(QWidget):
             else:
                 dt = dt.astimezone(timezone.utc)
             return dt.astimezone().strftime('%Y-%m-%d')
-        except Exception:
+        except Exception as e:
+            logger.debug("时间格式化失败: %s", e)
             return str(value)[:10]
 
     @staticmethod

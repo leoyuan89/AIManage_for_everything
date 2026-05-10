@@ -18,6 +18,7 @@ from services.ai_worker_thread import AIStatus
 
 logger = logging.getLogger(__name__)
 from core.theme_manager import ThemeManager, ThemeColors
+from core.icon_manager import IconManager
 from core.password_generator import generate_password
 
 
@@ -26,6 +27,7 @@ class URLEditDialog(QDialog):
     
     def __init__(self, url_service: URLService, url_item: URLItem = None, parent=None):
         super().__init__(parent)
+        self.setWindowIcon(IconManager.app_icon())
         self.url_service = url_service
         self.url_item = url_item or URLItem()
         self.is_edit_mode = url_item is not None and url_item.id is not None

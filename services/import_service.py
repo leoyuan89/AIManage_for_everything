@@ -2,7 +2,9 @@
 批量导入服务模块
 支持：Markdown (.md)、文本 (.txt)、Excel (.xlsx) 导入
 """
+import csv
 import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
@@ -347,63 +349,66 @@ class ExcelParser:
             raise ImportError("请安装 openpyxl：pip install openpyxl")
         
         wb = load_workbook(file_path)
-        ws = wb.active
-        
-        # 读取表头
-        headers = []
-        header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True))
-        for cell in header_row:
-            headers.append(str(cell) if cell else "")
-        
-        # 映射列索引
-        column_map = {}
-        for idx, header in enumerate(headers):
-            field = _normalize_field_name(header)
-            if field:
-                column_map[field] = idx
-        
-        # 检查必要列
-        has_app_name = 'app_name' in column_map
-        has_username = 'username' in column_map
-        has_password = 'password' in column_map
-        
-        items = []
-        for row in ws.iter_rows(min_row=2, values_only=True):
-            if not row or all(v is None or str(v).strip() == '' for v in row):
-                continue
+        try:
+            ws = wb.active
             
-            item = ImportItem()
+            # 读取表头
+            headers = []
+            header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True))
+            for cell in header_row:
+                headers.append(str(cell) if cell else "")
             
-            if has_app_name:
-                item.app_name = str(row[column_map['app_name']]) if row[column_map['app_name']] is not None else ""
-            if has_username:
-                item.username = str(row[column_map['username']]) if row[column_map['username']] is not None else ""
-            if has_password:
-                item.password = str(row[column_map['password']]) if row[column_map['password']] is not None else ""
-            if 'url' in column_map:
-                item.url = str(row[column_map['url']]) if row[column_map['url']] is not None else ""
-            if 'category' in column_map:
-                item.category = str(row[column_map['category']]) if row[column_map['category']] is not None else ""
-            if 'remark' in column_map:
-                item.remark = str(row[column_map['remark']]) if row[column_map['remark']] is not None else ""
-            if 'tags' in column_map:
-                item.tags = str(row[column_map['tags']]) if row[column_map['tags']] is not None else ""
+            # 映射列索引
+            column_map = {}
+            for idx, header in enumerate(headers):
+                field = _normalize_field_name(header)
+                if field:
+                    column_map[field] = idx
             
-            # 验证
-            if not item.app_name or not item.username or not item.password:
-                item.valid = False
-                missing = []
-                if not item.app_name:
-                    missing.append('应用名')
-                if not item.username:
-                    missing.append('账号')
-                if not item.password:
-                    missing.append('密码')
-                item.error_msg = f"缺少字段：{', '.join(missing)}"
+            # 检查必要列
+            has_app_name = 'app_name' in column_map
+            has_username = 'username' in column_map
+            has_password = 'password' in column_map
             
-            items.append(item)
-        
-        return items
+            items = []
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                if not row or all(v is None or str(v).strip() == '' for v in row):
+                    continue
+                
+                item = ImportItem()
+                
+                if has_app_name:
+                    item.app_name = str(row[column_map['app_name']]) if row[column_map['app_name']] is not None else ""
+                if has_username:
+                    item.username = str(row[column_map['username']]) if row[column_map['username']] is not None else ""
+                if has_password:
+                    item.password = str(row[column_map['password']]) if row[column_map['password']] is not None else ""
+                if 'url' in column_map:
+                    item.url = str(row[column_map['url']]) if row[column_map['url']] is not None else ""
+                if 'category' in column_map:
+                    item.category = str(row[column_map['category']]) if row[column_map['category']] is not None else ""
+                if 'remark' in column_map:
+                    item.remark = str(row[column_map['remark']]) if row[column_map['remark']] is not None else ""
+                if 'tags' in column_map:
+                    item.tags = str(row[column_map['tags']]) if row[column_map['tags']] is not None else ""
+                
+                # 验证
+                if not item.app_name or not item.username or not item.password:
+                    item.valid = False
+                    missing = []
+                    if not item.app_name:
+                        missing.append('应用名')
+                    if not item.username:
+                        missing.append('账号')
+                    if not item.password:
+                        missing.append('密码')
+                    item.error_msg = f"缺少字段：{', '.join(missing)}"
+                
+                items.append(item)
+            
+            return items
+        finally:
+            wb.close()
 
 
 class URLParser:
@@ -447,43 +452,46 @@ class URLParser:
             raise ImportError("请安装 openpyxl：pip install openpyxl")
         
         wb = load_workbook(file_path)
-        ws = wb.active
-        
-        # 读取表头
-        headers = []
-        header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True))
-        for cell in header_row:
-            headers.append(str(cell) if cell else "")
-        
-        # 映射列
-        column_map = {}
-        for idx, header in enumerate(headers):
-            field = _normalize_field_name(header)
-            if field:
-                column_map[field] = idx
-        
-        items = []
-        for row in ws.iter_rows(min_row=2, values_only=True):
-            if not row:
-                continue
+        try:
+            ws = wb.active
             
-            url = ""
-            title = ""
-            category = ""
+            # 读取表头
+            headers = []
+            header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True))
+            for cell in header_row:
+                headers.append(str(cell) if cell else "")
             
-            if 'url' in column_map and row[column_map['url']]:
-                url = str(row[column_map['url']])
-            if 'app_name' in column_map and row[column_map['app_name']]:
-                title = str(row[column_map['app_name']])
-            if 'category' in column_map and row[column_map['category']]:
-                category = str(row[column_map['category']])
+            # 映射列
+            column_map = {}
+            for idx, header in enumerate(headers):
+                field = _normalize_field_name(header)
+                if field:
+                    column_map[field] = idx
             
-            if url:
-                if not url.startswith(('http://', 'https://')):
-                    url = 'https://' + url
-                items.append(URLItem(title=title, url=url, category=category))
-        
-        return items
+            items = []
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                if not row:
+                    continue
+                
+                url = ""
+                title = ""
+                category = ""
+                
+                if 'url' in column_map and row[column_map['url']]:
+                    url = str(row[column_map['url']])
+                if 'app_name' in column_map and row[column_map['app_name']]:
+                    title = str(row[column_map['app_name']])
+                if 'category' in column_map and row[column_map['category']]:
+                    category = str(row[column_map['category']])
+                
+                if url:
+                    if not url.startswith(('http://', 'https://')):
+                        url = 'https://' + url
+                    items.append(URLItem(title=title, url=url, category=category))
+            
+            return items
+        finally:
+            wb.close()
     
     @staticmethod
     def parse_html_bookmarks(file_path: str) -> List[URLItem]:
@@ -609,16 +617,22 @@ class ManagerImportService:
         ext = file_path.lower().rsplit('.', 1)[-1] if '.' in file_path else ''
         with open(file_path, 'r', encoding='utf-8') as f:
             first_line = f.readline().strip()
-        if ext == 'json':
-            return 'bitwarden_json'
-        elif ext in ('csv', 'txt'):
-            fl = first_line.lower()
-            if 'name' in fl and 'login_uri' in fl:
-                return 'bitwarden_csv'
-            elif 'name' in fl and 'url' in fl and 'username' in fl:
-                return 'bitwarden_csv'
-            elif 'url' in fl and 'username' in fl and 'password' in fl:
-                return 'lastpass_csv'
+            if ext == 'json':
+                return 'bitwarden_json'
+            elif ext == 'xml':
+                head = f.read(2048)
+                if '<KeePassFile>' in head:
+                    return 'keepass_xml'
+            elif ext in ('csv', 'txt'):
+                fields = [s.strip().lower() for s in first_line.split(',')]
+                if 'title' in fields and ('website' in fields or 'url' in fields) and 'username' in fields:
+                    return '1password_csv'
+                elif 'name' in fields and 'login_uri' in fields:
+                    return 'bitwarden_csv'
+                elif 'name' in fields and 'url' in fields and 'username' in fields:
+                    return 'bitwarden_csv'
+                elif 'url' in fields and 'username' in fields and 'password' in fields:
+                    return 'lastpass_csv'
         return 'unknown'
 
     @staticmethod
@@ -630,6 +644,10 @@ class ManagerImportService:
             return fmt, ManagerImportService._parse_bitwarden_json(file_path)
         elif fmt == 'lastpass_csv':
             return fmt, ManagerImportService._parse_lastpass_csv(file_path)
+        elif fmt == '1password_csv':
+            return fmt, ManagerImportService._parse_1password_csv(file_path)
+        elif fmt == 'keepass_xml':
+            return fmt, ManagerImportService._parse_keepass_xml(file_path)
         else:
             raise ValueError("无法识别该文件格式")
 
@@ -692,4 +710,84 @@ class ManagerImportService:
                     'remark': row.get('extra', ''),
                     'category': row.get('grouping', '') or '其他',
                 })
+        return accounts
+
+    @staticmethod
+    def _parse_1password_csv(file_path: str) -> List[Dict]:
+        """解析 1Password 导出的 CSV 文件。"""
+        accounts = []
+        with open(file_path, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                # 字段名可能带前导空格，做 normalized dict
+                norm = {k.strip().lower(): v for k, v in row.items()}
+                title = norm.get('title', '')
+                if not title:
+                    title = '未命名'
+                url = norm.get('url', '')
+                if not url:
+                    url = norm.get('website', '')
+                remark = norm.get('notes', '')
+                otp = norm.get('otpauth', '')
+                if otp:
+                    if remark:
+                        remark += f"\n[1Password OTP] {otp}"
+                    else:
+                        remark = f"[1Password OTP] {otp}"
+                accounts.append({
+                    'app_name': title,
+                    'url': url,
+                    'username': norm.get('username', ''),
+                    'password': norm.get('password', ''),
+                    'remark': remark,
+                    'category': norm.get('category', '') or '其他',
+                })
+        return accounts
+
+    @staticmethod
+    def _parse_keepass_xml(file_path: str) -> List[Dict]:
+        """解析 KeePass 导出的 XML 文件。"""
+        accounts = []
+        try:
+            tree = ET.parse(file_path)
+        except ET.ParseError as e:
+            raise ValueError(f"XML 解析失败：{e}")
+        root = tree.getroot()
+        root_elem = root.find('Root')
+        if root_elem is None:
+            return accounts
+
+        def _parse_group(group_elem, parent_category=''):
+            group_name = ''
+            name_node = group_elem.find('Name')
+            if name_node is not None and name_node.text:
+                group_name = name_node.text.strip()
+            current_category = group_name or parent_category or '其他'
+
+            for entry in group_elem.findall('Entry'):
+                strings = {}
+                for string in entry.findall('String'):
+                    key_node = string.find('Key')
+                    val_node = string.find('Value')
+                    if key_node is not None and key_node.text:
+                        key = key_node.text.strip()
+                        val = val_node.text if val_node is not None and val_node.text else ''
+                        strings[key] = val
+                title = strings.get('Title', '')
+                if not title:
+                    continue
+                accounts.append({
+                    'app_name': title,
+                    'username': strings.get('UserName', ''),
+                    'password': strings.get('Password', ''),
+                    'url': strings.get('URL', ''),
+                    'remark': strings.get('Notes', ''),
+                    'category': current_category,
+                })
+
+            for sub_group in group_elem.findall('Group'):
+                _parse_group(sub_group, current_category)
+
+        for group in root_elem.findall('Group'):
+            _parse_group(group)
         return accounts

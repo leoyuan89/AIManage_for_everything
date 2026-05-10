@@ -163,8 +163,8 @@ class URLService:
         orders = {}
         try:
             orders = self.db.get_category_orders()
-        except Exception:
-            logger.debug("读取分类排序失败", exc_info=True)
+        except Exception as e:
+            logger.warning("读取分类排序失败: %s", e)
         
         # 只显示数据库中真实存在的分类（不再硬编码默认分类）
         all_cats = db_cats
@@ -223,17 +223,18 @@ class URLService:
         matcher = get_prefix_matcher(old_category)
         all_urls = self.get_all_urls()
         updated = False
-        for url_item in all_urls:
-            if matcher(url_item.category):
-                if url_item.category == old_category:
-                    new_cat = new_category
-                else:
-                    suffix = url_item.category[len(old_category):]
-                    new_cat = new_category + suffix
-                self.db.update_url(url_item.id, {'category': new_cat})
-                updated = True
-        # 同步更新 category_order 表（包括空分类）
-        self.db.rename_category_order(old_category, new_category)
+        with self.db.transaction():
+            for url_item in all_urls:
+                if matcher(url_item.category):
+                    if url_item.category == old_category:
+                        new_cat = new_category
+                    else:
+                        suffix = url_item.category[len(old_category):]
+                        new_cat = new_category + suffix
+                    self.db.update_url(url_item.id, {'category': new_cat})
+                    updated = True
+            # 同步更新 category_order 表（包括空分类）
+            self.db.rename_category_order(old_category, new_category)
         return updated
     
     def add_category(self, category_name: str) -> bool:
@@ -248,23 +249,51 @@ class URLService:
         """
         all_urls = self.get_all_urls()
         updated = False
-        if '>' in category:
-            # 删除二级分类：精确匹配，去掉二级部分
-            parent = category.split('>')[0].strip()
-            for url_item in all_urls:
-                if url_item.category == category:
-                    self.db.update_url(url_item.id, {'category': parent})
-                    updated = True
-        else:
-            # 删除一级分类：匹配自身及所有子类，移到"其他"
-            from core.category_utils import get_prefix_matcher
-            matcher = get_prefix_matcher(category)
-            for url_item in all_urls:
-                if matcher(url_item.category):
-                    self.db.update_url(url_item.id, {'category': '其他'})
-                    updated = True
-        # 同步从排序表中删除，确保该分类真正消失
-        self.db.delete_category(category)
+        with self.db.transaction():
+            if '>' in category:
+                # 删除二级分类：精确匹配，去掉二级部分
+                parent = category.split('>')[0].strip()
+                for url_item in all_urls:
+                    if url_item.category == category:
+                        self.db.update_url(url_item.id, {'category': parent})
+                        updated = True
+            else:
+                # 删除一级分类：匹配自身及所有子类，移到"其他"
+                from core.category_utils import get_prefix_matcher
+                matcher = get_prefix_matcher(category)
+                for url_item in all_urls:
+                    if matcher(url_item.category):
+                        self.db.update_url(url_item.id, {'category': '其他'})
+                        updated = True
+            # 同步从排序表中删除，确保该分类真正消失
+            self.db.delete_category(category)
+        return updated
+
+    def _delete_category_no_commit(self, category: str) -> bool:
+        """
+        删除分类（不自行 commit，需在事务中调用）。
+        逻辑与 delete_category 相同，但依赖外层事务进行提交/回滚。
+        """
+        all_urls = self.get_all_urls()
+        updated = False
+        with self.db.transaction():
+            if '>' in category:
+                # 删除二级分类：精确匹配，去掉二级部分
+                parent = category.split('>')[0].strip()
+                for url_item in all_urls:
+                    if url_item.category == category:
+                        self.db.update_url(url_item.id, {'category': parent})
+                        updated = True
+            else:
+                # 删除一级分类：匹配自身及所有子类，移到"其他"
+                from core.category_utils import get_prefix_matcher
+                matcher = get_prefix_matcher(category)
+                for url_item in all_urls:
+                    if matcher(url_item.category):
+                        self.db.update_url(url_item.id, {'category': '其他'})
+                        updated = True
+            # 同步从排序表中删除，确保该分类真正消失
+            self.db.delete_category(category)
         return updated
 
     def promote_category(self, category_path: str) -> bool:
@@ -315,8 +344,8 @@ class URLService:
         try:
             parsed = urlparse(url)
             return f"{parsed.scheme}://{parsed.netloc}/favicon.ico"
-        except Exception:
-            logger.debug("解析网址获取favicon失败: %s", url, exc_info=True)
+        except Exception as e:
+            logger.warning("解析网址获取favicon失败: %s", e)
             return ""
     
     @staticmethod

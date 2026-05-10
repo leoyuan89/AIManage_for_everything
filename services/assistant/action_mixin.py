@@ -292,7 +292,7 @@ class ActionMixin:
                     from services.ai_service_manager import AIServiceManager
                     ai_manager = AIServiceManager.instance()
                     if ai_manager.is_available():
-                        # TODO(P0-3): 迁移到 AIServiceManager.submit_task() 异步执行，避免主线程阻塞
+                        # 已由 AIQueryThread 在后台线程中调用，不阻塞主线程
                         ollama = OllamaClient(model=ai_manager.get_state().model_name or "gemma4:4b", timeout=300)
                         parsed_items, failed_chunks = BatchAddProcessor.parse_batch_text(text, vault_type_for_batch, ollama)
                 except Exception:

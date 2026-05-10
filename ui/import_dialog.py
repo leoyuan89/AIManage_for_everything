@@ -23,6 +23,7 @@ from models.account import Account
 from services.import_service import parse_import_file, ImportItem
 from services.account_service import AccountService
 from core.theme_manager import ThemeManager, ThemeColors
+from core.icon_manager import IconManager
 
 
 class _VaultImportThread(QThread):
@@ -129,6 +130,7 @@ class ImportDialog(QDialog):
     
     def __init__(self, account_service: AccountService, parent=None):
         super().__init__(parent)
+        self.setWindowIcon(IconManager.app_icon())
         self.account_service = account_service
         self.import_items: List[ImportItem] = []
         self.file_type: str = ""
@@ -164,7 +166,7 @@ class ImportDialog(QDialog):
         self.cmb_import_mode = QComboBox()
         self.cmb_import_mode.setMinimumWidth(280)
         self.cmb_import_mode.addItem("普通导入（Markdown/文本/Excel/加密备份）", "normal")
-        self.cmb_import_mode.addItem("从其他管理器导入（Bitwarden/LastPass）", "manager")
+        self.cmb_import_mode.addItem("从其他管理器导入（Bitwarden/LastPass/1Password/KeePass）", "manager")
         self.cmb_import_mode.currentIndexChanged.connect(self._on_mode_changed)
         mode_layout.addWidget(self.cmb_import_mode)
         mode_layout.addStretch()
@@ -274,7 +276,7 @@ class ImportDialog(QDialog):
         """导入方式切换"""
         mode = self.cmb_import_mode.currentData()
         if mode == 'manager':
-            self.txt_file_path.setPlaceholderText("选择 Bitwarden 或 LastPass 导出的 CSV/JSON 文件")
+            self.txt_file_path.setPlaceholderText("选择 Bitwarden、LastPass、1Password 或 KeePass 导出的文件")
         else:
             self.txt_file_path.setPlaceholderText("选择 Markdown (.md)、文本 (.txt)、Excel (.xlsx) 或加密备份 (.vault) 文件")
     
@@ -286,7 +288,7 @@ class ImportDialog(QDialog):
                 self,
                 "选择导入文件",
                 "",
-                "所有支持格式 (*.csv *.json);;CSV 文件 (*.csv);;JSON 文件 (*.json)"
+                "所有支持格式 (*.csv *.json *.xml);;CSV 文件 (*.csv);;JSON 文件 (*.json);;XML 文件 (*.xml)"
             )
         else:
             file_path, _ = QFileDialog.getOpenFileName(
@@ -335,13 +337,15 @@ class ImportDialog(QDialog):
         
         fmt = ManagerImportService.detect_format(file_path)
         if fmt == 'unknown':
-            QMessageBox.warning(self, "无法识别", "无法识别该文件格式，请确认文件来自 Bitwarden 或 LastPass")
+            QMessageBox.warning(self, "无法识别", "无法识别该文件格式，请确认文件来自 Bitwarden、LastPass、1Password 或 KeePass")
             return
         
         fmt_labels = {
             'bitwarden_csv': 'Bitwarden CSV',
             'bitwarden_json': 'Bitwarden JSON',
             'lastpass_csv': 'LastPass CSV',
+            '1password_csv': '1Password CSV',
+            'keepass_xml': 'KeePass XML',
         }
         
         try:
@@ -632,15 +636,24 @@ class ImportDialog(QDialog):
             if reply == QMessageBox.StandardButton.No:
                 return
         
-        # 执行导入
+        # 执行导入（事务保护）
         success_count = 0
-        for item in new_items:
-            try:
-                account = item.to_account()
-                self.account_service.add_account(account)
-                success_count += 1
-            except Exception as e:
-                logger.error("导入失败：%s - %s", item.app_name, e)
+        try:
+            with self.account_service.db.transaction():
+                for item in new_items:
+                    account = item.to_account()
+                    if not account.category or account.category == '其他':
+                        account.category = '其他'
+                    self.account_service.db._insert_account_without_commit(account.to_dict())
+                    success_count += 1
+        except Exception as e:
+            logger.error("批量导入事务失败: %s", e)
+            QMessageBox.critical(
+                self,
+                "导入失败",
+                "导入失败，所有变更已回滚"
+            )
+            return
         
         # 显示结果
         QMessageBox.information(

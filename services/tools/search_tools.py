@@ -71,7 +71,7 @@ class SemanticSearchAccountsTool(AITool):
         items_summary = _build_accounts_summary(accounts)
         try:
             from ai.ollama_client import OllamaClient
-            # TODO(P0-3): 迁移到 AIServiceManager.submit_task() 异步执行，避免主线程阻塞
+            # 已由 AIQueryThread 在后台线程中调用，不阻塞主线程
             ollama = OllamaClient(timeout=300)
             result = ollama.semantic_match(query, items_summary)
             matched_ids = result.get("matched_ids", [])
@@ -100,7 +100,7 @@ class SemanticSearchUrlsTool(AITool):
         items_summary = _build_urls_summary(urls)
         try:
             from ai.ollama_client import OllamaClient
-            # TODO(P0-3): 迁移到 AIServiceManager.submit_task() 异步执行，避免主线程阻塞
+            # 已由 AIQueryThread 在后台线程中调用，不阻塞主线程
             ollama = OllamaClient(timeout=300)
             result = ollama.semantic_match(query, items_summary)
             matched_ids = result.get("matched_ids", [])

@@ -2,6 +2,7 @@
 账号服务模块
 处理账号的增删改查、排序等业务逻辑
 """
+import functools
 import logging
 from typing import List, Optional, Dict
 from datetime import datetime
@@ -39,7 +40,9 @@ class AccountService:
         account_data.pop('created_at', None)
         account_data.pop('updated_at', None)
         
-        return self.db.insert_account(account_data)
+        result = self.db.insert_account(account_data)
+        self.get_all_accounts.cache_clear()
+        return result
     
     def update_account(self, account: Account) -> bool:
         """
@@ -59,7 +62,9 @@ class AccountService:
         account_data.pop('created_at', None)
         account_data.pop('updated_at', None)
         
-        return self.db.update_account(account_id, account_data)
+        result = self.db.update_account(account_id, account_data)
+        self.get_all_accounts.cache_clear()
+        return result
     
     def delete_account(self, account_id: int) -> bool:
         """
@@ -71,7 +76,9 @@ class AccountService:
         Returns:
             是否成功
         """
-        return self.db.delete_account(account_id)
+        result = self.db.delete_account(account_id)
+        self.get_all_accounts.cache_clear()
+        return result
     
     def get_account(self, account_id: int) -> Optional[Account]:
         """
@@ -88,6 +95,7 @@ class AccountService:
             return Account.from_dict(data)
         return None
     
+    @functools.lru_cache(maxsize=1)
     def get_all_accounts(self) -> List[Account]:
         """
         获取所有账号（按应用名首字母排序）
@@ -139,19 +147,8 @@ class AccountService:
         if not keyword:
             return self.get_all_accounts()
         
-        keyword = keyword.lower()
-        all_accounts = self.get_all_accounts()
-        
-        results = []
-        for account in all_accounts:
-            # 搜索应用名、网址、账号、备注
-            if (keyword in account.app_name.lower() or
-                keyword in account.url.lower() or
-                keyword in account.username.lower() or
-                keyword in account.remark.lower()):
-                results.append(account)
-        
-        return results
+        accounts_data = self.db.search_accounts([keyword])
+        return [Account.from_dict(data) for data in accounts_data]
     
     def get_categories(self) -> List[str]:
         """
@@ -232,17 +229,20 @@ class AccountService:
         matcher = get_prefix_matcher(old_category)
         all_accounts = self.get_all_accounts()
         updated = False
-        for account in all_accounts:
-            if matcher(account.category):
-                if account.category == old_category:
-                    new_cat = new_category
-                else:
-                    suffix = account.category[len(old_category):]
-                    new_cat = new_category + suffix
-                self.db.update_account(account.id, {'category': new_cat})
-                updated = True
-        # 同步更新 category_order 表（包括空分类）
-        self.db.rename_category_order(old_category, new_category)
+        with self.db.transaction():
+            for account in all_accounts:
+                if matcher(account.category):
+                    if account.category == old_category:
+                        new_cat = new_category
+                    else:
+                        suffix = account.category[len(old_category):]
+                        new_cat = new_category + suffix
+                    self.db.update_account(account.id, {'category': new_cat})
+                    updated = True
+            # 同步更新 category_order 表（包括空分类）
+            self.db.rename_category_order(old_category, new_category)
+        if updated:
+            self.get_all_accounts.cache_clear()
         return updated
     
     def add_category(self, category_name: str) -> bool:
@@ -257,23 +257,55 @@ class AccountService:
         """
         all_accounts = self.get_all_accounts()
         updated = False
-        if '>' in category:
-            # 删除二级分类：精确匹配，去掉二级部分
-            parent = category.split('>')[0].strip()
-            for account in all_accounts:
-                if account.category == category:
-                    self.db.update_account(account.id, {'category': parent})
-                    updated = True
-        else:
-            # 删除一级分类：匹配自身及所有子类，移到"其他"
-            from core.category_utils import get_prefix_matcher
-            matcher = get_prefix_matcher(category)
-            for account in all_accounts:
-                if matcher(account.category):
-                    self.db.update_account(account.id, {'category': '其他'})
-                    updated = True
-        # 同步从排序表中删除，确保该分类真正消失
-        self.db.delete_category(category)
+        with self.db.transaction():
+            if '>' in category:
+                # 删除二级分类：精确匹配，去掉二级部分
+                parent = category.split('>')[0].strip()
+                for account in all_accounts:
+                    if account.category == category:
+                        self.db.update_account(account.id, {'category': parent})
+                        updated = True
+            else:
+                # 删除一级分类：匹配自身及所有子类，移到"其他"
+                from core.category_utils import get_prefix_matcher
+                matcher = get_prefix_matcher(category)
+                for account in all_accounts:
+                    if matcher(account.category):
+                        self.db.update_account(account.id, {'category': '其他'})
+                        updated = True
+            # 同步从排序表中删除，确保该分类真正消失
+            self.db.delete_category(category)
+        if updated:
+            self.get_all_accounts.cache_clear()
+        return updated
+
+    def _delete_category_no_commit(self, category: str) -> bool:
+        """
+        删除分类（不自行 commit，需在事务中调用）。
+        逻辑与 delete_category 相同，但依赖外层事务进行提交/回滚。
+        """
+        all_accounts = self.get_all_accounts()
+        updated = False
+        with self.db.transaction():
+            if '>' in category:
+                # 删除二级分类：精确匹配，去掉二级部分
+                parent = category.split('>')[0].strip()
+                for account in all_accounts:
+                    if account.category == category:
+                        self.db.update_account(account.id, {'category': parent})
+                        updated = True
+            else:
+                # 删除一级分类：匹配自身及所有子类，移到"其他"
+                from core.category_utils import get_prefix_matcher
+                matcher = get_prefix_matcher(category)
+                for account in all_accounts:
+                    if matcher(account.category):
+                        self.db.update_account(account.id, {'category': '其他'})
+                        updated = True
+            # 同步从排序表中删除，确保该分类真正消失
+            self.db.delete_category(category)
+        if updated:
+            self.get_all_accounts.cache_clear()
         return updated
 
     def promote_category(self, category_path: str) -> bool:
@@ -304,8 +336,8 @@ class AccountService:
         if not current:
             return False
         new_status = not current.is_favorite
-        self.db.cursor.execute("UPDATE accounts SET is_favorite = ? WHERE id = ?", (int(new_status), account_id))
-        self.db.conn.commit()
+        self.db.update_account_field(account_id, 'is_favorite', int(new_status))
+        self.get_all_accounts.cache_clear()
         return new_status
 
     def get_favorites(self) -> List[Account]:

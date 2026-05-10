@@ -31,7 +31,7 @@ class TagService:
     
     def generate_tags(self, app_name: str, url: str = "", category: str = "") -> List[str]:
         """
-        生成标签（规则 + AI）
+        生成标签（仅规则标签，同步接口，向后兼容）
         
         Args:
             app_name: 应用名
@@ -56,19 +56,60 @@ class TagService:
             domain_tags = self._extract_tags_from_url(url)
             tags.extend(domain_tags)
         
-        # 4. AI 生成标签（如果可用）
-        from services.ai_service_manager import AIServiceManager
-        ai_manager = AIServiceManager.instance()
-        if ai_manager.is_available() and len(tags) < 3:
-            try:
-                ai_tags = self._generate_tags_with_ai(app_name, url, category)
-                tags.extend(ai_tags)
-            except Exception as e:
-                logger.error("AI tag generation failed: %s", e)
-        
         # 去重并限制数量
         tags = list(dict.fromkeys(tags))  # 保持顺序去重
         return tags[:5]  # 最多 5 个标签
+    
+    def generate_tags_async(self, app_name: str, url: str = "", category: str = "") -> str:
+        """
+        异步生成 AI 标签，返回 task_id。
+        结果通过 AIServiceManager.task_finished / task_failed 信号接收。
+        
+        Args:
+            app_name: 应用名
+            url: 网址
+            category: 分类
+            
+        Returns:
+            task_id
+        """
+        prompt = f"""请为以下应用生成 2-3 个关键词标签，用于分类管理。
+
+应用名称：{app_name}
+网址：{url}
+分类：{category}
+
+要求：
+- 标签简短（2-4 个字）
+- 标签应体现应用的核心功能或用途
+- 直接返回标签，用逗号分隔，不要解释
+
+标签："""
+        
+        from services.ai_service_manager import AIServiceManager
+        from services.ai_worker_thread import AITaskType
+        ai_manager = AIServiceManager.instance()
+        return ai_manager.submit_task(AITaskType.GENERATE_REMARK, {
+            "app_name": app_name,
+            "url": url,
+            "category": category,
+            "prompt": prompt,
+            "temperature": 0.3
+        })
+    
+    def parse_tags_from_remark(self, remark_text: str) -> List[str]:
+        """
+        将 AI 生成的文本解析为标签列表。
+        
+        Args:
+            remark_text: AI 返回的原始文本
+            
+        Returns:
+            标签列表（最多 5 个）
+        """
+        tags = [tag.strip() for tag in remark_text.split(',') if tag.strip()]
+        tags = [tag for tag in tags if len(tag) <= 10]  # 过滤过长的标签
+        return tags[:5]
     
     def _extract_tags_from_name(self, app_name: str) -> List[str]:
         """从应用名提取标签关键词"""
@@ -134,7 +175,6 @@ class TagService:
         ai_manager = AIServiceManager.instance()
         from ai.ollama_client import OllamaClient
         state = ai_manager.get_state()
-        # TODO(P0-3): 迁移到 AIServiceManager.submit_task() 异步执行，避免主线程阻塞
         ollama = OllamaClient(model=state.model_name or "gemma4:4b", timeout=300)
         result = ollama.generate(prompt, temperature=0.3)
         

@@ -84,11 +84,4 @@ class ClipboardManager:
         pyperclip.copy('')
         self._last_password = None
     
-    def __del__(self):
-        """析构时清理"""
-        try:
-            with self._timer_lock:
-                if self._timer and self._timer.is_alive():
-                    self._timer.cancel()
-        except Exception:
-            pass
+

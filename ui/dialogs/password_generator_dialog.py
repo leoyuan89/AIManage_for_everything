@@ -10,6 +10,8 @@ from PyQt6.QtGui import QFont
 
 from core.password_generator import generate_password
 from core.theme_manager import ThemeManager
+from core.icon_manager import IconManager
+from core.icon_manager import IconManager
 
 
 class PasswordGeneratorDialog(QDialog):
@@ -17,6 +19,7 @@ class PasswordGeneratorDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setWindowIcon(IconManager.app_icon())
         colors = ThemeManager.instance().colors
 
         self.setWindowTitle("密码生成器设置")

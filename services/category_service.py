@@ -58,9 +58,10 @@ class CategoryService:
             try:
                 from ai.ollama_client import OllamaClient
                 state = ai_manager.get_state()
-                # TODO(P0-3): 迁移到 AIServiceManager.submit_task() 异步执行，避免主线程阻塞
-                ollama = OllamaClient(model=state.model_name or "gemma4:4b", timeout=300)
-                ai_category = ollama.categorize(app_name, url)
+                # 复用同一 OllamaClient 实例，避免重复创建 Session
+                if not hasattr(self, '_ollama_client') or self._ollama_client is None:
+                    self._ollama_client = OllamaClient(model=state.model_name or "gemma4:4b", timeout=300)
+                ai_category = self._ollama_client.categorize(app_name, url)
                 # 存入缓存
                 if use_cache:
                     self.cache_category(app_name, ai_category)
@@ -127,9 +128,10 @@ class CategoryService:
                 else:
                     from ai.ollama_client import OllamaClient
                     state = AIServiceManager.instance().get_state()
-                    # TODO(P0-3): 迁移到 AIServiceManager.submit_task() 异步执行，避免主线程阻塞
-                    ollama = OllamaClient(model=state.model_name or "gemma4:4b", timeout=300)
-                    category = ollama.categorize(app_name, url)
+                    # 复用同一 OllamaClient 实例，避免重复创建 Session
+                    if not hasattr(self, '_ollama_client') or self._ollama_client is None:
+                        self._ollama_client = OllamaClient(model=state.model_name or "gemma4:4b", timeout=300)
+                    category = self._ollama_client.categorize(app_name, url)
                     self.cache_category(app_name, category)
                 
                 # 更新账号分类
@@ -214,3 +216,12 @@ class CategoryService:
         if '其他' in all_cats:
             result.append('其他')
         return result
+    
+    def close(self):
+        """释放 OllamaClient 连接"""
+        if hasattr(self, '_ollama_client') and self._ollama_client is not None:
+            try:
+                self._ollama_client.close()
+            except Exception:
+                pass
+            self._ollama_client = None

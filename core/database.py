@@ -36,7 +36,7 @@ import threading
 import json
 from pathlib import Path
 from typing import Optional, List, Dict, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -244,7 +244,8 @@ class DatabaseManager:
         if self.crypto and ciphertext:
             try:
                 return self.crypto.decrypt_from_string(ciphertext)
-            except Exception:
+            except Exception as e:
+                logger.warning("解密失败: %s", e)
                 return ciphertext
         return ciphertext
     
@@ -372,6 +373,46 @@ class DatabaseManager:
             self._commit()
             return self.cursor.lastrowid
     
+    def _insert_account_without_commit(self, account_data: Dict[str, Any]) -> int:
+        """
+        在已有事务上下文中插入账号，不自行 commit
+        
+        Args:
+            account_data: 账号数据字典（明文）
+            
+        Returns:
+            新账号 ID
+        """
+        # 加密敏感字段
+        encrypted_data = {
+            'app_name': self._encrypt_field(account_data.get('app_name', '')),
+            'url': self._encrypt_field(account_data.get('url', '')),
+            'username': self._encrypt_field(account_data.get('username', '')),
+            'password': self._encrypt_field(account_data.get('password', '')),
+            'category': account_data.get('category', '其他'),  # 分类不加密
+            'tags': account_data.get('tags', '[]'),  # 标签不加密
+            'remark': self._encrypt_field(account_data.get('remark', '')),
+            'ai_remark': account_data.get('ai_remark', ''),  # AI 备注不加密
+            'security_level': account_data.get('security_level', ''),  # 安全等级不加密
+        }
+    
+        self.cursor.execute("""
+            INSERT INTO accounts (app_name, url, username, password, category, tags, remark, ai_remark, security_level)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            encrypted_data['app_name'],
+            encrypted_data['url'],
+            encrypted_data['username'],
+            encrypted_data['password'],
+            encrypted_data['category'],
+            encrypted_data['tags'],
+            encrypted_data['remark'],
+            encrypted_data['ai_remark'],
+            encrypted_data['security_level']
+        ))
+    
+        return self.cursor.lastrowid
+    
     def update_account(self, account_id: int, account_data: Dict[str, Any]) -> bool:
         """
         更新账号
@@ -494,6 +535,9 @@ class DatabaseManager:
         """
         根据应用名和用户名查找重复账号
         
+        注意：加密字段无法在 SQL 层精确匹配（AES-GCM 随机 nonce），
+        改为取出后在 Python 层比较明文。
+        
         Args:
             app_name: 应用名
             username: 用户名
@@ -502,14 +546,13 @@ class DatabaseManager:
             账号数据字典（明文），不存在返回 None
         """
         with self._lock:
-            encrypted_app = self._encrypt_field(app_name)
-            encrypted_user = self._encrypt_field(username)
-            self.cursor.execute(
-                "SELECT * FROM accounts WHERE app_name = ? AND username = ? LIMIT 1",
-                (encrypted_app, encrypted_user)
-            )
-            row = self.cursor.fetchone()
-            return self._decrypt_row(dict(row)) if row else None
+            self.cursor.execute("SELECT * FROM accounts LIMIT 2000")
+            rows = self.cursor.fetchall()
+            for row in rows:
+                decrypted = self._decrypt_row(dict(row))
+                if decrypted.get('app_name') == app_name and decrypted.get('username') == username:
+                    return decrypted
+            return None
     
     def get_account_by_id(self, account_id: int) -> Optional[Dict[str, Any]]:
         """
@@ -581,9 +624,50 @@ class DatabaseManager:
             rows = self.cursor.fetchall()
             return [self._decrypt_row(dict(row)) for row in rows]
 
+    def get_accounts_by_tag(self, tag: str, limit: int = 500) -> List[Dict[str, Any]]:
+        """
+        按标签获取账号（SQL 层筛选）
+        
+        Args:
+            tag: 标签名称
+            limit: 最大返回数量
+            
+        Returns:
+            账号数据字典列表（未解密）
+        """
+        with self._lock:
+            like_pattern = f'%"{tag}"%'
+            self.cursor.execute(
+                "SELECT * FROM accounts WHERE tags LIKE ? ORDER BY app_name LIMIT ?",
+                (like_pattern, limit)
+            )
+            rows = self.cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    def get_uncategorized_accounts(self, limit: int = 500) -> List[Dict[str, Any]]:
+        """
+        获取未分类账号（SQL 层筛选）
+        
+        Args:
+            limit: 最大返回数量
+            
+        Returns:
+            账号数据字典列表（未解密）
+        """
+        with self._lock:
+            self.cursor.execute(
+                "SELECT * FROM accounts WHERE category = '其他' OR category = '' ORDER BY app_name LIMIT ?",
+                (limit,)
+            )
+            rows = self.cursor.fetchall()
+            return [dict(row) for row in rows]
+
     def search_accounts(self, keywords: List[str]) -> List[Dict[str, Any]]:
         """
-        SQL 层关键词搜索账号
+        关键词搜索账号（先取出密文，解密后在 Python 层过滤）
+        
+        注意：app_name、username 等字段使用 AES-GCM 加密，每次密文不同，
+        无法在 SQL 层做 LIKE 匹配，因此改为全量取出后在 Python 层过滤。
         
         Args:
             keywords: 关键词列表
@@ -592,25 +676,26 @@ class DatabaseManager:
             匹配的账号数据列表（明文），最多 500 条
         """
         with self._lock:
-            valid_keywords = [kw for kw in keywords if kw and str(kw).strip()]
+            valid_keywords = [kw.strip().lower() for kw in keywords if kw and str(kw).strip()]
             if not valid_keywords:
                 return []
 
-            conditions = []
-            params = []
-            for kw in valid_keywords:
-                like_pattern = f"%{kw}%"
-                conditions.append(
-                    "(app_name LIKE ? OR username LIKE ? OR category LIKE ? OR tags LIKE ?)"
-                )
-                params.extend([like_pattern, like_pattern, like_pattern, like_pattern])
-
-            where_clause = " OR ".join(conditions)
-            sql = f"SELECT * FROM accounts WHERE {where_clause} ORDER BY app_name LIMIT 500"
-
-            self.cursor.execute(sql, params)
+            # 加密字段无法在 SQL 层做 LIKE，改为全量取出后在 Python 层过滤
+            self.cursor.execute("SELECT * FROM accounts ORDER BY app_name LIMIT 500")
             rows = self.cursor.fetchall()
-            return [self._decrypt_row(dict(row)) for row in rows]
+            accounts = [self._decrypt_row(dict(row)) for row in rows]
+
+            results = []
+            for acc in accounts:
+                text = " ".join([
+                    str(acc.get('app_name', '')),
+                    str(acc.get('username', '')),
+                    str(acc.get('category', '')),
+                    str(acc.get('tags', ''))
+                ]).lower()
+                if all(kw in text for kw in valid_keywords):
+                    results.append(acc)
+            return results
 
     def get_categories(self) -> List[str]:
         """
@@ -632,7 +717,8 @@ class DatabaseManager:
             try:
                 self.cursor.execute("SELECT category FROM category_order")
                 order_cats = {row['category'] for row in self.cursor.fetchall()}
-            except Exception:
+            except Exception as e:
+                logger.warning("读取分类排序失败: %s", e)
                 order_cats = set()
         
             # 3. 合并、去重、排序
@@ -645,7 +731,8 @@ class DatabaseManager:
             try:
                 self.cursor.execute("SELECT category, sort_index FROM category_order")
                 return {row['category']: row['sort_index'] for row in self.cursor.fetchall()}
-            except Exception:
+            except Exception as e:
+                logger.warning("读取分类排序失败: %s", e)
                 return {}
     
     def save_category_orders(self, orders: Dict[str, int]):
@@ -975,7 +1062,8 @@ class DatabaseManager:
             if val:
                 try:
                     return json.loads(val)
-                except Exception:
+                except Exception as e:
+                    logger.warning("解析泄露检测结果失败: %s", e)
                     return None
             return None
 
@@ -1044,7 +1132,7 @@ class DatabaseManager:
                 app_name = account_data.get('app_name', '')
                 url = account_data.get('url', '')
                 category = account_data.get('category', '其他')
-                expires_at = datetime.utcnow() + timedelta(days=30)
+                expires_at = datetime.now(timezone.utc) + timedelta(days=30)
             
                 self.cursor.execute("""
                     INSERT INTO recycle_bin (original_id, item_type, encrypted_data, app_name, username, url, category, expires_at)
@@ -1069,7 +1157,7 @@ class DatabaseManager:
                 title = url_data.get('title', '')
                 url_str = url_data.get('url', '')
                 category = url_data.get('category', '其他')
-                expires_at = datetime.utcnow() + timedelta(days=30)
+                expires_at = datetime.now(timezone.utc) + timedelta(days=30)
             
                 self.cursor.execute("""
                     INSERT INTO recycle_bin (original_id, item_type, encrypted_data, app_name, username, url, category, expires_at)
@@ -1137,7 +1225,7 @@ class DatabaseManager:
                 account_data.pop('created_at', None)
                 account_data.pop('updated_at', None)
             
-                new_id = self.insert_account(account_data)
+                new_id = self._insert_account_without_commit(account_data)
             
                 self.cursor.execute(
                     "UPDATE recycle_bin SET is_restored = 1, restored_at = CURRENT_TIMESTAMP WHERE id = ?",

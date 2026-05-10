@@ -17,6 +17,7 @@ from PyQt6.QtGui import QFont
 from core.database import DatabaseManager
 from core.crypto import CryptoManager
 from core.theme_manager import ThemeManager, ThemeColors
+from core.icon_manager import IconManager
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +121,7 @@ class ChangePasswordDialog(QDialog):
     
     def __init__(self, db_manager: DatabaseManager, config_path: str, parent=None):
         super().__init__(parent)
+        self.setWindowIcon(IconManager.app_icon())
         self.db = db_manager
         self.config_path = config_path
         self.setup_ui()
@@ -299,6 +301,7 @@ class ThemeSettingsDialog(QDialog):
     
     def __init__(self, config_path: str, parent=None):
         super().__init__(parent)
+        self.setWindowIcon(IconManager.app_icon())
         self.config_path = config_path
         self.current_theme = 'light'
         self._load_theme()
@@ -426,6 +429,7 @@ class AIAssistantSettingsDialog(QDialog):
     
     def __init__(self, config_path: str, parent=None):
         super().__init__(parent)
+        self.setWindowIcon(IconManager.app_icon())
         self.config_path = config_path
         self._load_config()
         self.setup_ui()
@@ -552,6 +556,7 @@ class SettingsDialog(QDialog):
                  parent=None):
         t0 = time.perf_counter()
         super().__init__(parent)
+        self.setWindowIcon(IconManager.app_icon())
         t1 = time.perf_counter(); _perf_log("SettingsDialog super().__init__", t0, t1)
         
         self.db = db_manager

@@ -20,6 +20,7 @@ from core.password_strength import evaluate_password_strength, suggest_improveme
 from core.password_generator import generate_password
 from core.repositories import RepositoryFactory, AccountRepository
 from core.theme_manager import ThemeManager, ThemeColors
+from core.icon_manager import IconManager
 from services.account_service import AccountService
 from services.category_service import CategoryService
 from services.ai_service_manager import AIServiceManager
@@ -78,6 +79,7 @@ class OCRWorker(QThread):
 class PasswordHistoryDialog(QDialog):
     def __init__(self, db_manager: DatabaseManager, account_id: int, app_name: str, parent=None):
         super().__init__(parent)
+        self.setWindowIcon(IconManager.app_icon())
         self.db = db_manager
         self.account_id = account_id
         self._decrypted_cache = {}
@@ -488,6 +490,7 @@ class AccountDialog(QDialog):
     def __init__(self, db_manager: DatabaseManager, account: Account = None, parent=None):
         t0 = time.perf_counter()
         super().__init__(parent)
+        self.setWindowIcon(IconManager.app_icon())
         t1 = time.perf_counter(); _perf_log("AccountDialog super().__init__", t0, t1)
         
         self.db = db_manager

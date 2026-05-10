@@ -222,6 +222,32 @@ class URLDatabaseManager:
             self._commit()
             return self.cursor.lastrowid
     
+    def _insert_url_without_commit(self, url_data: Dict[str, Any]) -> int:
+        """
+        在已有事务上下文中插入网址，不自行 commit
+        
+        Args:
+            url_data: 网址数据字典
+            
+        Returns:
+            新网址 ID
+        """
+        self.cursor.execute("""
+            INSERT INTO urls (title, url, category, tags, related_account_id, password, ai_remark, remark)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            url_data.get('title', ''),
+            url_data.get('url', ''),
+            url_data.get('category', '其他'),
+            url_data.get('tags', '[]'),
+            url_data.get('related_account_id'),
+            url_data.get('password', ''),
+            url_data.get('ai_remark', ''),
+            url_data.get('remark', '')
+        ))
+    
+        return self.cursor.lastrowid
+    
     def update_url(self, url_id: int, url_data: Dict[str, Any]) -> bool:
         """
         更新网址
@@ -304,8 +330,8 @@ class URLDatabaseManager:
         """将网址移入回收站（软删除），并删除原记录"""
         with self._lock:
             try:
-                from datetime import datetime, timedelta
-                expires_at = datetime.utcnow() + timedelta(days=30)
+                from datetime import datetime, timedelta, timezone
+                expires_at = datetime.now(timezone.utc) + timedelta(days=30)
                 self.cursor.execute("""
                     INSERT INTO url_recycle_bin (original_id, title, url, category, tags, password, is_favorite, ai_remark, remark, expires_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -364,12 +390,13 @@ class URLDatabaseManager:
                 url_data.pop('is_restored', None)
                 url_data.pop('restored_at', None)
             
-                new_id = self.insert_url(url_data)
+                new_id = self._insert_url_without_commit(url_data)
             
                 self.cursor.execute(
                     "UPDATE url_recycle_bin SET is_restored = 1, restored_at = CURRENT_TIMESTAMP WHERE id = ?",
                     (recycle_id,)
                 )
+                self._commit()
             
                 url_data['id'] = new_id
                 return url_data
@@ -455,6 +482,44 @@ class URLDatabaseManager:
         
             return [dict(row) for row in rows]
     
+    def get_urls_by_tag(self, tag: str, limit: int = 500) -> List[Dict[str, Any]]:
+        """
+        按标签获取网址（SQL 层筛选）
+        
+        Args:
+            tag: 标签名称
+            limit: 最大返回数量
+            
+        Returns:
+            网址数据字典列表
+        """
+        with self._lock:
+            like_pattern = f'%"{tag}"%'
+            self.cursor.execute(
+                "SELECT * FROM urls WHERE tags LIKE ? ORDER BY created_at DESC LIMIT ?",
+                (like_pattern, limit)
+            )
+            rows = self.cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    def get_uncategorized_urls(self, limit: int = 500) -> List[Dict[str, Any]]:
+        """
+        获取未分类网址（SQL 层筛选）
+        
+        Args:
+            limit: 最大返回数量
+            
+        Returns:
+            网址数据字典列表
+        """
+        with self._lock:
+            self.cursor.execute(
+                "SELECT * FROM urls WHERE category = '其他' OR category = '' ORDER BY created_at DESC LIMIT ?",
+                (limit,)
+            )
+            rows = self.cursor.fetchall()
+            return [dict(row) for row in rows]
+
     def search_urls(self, keywords: List[str]) -> List[Dict[str, Any]]:
         """
         SQL 层关键词搜索网址
@@ -525,7 +590,8 @@ class URLDatabaseManager:
             try:
                 self.cursor.execute("SELECT category, sort_index FROM category_order")
                 return {row['category']: row['sort_index'] for row in self.cursor.fetchall()}
-            except Exception:
+            except Exception as e:
+                logger.warning("读取分类排序失败: %s", e)
                 return {}
     
     def save_category_orders(self, orders: Dict[str, int]):
@@ -556,7 +622,7 @@ class URLDatabaseManager:
                 (prefix, prefix + '>%')
             )
             rows = self.cursor.fetchall()
-            return [self._decrypt_row(dict(row)) for row in rows]
+            return [dict(row) for row in rows]
 
     def get_categories(self) -> List[str]:
         """
@@ -578,7 +644,8 @@ class URLDatabaseManager:
             try:
                 self.cursor.execute("SELECT category FROM category_order")
                 order_cats = {row['category'] for row in self.cursor.fetchall()}
-            except Exception:
+            except Exception as e:
+                logger.warning("读取分类排序失败: %s", e)
                 order_cats = set()
         
             # 3. 合并、去重、排序
@@ -818,7 +885,8 @@ class URLDatabaseManager:
             if val:
                 try:
                     return json.loads(val)
-                except Exception:
+                except Exception as e:
+                    logger.warning("解析泄露检测结果失败: %s", e)
                     return None
             return None
 

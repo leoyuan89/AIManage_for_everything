@@ -214,23 +214,16 @@ class AccountRepository(VaultRepository):
         )
     
     def filter_by_tags(self, tag: str) -> SearchResult:
-        accounts = self.get_all()
-        matched = []
-        for acc in accounts:
-            try:
-                tags = acc.get_tags_list()
-                if tag in tags:
-                    matched.append(acc)
-            except Exception:
-                continue
+        rows = self.db.get_accounts_by_tag(tag)
+        matched = [Account.from_dict(self.db._decrypt_row(dict(row))) for row in rows]
         return SearchResult(
             items=matched, matched_ids=[a.id for a in matched],
             query_description=f"标签筛选: {tag}"
         )
     
     def get_uncategorized(self) -> SearchResult:
-        accounts = self.get_all()
-        matched = [a for a in accounts if not a.category or a.category in ('其他', '未分类', '')]
+        rows = self.db.get_uncategorized_accounts()
+        matched = [Account.from_dict(self.db._decrypt_row(dict(row))) for row in rows]
         return SearchResult(
             items=matched, matched_ids=[a.id for a in matched],
             query_description="未分类账号"
@@ -300,6 +293,28 @@ class AccountRepository(VaultRepository):
             account.category = self.auto_classify(account.app_name)
         return self.db.insert_account(account.to_dict())
     
+    def insert_no_commit(self, item_data: Dict) -> int:
+        """
+        在已有事务上下文中插入账号，不自行 commit。
+        
+        Args:
+            item_data: 账号数据字典
+            
+        Returns:
+            新账号 ID
+        """
+        account = Account(
+            app_name=item_data.get('app_name', item_data.get('app', '')),
+            username=item_data.get('username', item_data.get('account', '')),
+            password=item_data.get('password', ''),
+            url=item_data.get('url', ''),
+            category=item_data.get('category', '其他'),
+            remark=item_data.get('remark', ''),
+            ai_remark=item_data.get('ai_remark', ''),
+            tags=json.dumps(item_data.get('tags', []), ensure_ascii=False)
+        )
+        return self.db._insert_account_without_commit(account.to_dict())
+    
     def check_duplicate(self, item_data: Dict) -> Optional[Account]:
         app = item_data.get('app_name', item_data.get('app', ''))
         username = item_data.get('username', item_data.get('account', ''))
@@ -317,9 +332,32 @@ class AccountRepository(VaultRepository):
     # ----- 批量操作 -----
     
     def resolve_filter_conditions(self, conditions: Dict) -> List[int]:
-        accounts = self.get_all()
+        # Fast path: single pre-filterable condition
+        if len(conditions) == 1:
+            field, value = next(iter(conditions.items()))
+            if field == 'tags':
+                rows = self.db.get_accounts_by_tag(value)
+                return [row['id'] for row in rows]
+            if field == 'category' and (not value or value in ('其他', '未分类', '')):
+                rows = self.db.get_uncategorized_accounts()
+                return [row['id'] for row in rows]
+        
+        # SQL pre-filter for mixed conditions
+        prefiltered = None
+        if 'tags' in conditions:
+            prefiltered = self.db.get_accounts_by_tag(conditions['tags'])
+            prefiltered = [Account.from_dict(self.db._decrypt_row(dict(row))) for row in prefiltered]
+        elif 'category' in conditions:
+            cat_val = conditions['category']
+            if not cat_val or cat_val in ('其他', '未分类', ''):
+                prefiltered = self.db.get_uncategorized_accounts()
+                prefiltered = [Account.from_dict(self.db._decrypt_row(dict(row))) for row in prefiltered]
+        
+        if prefiltered is None:
+            prefiltered = self.get_all()
+        
         matched_ids = []
-        for acc in accounts:
+        for acc in prefiltered:
             match = True
             for field, value in conditions.items():
                 if field == 'tags':
@@ -392,23 +430,16 @@ class URLRepository(VaultRepository):
         )
     
     def filter_by_tags(self, tag: str) -> SearchResult:
-        urls = self.get_all()
-        matched = []
-        for u in urls:
-            try:
-                tags = u.get_tags_list()
-                if tag in tags:
-                    matched.append(u)
-            except Exception:
-                continue
+        rows = self.db.get_urls_by_tag(tag)
+        matched = [URLItem.from_dict(dict(row)) for row in rows]
         return SearchResult(
             items=matched, matched_ids=[u.id for u in matched],
             query_description=f"标签筛选: {tag}"
         )
     
     def get_uncategorized(self) -> SearchResult:
-        urls = self.get_all()
-        matched = [u for u in urls if not u.category or u.category in ('其他', '未分类', '')]
+        rows = self.db.get_uncategorized_urls()
+        matched = [URLItem.from_dict(dict(row)) for row in rows]
         return SearchResult(
             items=matched, matched_ids=[u.id for u in matched],
             query_description="未分类网址"
@@ -477,6 +508,26 @@ class URLRepository(VaultRepository):
             url_item.category = self.auto_classify(url_item.url)
         return self.db.insert_url(url_item.to_dict())
     
+    def insert_no_commit(self, item_data: Dict) -> int:
+        """
+        在已有事务上下文中插入网址，不自行 commit。
+        
+        Args:
+            item_data: 网址数据字典
+            
+        Returns:
+            新网址 ID
+        """
+        url_item = URLItem(
+            title=item_data.get('title', ''),
+            url=item_data.get('url', ''),
+            category=item_data.get('category', '其他'),
+            tags=json.dumps(item_data.get('tags', []), ensure_ascii=False),
+            remark=item_data.get('remark', ''),
+            ai_remark=item_data.get('ai_remark', '')
+        )
+        return self.db._insert_url_without_commit(url_item.to_dict())
+    
     def check_duplicate(self, item_data: Dict) -> Optional[URLItem]:
         url = item_data.get('url', '')
         row = self.db.find_by_url(url)
@@ -493,9 +544,32 @@ class URLRepository(VaultRepository):
     # ----- 批量操作 -----
     
     def resolve_filter_conditions(self, conditions: Dict) -> List[int]:
-        urls = self.get_all()
+        # Fast path: single pre-filterable condition
+        if len(conditions) == 1:
+            field, value = next(iter(conditions.items()))
+            if field == 'tags':
+                rows = self.db.get_urls_by_tag(value)
+                return [row['id'] for row in rows]
+            if field == 'category' and (not value or value in ('其他', '未分类', '')):
+                rows = self.db.get_uncategorized_urls()
+                return [row['id'] for row in rows]
+        
+        # SQL pre-filter for mixed conditions
+        prefiltered = None
+        if 'tags' in conditions:
+            prefiltered = self.db.get_urls_by_tag(conditions['tags'])
+            prefiltered = [URLItem.from_dict(dict(row)) for row in prefiltered]
+        elif 'category' in conditions:
+            cat_val = conditions['category']
+            if not cat_val or cat_val in ('其他', '未分类', ''):
+                prefiltered = self.db.get_uncategorized_urls()
+                prefiltered = [URLItem.from_dict(dict(row)) for row in prefiltered]
+        
+        if prefiltered is None:
+            prefiltered = self.get_all()
+        
         matched_ids = []
-        for u in urls:
+        for u in prefiltered:
             match = True
             for field, value in conditions.items():
                 if field == 'tags':

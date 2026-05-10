@@ -14,6 +14,7 @@ from typing import List
 from models.account import Account
 from services.tag_service import TagService
 from core.theme_manager import ThemeManager, ThemeColors
+from core.icon_manager import IconManager
 
 
 class TagButton(QPushButton):
@@ -52,9 +53,14 @@ class TagEditorDialog(QDialog):
     
     def __init__(self, account: Account, tag_service: TagService = None, parent=None):
         super().__init__(parent)
+        self.setWindowIcon(IconManager.app_icon())
         self.account = account
         self.tag_service = tag_service or TagService()
         self.tags = account.get_tags_list().copy()
+        self._pending_tags_task = None
+        
+        from services.ai_service_manager import AIServiceManager
+        self._ai_manager = AIServiceManager.instance()
         
         self.setup_ui()
         self.refresh_tags_display()
@@ -146,9 +152,7 @@ class TagEditorDialog(QDialog):
         layout.addWidget(self.btn_ai_generate)
         
         # 绑定 AI 状态变化信号，动态更新按钮可用性
-        from services.ai_service_manager import AIServiceManager
         from services.ai_worker_thread import AIStatus
-        self._ai_manager = AIServiceManager.instance()
         self._ai_manager.state_changed.connect(self._update_ai_button)
         self._update_ai_button(self._ai_manager.get_state())
         
@@ -242,44 +246,85 @@ class TagEditorDialog(QDialog):
             self.refresh_tags_display()
     
     def on_ai_generate(self):
-        """AI 生成标签"""
+        """AI 异步生成标签"""
+        if self._pending_tags_task is not None:
+            return  # 已有任务在执行中
+        
         self.btn_ai_generate.setEnabled(False)
         self.btn_ai_generate.setText("生成中...")
         
         try:
-            new_tags = self.tag_service.generate_tags(
+            task_id = self.tag_service.generate_tags_async(
                 self.account.app_name,
                 self.account.url,
                 self.account.category
             )
-            
-            # 合并标签（保留用户已有的，添加 AI 生成的）
-            for tag in new_tags:
-                if tag not in self.tags and len(self.tags) < 5:
-                    self.tags.append(tag)
-            
-            self.refresh_tags_display()
-            
-            if new_tags:
-                QMessageBox.information(
-                    self, "生成完成",
-                    f"AI 生成了 {len(new_tags)} 个标签建议，\n"
-                    f"已添加到列表中（未重复的）。\n\n"
-                    f"生成标签：{', '.join(new_tags)}"
-                )
-            else:
-                QMessageBox.information(self, "提示", "未能生成合适的标签")
-                
+            self._pending_tags_task = task_id
+            self._ai_manager.task_finished.connect(self._on_tags_generated)
+            self._ai_manager.task_failed.connect(self._on_tags_failed)
         except Exception as e:
             QMessageBox.critical(self, "错误", f"标签生成失败：{str(e)}")
-        finally:
-            self.btn_ai_generate.setEnabled(True)
-            self.btn_ai_generate.setText("✨ AI 智能生成标签")
+            self._restore_ai_button()
+    
+    def _on_tags_generated(self, task_id, result):
+        """AI 标签生成成功回调"""
+        if task_id != self._pending_tags_task:
+            return
+        
+        self._disconnect_tag_signals()
+        self._pending_tags_task = None
+        
+        new_tags = self.tag_service.parse_tags_from_remark(result)
+        
+        # 合并标签（保留用户已有的，添加 AI 生成的）
+        for tag in new_tags:
+            if tag not in self.tags and len(self.tags) < 5:
+                self.tags.append(tag)
+        
+        self.refresh_tags_display()
+        
+        if new_tags:
+            QMessageBox.information(
+                self, "生成完成",
+                f"AI 生成了 {len(new_tags)} 个标签建议，\n"
+                f"已添加到列表中（未重复的）。\n\n"
+                f"生成标签：{', '.join(new_tags)}"
+            )
+        else:
+            QMessageBox.information(self, "提示", "未能生成合适的标签")
+        
+        self._restore_ai_button()
+    
+    def _on_tags_failed(self, task_id, error_message):
+        """AI 标签生成失败回调"""
+        if task_id != self._pending_tags_task:
+            return
+        
+        self._disconnect_tag_signals()
+        self._pending_tags_task = None
+        QMessageBox.critical(self, "错误", f"标签生成失败：{error_message}")
+        self._restore_ai_button()
+    
+    def _disconnect_tag_signals(self):
+        """断开 AI 任务信号连接"""
+        try:
+            self._ai_manager.task_finished.disconnect(self._on_tags_generated)
+        except Exception:
+            pass
+        try:
+            self._ai_manager.task_failed.disconnect(self._on_tags_failed)
+        except Exception:
+            pass
+    
+    def _restore_ai_button(self):
+        """恢复 AI 生成按钮状态"""
+        self.btn_ai_generate.setEnabled(True)
+        self.btn_ai_generate.setText("✨ AI 智能生成标签")
     
     def _update_ai_button(self, state):
         """根据 AI 状态更新按钮可用性"""
         from services.ai_worker_thread import AIStatus
-        enabled = state.status == AIStatus.ONLINE
+        enabled = state.status == AIStatus.ONLINE and self._pending_tags_task is None
         self.btn_ai_generate.setEnabled(enabled)
         if enabled:
             self.btn_ai_generate.setToolTip("根据应用信息 AI 智能生成标签")
@@ -292,6 +337,7 @@ class TagEditorDialog(QDialog):
             self._ai_manager.state_changed.disconnect(self._update_ai_button)
         except Exception:
             pass
+        self._disconnect_tag_signals()
         event.accept()
     
     def on_ok(self):

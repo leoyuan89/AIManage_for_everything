@@ -21,7 +21,7 @@ class GenerateAccountRemarkTool(AITool):
         url = params.get("url", "")
         try:
             from ai.ollama_client import OllamaClient
-            # TODO(P0-3): 迁移到 AIServiceManager.submit_task() 异步执行，避免主线程阻塞
+            # 已由 AIQueryThread 在后台线程中调用，不阻塞主线程
             ollama = OllamaClient(timeout=300)
             prompt = f"请为密码管理软件的账号生成一句话备注。应用名：{app_name}，分类：{category}，网址：{url}。只返回一句话备注，不要其他解释。"
             remark = ollama.generate(prompt, temperature=0.3, num_predict=100)
@@ -52,7 +52,7 @@ class GenerateUrlRemarkTool(AITool):
         url = params.get("url", "")
         try:
             from ai.ollama_client import OllamaClient
-            # TODO(P0-3): 迁移到 AIServiceManager.submit_task() 异步执行，避免主线程阻塞
+            # 已由 AIQueryThread 在后台线程中调用，不阻塞主线程
             ollama = OllamaClient(timeout=300)
             prompt = f"请为网址生成一句话备注。标题：{title}，分类：{category}，网址：{url}。只返回一句话备注，不要其他解释。"
             remark = ollama.generate(prompt, temperature=0.3, num_predict=100)

@@ -13,6 +13,7 @@ import logging
 from datetime import datetime, timezone
 
 from core.theme_manager import ThemeManager, ThemeColors
+from core.icon_manager import IconManager
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,7 @@ class RecycleBinDialog(QDialog):
 
     def __init__(self, db_manager, vault_type: str = 'accounts', parent=None):
         super().__init__(parent)
+        self.setWindowIcon(IconManager.app_icon())
         self.db = db_manager
         self.vault_type = vault_type  # 'accounts' 或 'urls'
         self.setWindowTitle("密码库回收站" if vault_type == 'accounts' else "网址库回收站")

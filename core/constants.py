@@ -20,3 +20,6 @@ COMPACT_VIEW_PATH = DATA_DIR / 'compact_view.json'
 
 # 日志文件路径
 LOG_PATH = DATA_DIR / 'app.log'
+
+# 图标目录
+ICONS_DIR = Path(__file__).parent.parent / 'assets' / 'icons'

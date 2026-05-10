@@ -290,32 +290,49 @@ class BatchAddProcessor:
 
     @classmethod
     def _execute_batch_add(cls, items: List[BatchItem], repo: VaultRepository) -> Dict:
-        """逐条独立导入"""
-        success_count = 0
+        """事务保护的批量导入"""
         skip_count = 0
-        fail_count = 0
-        fail_details = []
-        inserted_ids = []
+        confirmed_items = []
 
         for item in items:
             if not item.confirmed:
                 skip_count += 1
                 continue
+            confirmed_items.append(item)
 
-            try:
-                item_data = cls._batch_item_to_dict(item, repo)
-                new_id = repo.insert(item_data)
-                success_count += 1
-                inserted_ids.append(new_id)
-            except Exception as e:
-                fail_count += 1
-                fail_details.append({'item': item.raw_data, 'error': str(e)})
+        if not confirmed_items:
+            return {
+                'success': 0,
+                'skip': skip_count,
+                'fail': 0,
+                'fail_details': [],
+                'inserted_ids': []
+            }
+
+        inserted_ids = []
+        try:
+            with repo.db.transaction():
+                for item in confirmed_items:
+                    item_data = cls._batch_item_to_dict(item, repo)
+                    new_id = repo.insert_no_commit(item_data)
+                    inserted_ids.append(new_id)
+        except Exception as e:
+            return {
+                'success': 0,
+                'skip': skip_count,
+                'fail': len(confirmed_items),
+                'fail_details': [
+                    {'item': item.raw_data, 'error': str(e)}
+                    for item in confirmed_items
+                ],
+                'error': str(e)
+            }
 
         return {
-            'success': success_count,
+            'success': len(inserted_ids),
             'skip': skip_count,
-            'fail': fail_count,
-            'fail_details': fail_details,
+            'fail': 0,
+            'fail_details': [],
             'inserted_ids': inserted_ids
         }
 

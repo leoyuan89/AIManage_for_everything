@@ -23,6 +23,8 @@ from models.account import Account
 logger = logging.getLogger(__name__)
 from models.url_item import URLItem
 from core.theme_manager import ThemeManager, ThemeColors
+from core.icon_manager import IconManager
+from core.icon_manager import IconManager
 
 
 class PreAnalysisWorker(QThread):
@@ -92,6 +94,7 @@ class SnapshotSelectionDialog(QDialog):
     
     def __init__(self, snapshots: List, parent=None):
         super().__init__(parent)
+        self.setWindowIcon(IconManager.app_icon())
         self.snapshots = snapshots
         self.selected_snapshot_id = None
         self.setup_ui()
@@ -455,6 +458,7 @@ class AIClassifyDialog(QDialog):
                  existing_categories: List[str], item_type: str = 'account',
                  parent=None):
         super().__init__(parent)
+        self.setWindowIcon(IconManager.app_icon())
         self.service = service
         self.items = items
         self.existing_categories = existing_categories

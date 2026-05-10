@@ -468,3 +468,25 @@ def style_scrollbar(colors: ThemeColors) -> str:
             height: 0;
         }}
     """
+
+
+def style_checkbox(colors: ThemeColors) -> str:
+    """勾选框统一风格 —— 确保在浅色/深色主题下都清晰可见"""
+    return f"""
+        QCheckBox::indicator {{
+            width: 18px;
+            height: 18px;
+            border-radius: 3px;
+        }}
+        QCheckBox::indicator:unchecked {{
+            background-color: {colors.bg_primary};
+            border: 2px solid {colors.text_secondary};
+        }}
+        QCheckBox::indicator:unchecked:hover {{
+            border: 2px solid {colors.accent_blue};
+        }}
+        QCheckBox::indicator:checked {{
+            background-color: {colors.accent_blue};
+            border: 2px solid {colors.accent_blue};
+        }}
+    """

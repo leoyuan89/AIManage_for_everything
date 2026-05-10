@@ -9,7 +9,7 @@ from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QWidget, QApplication,
+    QDialog, QVBoxLayout, QHBoxLayout, QWidget,
     QLabel, QPushButton, QProgressBar, QTabWidget,
     QListWidget, QListWidgetItem, QFrame, QTextBrowser,
     QScrollArea, QSizePolicy, QSpacerItem
@@ -17,8 +17,10 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
 from PyQt6.QtGui import QFont, QColor
 
-from core.theme_manager import ThemeManager, ThemeColors
+from core.theme_manager import ThemeManager
+from core.icon_manager import IconManager
 from core.password_strength import evaluate_password_strength
+from core.icon_manager import IconManager
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +58,7 @@ Keep it concise, each recommendation on one line starting with a number.
         
         try:
             ai_manager = AIServiceManager.instance()
-            # TODO(P0-3): 迁移到 AIServiceManager.submit_task() 异步执行，避免主线程阻塞
+            # 已在 AiRecommendationThread 后台线程中执行，不阻塞主线程
             ollama = OllamaClient(model=ai_manager.get_state().model_name or "gemma4:4b", timeout=300)
             
             full_response = ""
@@ -254,6 +256,7 @@ class HealthChecker:
 class HealthCheckDialog(QDialog):
     def __init__(self, account_service, crypto, ai_assistant=None, parent=None):
         super().__init__(parent)
+        self.setWindowIcon(IconManager.app_icon())
         self.account_service = account_service
         self.crypto = crypto
         self.ai_assistant = ai_assistant
@@ -876,46 +879,6 @@ class HealthCheckDialog(QDialog):
         self.ai_label.setText("AI 安全建议")
         self.ai_browser.setHtml(html)
         self.ai_browser.show()
-
-    def _request_ai_recommendations(self):
-        results = self._results
-        c = self._colors
-
-        weak_names = [item['account'].app_name for item in results['weak']]
-        reused_summary = []
-        for group in results['reused_groups']:
-            names = [g['account'].app_name for g in group]
-            reused_summary.append(f"{'、'.join(names)} ({len(names)}个账号)")
-
-        summary = f"弱密码: {len(results['weak'])}个"
-        if weak_names:
-            summary += f", 涉及: {'、'.join(weak_names[:10])}"
-        summary += f"\n重复密码组: {len(results['reused_groups'])}组"
-        if reused_summary:
-            summary += f", 涉及: {'; '.join(reused_summary[:5])}"
-
-        prompt = f"""Based on the following password security issues, provide 3-5 actionable recommendations in Chinese. 
-Keep it concise, each recommendation on one line starting with a number.
-
-{summary}"""
-
-        try:
-            from services.ai_service_manager import AIServiceManager
-            from ai.ollama_client import OllamaClient
-            ai_manager = AIServiceManager.instance()
-            # TODO(P0-3): 迁移到 AIServiceManager.submit_task() 异步执行，避免主线程阻塞
-            ollama = OllamaClient(model=ai_manager.get_state().model_name or "gemma4:4b", timeout=300)
-
-            full_response = ""
-            for token in ollama.generate_stream(prompt, temperature=0.5):
-                full_response += token
-
-            self.ai_label.setText("AI 安全建议")
-            html = self._markdown_to_html(full_response)
-            self.ai_browser.setHtml(html)
-        except Exception as e:
-            logger.exception("AI recommendations failed")
-            self._show_generic_recommendations()
 
     def _show_generic_recommendations(self):
         self.ai_label.setText("安全建议（本地规则）")

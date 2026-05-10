@@ -16,6 +16,7 @@ from PyQt6.QtGui import QFont
 from core.database import DatabaseManager
 from core.crypto import CryptoManager
 from core.theme_manager import ThemeManager, ThemeColors
+from core.icon_manager import IconManager
 from services.account_service import AccountService
 from services.export_service import ExportService
 from models.account import Account
@@ -66,6 +67,7 @@ class ExportDialog(QDialog):
     def __init__(self, db_manager: DatabaseManager, account_service: AccountService,
                  export_service: ExportService, vault_type='accounts', url_service=None, parent=None):
         super().__init__(parent)
+        self.setWindowIcon(IconManager.app_icon())
         self.db = db_manager
         self.account_service = account_service
         self.export_service = export_service

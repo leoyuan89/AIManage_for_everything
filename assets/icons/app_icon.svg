@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none">
+  <!-- 外圆背景 -->
+  <circle cx="128" cy="128" r="120" fill="#FF6B35"/>
+  <!-- 盾牌 -->
+  <path d="M128 48 L180 68 L180 120 Q180 168 128 200 Q76 168 76 120 L76 68 Z" fill="white"/>
+  <!-- 锁孔 -->
+  <circle cx="128" cy="115" r="18" fill="#FF6B35"/>
+  <rect x="120" y="115" width="16" height="28" rx="4" fill="#FF6B35"/>
+  <!-- 底部小弧线装饰 -->
+  <path d="M100 160 Q128 178 156 160" stroke="white" stroke-width="6" stroke-linecap="round" fill="none"/>
+</svg>

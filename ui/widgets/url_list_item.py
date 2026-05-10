@@ -4,6 +4,10 @@ from PyQt6.QtCore import Qt
 from core.theme_manager import ThemeManager
 from core.clipboard import ClipboardManager
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 # 模块级单例，避免每个列表项都创建一个 ClipboardManager
 _clipboard_manager = ClipboardManager()
 
@@ -229,6 +233,22 @@ class URLListItem(QWidget):
                 background-color: {colors.accent_blue_bg};
                 color: {colors.accent_blue_dark};
             }}
+            #urlListItem QCheckBox::indicator {{
+                width: 18px;
+                height: 18px;
+                border-radius: 3px;
+            }}
+            #urlListItem QCheckBox::indicator:unchecked {{
+                background-color: {colors.bg_primary};
+                border: 2px solid {colors.text_secondary};
+            }}
+            #urlListItem QCheckBox::indicator:unchecked:hover {{
+                border: 2px solid {colors.accent_blue};
+            }}
+            #urlListItem QCheckBox::indicator:checked {{
+                background-color: {colors.accent_blue};
+                border: 2px solid {colors.accent_blue};
+            }}
         """
 
     def on_theme_changed(self):
@@ -273,8 +293,8 @@ class URLListItem(QWidget):
             if url:
                 self._clipboard.copy_text(url)
                 self._show_copy_toast("网址")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("复制网址失败: %s", e)
     
     def _show_copy_toast(self, label):
         parent = self.window()
@@ -292,7 +312,8 @@ class URLListItem(QWidget):
                 if value.tzinfo is None:
                     value = value.replace(tzinfo=timezone.utc)
                 return value.astimezone().strftime('%Y-%m-%d')
-            except Exception:
+            except Exception as e:
+                logger.debug("时间格式化失败: %s", e)
                 return value.strftime('%Y-%m-%d')
         try:
             from datetime import datetime, timezone
@@ -303,7 +324,8 @@ class URLListItem(QWidget):
             else:
                 dt = dt.astimezone(timezone.utc)
             return dt.astimezone().strftime('%Y-%m-%d')
-        except Exception:
+        except Exception as e:
+            logger.debug("时间格式化失败: %s", e)
             return str(value)[:10]
 
     @staticmethod

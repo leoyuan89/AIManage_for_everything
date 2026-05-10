@@ -32,6 +32,7 @@ class OllamaClient:
         self.host = host.rstrip('/')
         self.api_url = f"{self.host}/api/generate"
         self.timeout = timeout
+        self.session = requests.Session()
 
     def is_available(self) -> bool:
         """检查 Ollama 服务是否可用"""
@@ -66,7 +67,7 @@ class OllamaClient:
         }
 
         try:
-            response = requests.post(
+            response = self.session.post(
                 self.api_url,
                 json=payload,
                 timeout=self.timeout
@@ -125,7 +126,7 @@ class OllamaClient:
         }
 
         try:
-            response = requests.post(
+            response = self.session.post(
                 self.api_url,
                 json=payload,
                 stream=True,
@@ -285,6 +286,14 @@ class OllamaClient:
         except Exception as e:
             logger.warning("AI 分类结果解析失败: %s，返回默认值", e)
             return '其他'
+
+    def close(self):
+        """关闭 HTTP Session，释放连接池"""
+        try:
+            if hasattr(self, 'session') and self.session:
+                self.session.close()
+        except Exception:
+            pass
 
     def chat(self, messages: List[dict], temperature: float = 0.3, num_predict: int = 16384) -> str:
         """

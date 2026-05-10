@@ -162,11 +162,17 @@ class AIWorkerThread(QThread):
 
     # ── 生命周期 ──
     def shutdown(self):
-        """优雅关闭：清空队列，终止线程"""
+        """优雅关闭：清空队列，终止线程，释放 OllamaClient 连接"""
         with QMutexLocker(self._mutex):
             self._running = False
             self._queue.clear()
             self._condition.wakeAll()
+        if self._ollama_client is not None:
+            try:
+                self._ollama_client.close()
+            except Exception:
+                pass
+            self._ollama_client = None
 
     # ── 主循环 ──
     def run(self):
@@ -254,6 +260,7 @@ class AIWorkerThread(QThread):
         result = None
         latency_ms = 0.0
 
+        t0 = 0.0
         try:
             t0 = time.perf_counter()
             if task.task_type == AITaskType.CATEGORIZE:
@@ -309,12 +316,17 @@ class AIWorkerThread(QThread):
             self.task_finished.emit(task.task_id, result)
 
         except Exception as e:
-            latency_ms = (time.perf_counter() - t0) * 1000.0 if 't0' in dir() else 0.0
+            latency_ms = (time.perf_counter() - t0) * 1000.0 if t0 > 0 else 0.0
             self._update_state_post_task(client, success=False, error=str(e), latency_ms=latency_ms)
             self.task_failed.emit(task.task_id, str(e))
 
     def _generate_remark(self, client: OllamaClient, payload: Dict[str, Any]) -> str:
         """构建备注生成 prompt 并调用模型"""
+        custom_prompt = payload.get("prompt", "")
+        if custom_prompt:
+            result = client.generate(prompt=custom_prompt, temperature=payload.get("temperature", 0.3))
+            return result.strip().strip('"').strip("'")
+
         app_name = payload.get("app_name", "")
         url = payload.get("url", "")
         category = payload.get("category", "")

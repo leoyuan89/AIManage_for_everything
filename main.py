@@ -29,6 +29,7 @@ from core.crypto import CryptoManager
 from core.database import DatabaseManager
 from core.theme_manager import ThemeManager, style_button_primary
 from core.constants import DATA_DIR, BACKUP_DIR, VAULT_DB_PATH, VAULT_URLS_DB_PATH
+from core.icon_manager import IconManager
 from ui.main_window import MainWindow
 
 
@@ -37,6 +38,7 @@ class SetupDialog(QDialog):
     
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setWindowIcon(IconManager.app_icon())
         self.setup_ui()
     
     def setup_ui(self):
@@ -257,6 +259,7 @@ def main():
 
     # 创建应用
     app = QApplication(sys.argv)
+    app.setWindowIcon(IconManager.app_icon())
     app.setApplicationName("本地密码保险箱")
     app.setApplicationVersion("1.0")
     
@@ -337,15 +340,17 @@ def main():
             # 尝试创建数据库连接并验证解密能力
             try:
                 db = DatabaseManager(str(db_path), crypto)
-                # 关键：若数据库有数据，必须能成功解密才算密码正确
-                db.cursor.execute("SELECT app_name FROM accounts LIMIT 1")
-                row = db.cursor.fetchone()
-                if row and row['app_name'] and db.crypto:
-                    # 尝试解密：若抛出异常，说明密码错误
-                    try:
-                        db.crypto.decrypt_from_string(row['app_name'])
-                    except Exception:
-                        raise ValueError("Decryption failed: password incorrect")
+                # 关键：若数据库有数据且启用了加密，必须能成功解密才算密码正确
+                if db.crypto:
+                    db.cursor.execute(
+                        "SELECT app_name FROM accounts WHERE app_name IS NOT NULL AND app_name != '' LIMIT 1"
+                    )
+                    row = db.cursor.fetchone()
+                    if row and row['app_name']:
+                        try:
+                            db.crypto.decrypt_from_string(row['app_name'])
+                        except Exception:
+                            raise ValueError("Decryption failed: password incorrect")
             except Exception as e:
                 logging.getLogger(__name__).warning("Password verification failed: %s", e)
                 QMessageBox.critical(

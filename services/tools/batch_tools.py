@@ -1,8 +1,39 @@
 """
 批量操作类工具 — 批量新增、更新、重组、添加备注/标签、删除账号和网址
 """
+import logging
+
 from .base import AITool, ToolRegistry, ToolResult, PermissionLevel
 
+logger = logging.getLogger(__name__)
+
+
+def _is_placeholder_content(content: str) -> bool:
+    """检查备注内容是否为占位符或空内容"""
+    if not content or not content.strip():
+        return True
+    content = content.strip()
+    placeholder_keywords = [
+        "请根据", "生成备注", "AI生成", "placeholder", "相关备注",
+        "根据账号信息", "根据网址信息", "为账号生成", "为网址生成",
+        "生成相关", "生成一句", "生成一段", "请为", "生成个性化",
+        "根据信息", "生成描述", "生成说明",
+    ]
+    return any(kw in content for kw in placeholder_keywords)
+
+
+def _generate_real_remark(app_name: str, url: str, category: str, remark: str) -> str:
+    """调用 AI 生成真实的个性化备注（直接调用，不经过 QEventLoop）"""
+    try:
+        from services.ai_remark_service import AIRemarkService
+        service = AIRemarkService()
+        if not service.is_available():
+            logger.warning("Ollama 服务不可用，跳过 AI 备注生成")
+            return ""
+        return service.generate_remark_direct(app_name, url, category, remark)
+    except Exception as e:
+        logger.warning("AI 备注生成失败 (%s): %s", app_name, e)
+        return ""
 _BATCH_ADD_ACCOUNT_SCHEMA = {
     "items": {
         "type": "array",
@@ -293,7 +324,7 @@ class BatchReorganizeUrlsTool(AITool):
 
 @ToolRegistry.register(
     name="batch_add_remark_accounts",
-    description="批量为账号添加备注。支持为每个账号指定不同的备注内容，changes 数组中每个元素包含 target_id 和 content",
+    description="批量为账号添加备注或AI备注。'添加备注'使用用户指定的内容写入remark字段；'添加ai备注'由AI自动生成内容写入ai_remark字段。changes数组必须包含所有目标账号",
     permission=PermissionLevel.PREVIEW,
     params_schema={
         "changes": {
@@ -316,6 +347,15 @@ class BatchAddRemarkAccountsTool(AITool):
         remark_type = params.get("remark_type", "ai_remark")
         repo = context.get("repo")
         item_map = self._get_item_map(context, "accounts")
+
+        # 自动补全缺失的目标账号
+        all_items = context.get("accounts", [])
+        covered_ids = {ch.get("target_id") for ch in changes}
+        for item in all_items:
+            item_id = getattr(item, 'id', 0)
+            if item_id and item_id not in covered_ids:
+                changes.append({"target_id": item_id, "content": ""})
+
         preview_items = []
         for ch in changes:
             tid = ch.get("target_id")
@@ -323,6 +363,16 @@ class BatchAddRemarkAccountsTool(AITool):
             item = item_map.get(tid)
             if not item:
                 continue
+            if _is_placeholder_content(content):
+                if remark_type == "ai_remark":
+                    app_name = self._get_display_name_safe(item, repo)
+                    url = self._get_field_value_safe(item, "url", repo)
+                    category = self._get_field_value_safe(item, "category", repo)
+                    existing_remark = self._get_field_value_safe(item, "remark", repo)
+                    generated = _generate_real_remark(app_name, url, category, existing_remark)
+                    content = generated if generated else f"{app_name}（{category or '未分类'}）账号"
+                else:
+                    content = ""
             old_value = self._get_field_value_safe(item, remark_type, repo)
             preview_items.append(self._make_preview_item(
                 row_id=str(tid),
@@ -342,7 +392,7 @@ class BatchAddRemarkAccountsTool(AITool):
 
 @ToolRegistry.register(
     name="batch_add_remark_urls",
-    description="批量为网址添加备注。支持为每个网址指定不同的备注内容，changes 数组中每个元素包含 target_id 和 content",
+    description="批量为网址添加备注或AI备注。'添加备注'使用用户指定的内容写入remark字段；'添加ai备注'由AI自动生成内容写入ai_remark字段。changes数组必须包含所有目标网址",
     permission=PermissionLevel.PREVIEW,
     params_schema={
         "changes": {
@@ -365,6 +415,15 @@ class BatchAddRemarkUrlsTool(AITool):
         remark_type = params.get("remark_type", "ai_remark")
         repo = context.get("repo")
         item_map = self._get_item_map(context, "urls")
+
+        # 自动补全缺失的目标网址
+        all_items = context.get("urls", [])
+        covered_ids = {ch.get("target_id") for ch in changes}
+        for item in all_items:
+            item_id = getattr(item, 'id', 0)
+            if item_id and item_id not in covered_ids:
+                changes.append({"target_id": item_id, "content": ""})
+
         preview_items = []
         for ch in changes:
             tid = ch.get("target_id")
@@ -372,6 +431,16 @@ class BatchAddRemarkUrlsTool(AITool):
             item = item_map.get(tid)
             if not item:
                 continue
+            if _is_placeholder_content(content):
+                if remark_type == "ai_remark":
+                    title = self._get_display_name_safe(item, repo)
+                    url = self._get_field_value_safe(item, "url", repo)
+                    category = self._get_field_value_safe(item, "category", repo)
+                    existing_remark = self._get_field_value_safe(item, "remark", repo)
+                    generated = _generate_real_remark(title, url, category, existing_remark)
+                    content = generated if generated else f"{title}（{category or '未分类'}）网址"
+                else:
+                    content = ""
             old_value = self._get_field_value_safe(item, remark_type, repo)
             preview_items.append(self._make_preview_item(
                 row_id=str(tid),
@@ -417,7 +486,16 @@ class BatchAddTagsAccountsTool(AITool):
             else:
                 old_tags_str = str(old_tags) if old_tags else ""
             if mode == "append" and old_tags_str:
-                new_tags_str = old_tags_str + "," + ",".join(tags) if tags else old_tags_str
+                old_tags_list = old_tags_str.split(",") if old_tags_str else []
+                combined = old_tags_list + tags
+                # 去重并保持顺序
+                seen = set()
+                new_tags_list = []
+                for t in combined:
+                    if t and t not in seen:
+                        seen.add(t)
+                        new_tags_list.append(t)
+                new_tags_str = ",".join(new_tags_list)
             else:
                 new_tags_str = ",".join(tags)
             preview_items.append(self._make_preview_item(
@@ -464,7 +542,16 @@ class BatchAddTagsUrlsTool(AITool):
             else:
                 old_tags_str = str(old_tags) if old_tags else ""
             if mode == "append" and old_tags_str:
-                new_tags_str = old_tags_str + "," + ",".join(tags) if tags else old_tags_str
+                old_tags_list = old_tags_str.split(",") if old_tags_str else []
+                combined = old_tags_list + tags
+                # 去重并保持顺序
+                seen = set()
+                new_tags_list = []
+                for t in combined:
+                    if t and t not in seen:
+                        seen.add(t)
+                        new_tags_list.append(t)
+                new_tags_str = ",".join(new_tags_list)
             else:
                 new_tags_str = ",".join(tags)
             preview_items.append(self._make_preview_item(

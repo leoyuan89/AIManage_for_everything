@@ -3,6 +3,9 @@
 基于本地规则的密码强度计算，无需 LLM
 """
 
+# 内存级缓存，避免同一密码重复评估
+_strength_cache = {}
+
 
 def evaluate_password_strength(password: str) -> dict:
     """
@@ -15,6 +18,10 @@ def evaluate_password_strength(password: str) -> dict:
     - 2分：中（长度>=8，含两种字符类型）
     - 3分：强（长度>=12，含三种字符类型）
     - 4分：极强（长度>=16，含四种字符类型：大写/小写/数字/特殊字符）
+    
+    Note:
+        本函数仅返回语义标签（score/label），不返回颜色。
+        UI 层应从 ThemeManager.instance().colors 根据 label 动态取色。
     """
     if not password:
         return {"score": 0, "label": "弱"}

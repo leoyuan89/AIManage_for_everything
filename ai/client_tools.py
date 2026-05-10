@@ -61,7 +61,8 @@ class ToolClient(OllamaClient):
 - 用户："查找和青岛大学有关的账号" → {{"thought": "用户要查询", "tool": "semantic_search_accounts", "params": {{"query": "青岛大学"}}}}
 - 用户："将支付类账号改为金融" → {{"thought": "用户要求修改分类", "tool": "batch_update_accounts", "params": {{"items": [{{"target_id": 1, "field": "category", "new_value": "金融"}}]}}}}
 - 用户："删除这些账号" → {{"thought": "用户要求删除", "tool": "batch_delete_accounts", "params": {{"target_ids": [1, 2, 3]}}}}
-- 用户："给这些账号添加备注" → {{"thought": "每个账号需要不同的针对性备注", "tool": "batch_add_remark_accounts", "params": {{"changes": [{{"target_id": 1, "content": "学工系统报到账号"}}, {{"target_id": 2, "content": "财务处缴费系统"}}]}}}}
+- 用户："给这些账号添加备注：账号1是学生账号，账号2是工作账号" → {{"thought": "用户要求添加指定内容的备注", "tool": "batch_add_remark_accounts", "params": {{"changes": [{{"target_id": 1, "content": "学生账号"}}, {{"target_id": 2, "content": "工作账号"}}], "remark_type": "remark"}}}}
+- 用户："给这些账号添加ai备注" → {{"thought": "用户要求AI自动生成备注", "tool": "batch_add_remark_accounts", "params": {{"changes": [{{"target_id": 1, "content": ""}}, {{"target_id": 2, "content": ""}}], "remark_type": "ai_remark"}}}}
 - 用户："给教育与学习细分二级子类" → {{"thought": "用户要求对教育与学习分类进行细分，生成二级子类", "tool": "smart_classify_accounts", "params": {{}}}}
 - 用户："有哪些金融类账号？" → {{"thought": "用户只是询问", "tool": "direct_answer", "response": "..."}}
 
@@ -389,8 +390,9 @@ matched_ids: [相关的账号ID列表，如 [174, 175, 211]]
                     # 再备用：如果回复标签完全缺失，尝试用 <思考> 之后的内容作为回复
                     if thinking_match:
                         after_thinking = raw_text[thinking_match.end():]
-                        # 移除 <动作> 块
-                        after_thinking = re.sub(r'<动作\s*>.*?</动作\s*>', '', after_thinking, flags=re.DOTALL)
+                        # 移除 <动作> 块（仅在存在配对关闭标签时）
+                        if '<动作>' in after_thinking and '</动作>' in after_thinking:
+                            after_thinking = re.sub(r'<动作\s*>.*?</动作\s*>', '', after_thinking, flags=re.DOTALL)
                         response = after_thinking.strip()
                     else:
                         response = raw_text
@@ -399,10 +401,13 @@ matched_ids: [相关的账号ID列表，如 [174, 175, 211]]
             query_summary_match = re.search(r'<query_summary\s*>\s*(.*?)\s*</query_summary\s*>', raw_text, re.DOTALL)
             query_summary = query_summary_match.group(1).strip() if query_summary_match else ""
 
-            # 清理 response 中可能残留的标签
-            response = re.sub(r'<思考\s*>.*?</思考\s*>', '', response, flags=re.DOTALL)
-            response = re.sub(r'<动作\s*>.*?</动作\s*>', '', response, flags=re.DOTALL)
-            response = re.sub(r'<query_summary\s*>.*?</query_summary\s*>', '', response, flags=re.DOTALL)
+            # 清理 response 中可能残留的标签（仅在存在配对关闭标签时）
+            if '<思考>' in response and '</思考>' in response:
+                response = re.sub(r'<思考\s*>.*?</思考\s*>', '', response, flags=re.DOTALL)
+            if '<动作>' in response and '</动作>' in response:
+                response = re.sub(r'<动作\s*>.*?</动作\s*>', '', response, flags=re.DOTALL)
+            if '<query_summary>' in response and '</query_summary>' in response:
+                response = re.sub(r'<query_summary\s*>.*?</query_summary\s*>', '', response, flags=re.DOTALL)
             response = response.strip()
 
             # 解析 action 和 params

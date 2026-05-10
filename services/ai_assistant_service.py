@@ -138,7 +138,7 @@ class AIAssistantService(HistoryMixin, ActionMixin, QueryMixin):
                 lines.append(f"...还有{len(accounts)-max_items}个未列出")
             return '\n'.join(lines)
         else:
-            if urls is None and self.url_db:
+            if not urls and self.url_db:
                 urls = self.url_db.get_all_urls()
             if not urls:
                 return "无网址。"

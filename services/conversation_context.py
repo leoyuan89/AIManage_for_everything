@@ -201,14 +201,12 @@ class ReferenceResolver:
         return query.strip()
 
     @classmethod
-    def resolve(cls, query: str, context: ConversationContext) -> tuple[str, Optional[Set[int]]]:
+    def resolve(cls, query: str, context: ConversationContext) -> str:
         """
         解析用户查询中的指代和省略表达。
         
         Returns:
-            (enhanced_query, inherited_ids)
-            - enhanced_query: 增强后的查询（包含系统提示）
-            - inherited_ids: 继承的实体 ID 集合（若无则为 None）
+            enhanced_query: 增强后的查询（包含系统提示）
         """
         query = query.strip()
         query = cls._sanitize_query(query)
@@ -216,12 +214,12 @@ class ReferenceResolver:
         is_omission = any(re.match(pat, query) for pat in cls.OMISSION_PATTERNS)
 
         if not (has_pronoun or is_omission):
-            return query, None
+            return query
 
         inherited_ids = context.get_recent_entities(turn_offset=1)
         if not inherited_ids:
-            return query, None
+            return query
 
         scope_hint = f"[系统提示：用户使用了指代/省略表达，当前作用域包含 ID: {sorted(inherited_ids)}]"
         enhanced_query = f"{scope_hint}\n用户输入：{query}"
-        return enhanced_query, inherited_ids
+        return enhanced_query

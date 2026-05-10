@@ -217,6 +217,8 @@ class ThemeManager(QObject):
         self._current = 'light'
         self._colors = LIGHT_COLORS
         self._app = None
+        self._icon_cache = {}
+        self._qt_material_cache = {}
 
     @property
     def colors(self) -> ThemeColors:
@@ -237,6 +239,37 @@ class ThemeManager(QObject):
         self._colors = DARK_COLORS if theme == 'dark' else LIGHT_COLORS
         self._apply_qt_material(app, theme)
 
+        # 后台线程预加载另一个主题，避免用户首次切换时卡顿
+        other_theme = 'dark' if theme == 'light' else 'light'
+        threading.Thread(
+            target=self._preload_theme,
+            args=(other_theme,),
+            daemon=True,
+            name=f"theme-preload-{other_theme}"
+        ).start()
+
+    def _preload_theme(self, theme: str):
+        """后台预加载主题样式表到缓存（不阻塞 UI）"""
+        try:
+            cache_key = theme
+            if cache_key in self._qt_material_cache:
+                return
+            import qt_material
+            from qt_material import build_stylesheet
+            # 跳过耗时的 SVG 图标生成
+            original_set_icons_theme = qt_material.set_icons_theme
+            qt_material.set_icons_theme = lambda theme, parent="theme": None
+            try:
+                self._qt_material_cache[cache_key] = build_stylesheet(
+                    theme='dark_blue.xml' if theme == 'dark' else 'light_blue.xml',
+                    extra={}
+                )
+                logger.info("Preloaded theme stylesheet: %s", theme)
+            finally:
+                qt_material.set_icons_theme = original_set_icons_theme
+        except Exception as e:
+            logger.warning("Failed to preload theme: %s", e)
+
     def apply_theme(self, theme: str):
         """切换主题（用户在设置中触发）"""
         self._current = theme
@@ -248,14 +281,29 @@ class ThemeManager(QObject):
         self.theme_changed.emit(theme)
 
     def _apply_qt_material(self, app: QApplication, theme: str):
-        """应用 qt-material 底层样式"""
+        """应用 qt-material 底层样式（缓存样式表，跳过 SVG 图标生成）"""
         try:
-            from qt_material import apply_stylesheet
-            if theme == 'dark':
-                apply_stylesheet(app, theme='dark_blue.xml')
-            else:
-                apply_stylesheet(app, theme='light_blue.xml')
-            logger.info("Applied qt-material theme: %s", theme)
+            import qt_material
+            from qt_material import build_stylesheet
+            cache_key = theme
+            if cache_key not in self._qt_material_cache:
+                # 项目不使用 qt-material 图标系统，跳过耗时的 SVG 生成
+                original_set_icons_theme = qt_material.set_icons_theme
+                qt_material.set_icons_theme = lambda theme, parent="theme": None
+                try:
+                    self._qt_material_cache[cache_key] = build_stylesheet(
+                        theme='dark_blue.xml' if theme == 'dark' else 'light_blue.xml',
+                        extra={}
+                    )
+                finally:
+                    qt_material.set_icons_theme = original_set_icons_theme
+                # 确保 Fusion style（apply_stylesheet 原来会设置）
+                try:
+                    app.setStyle('Fusion')
+                except Exception:
+                    pass
+            app.setStyleSheet(self._qt_material_cache[cache_key])
+            logger.info("Applied qt-material theme: %s (cached=%s)", theme, cache_key in self._qt_material_cache)
         except ImportError:
             logger.warning("qt-material not installed, using default style")
         except Exception as e:
@@ -322,24 +370,19 @@ def _icon_color(colors: ThemeColors, category: str = "default") -> str:
 
 
 def get_icon(name: str, color: str = "default") -> QIcon:
-    """获取图标（qtawesome）"""
+    """获取图标（qtawesome），结果按 (name, color) 缓存"""
+    cache_key = (name, color)
+    tm = ThemeManager.instance()
+    if cache_key in tm._icon_cache:
+        return tm._icon_cache[cache_key]
+
     import qtawesome as qta
     icon_name = _ICON_MAP.get(name, "fa5s.circle")
-    colors = ThemeManager.instance().colors
+    colors = tm.colors
     hex_color = _icon_color(colors, color)
-    return qta.icon(icon_name, color=hex_color)
-
-
-def get_icon_char(name: str, fallback: str = "") -> str:
-    """如果 qtawesome 不可用，返回 fallback 字符"""
-    try:
-        import qtawesome as qta
-        icon_name = _ICON_MAP.get(name)
-        if icon_name:
-            return ""
-    except ImportError:
-        pass
-    return fallback
+    icon = qta.icon(icon_name, color=hex_color)
+    tm._icon_cache[cache_key] = icon
+    return icon
 
 
 # ============================================================

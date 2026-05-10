@@ -274,17 +274,10 @@ class AccountRepository(VaultRepository):
         if field not in self.ALLOWED_FIELDS:
             raise ValueError(f"字段 {field} 不在白名单中")
         
-        # 先获取完整数据，修改指定字段后更新
-        original = self.db.get_account_by_id(item_id)
-        if not original:
-            return False
-        
-        update_data = dict(original)
         if field == 'tags' and isinstance(value, list):
             value = json.dumps(value, ensure_ascii=False)
-        update_data[field] = value
         
-        return self.db.update_account(item_id, update_data)
+        return self.db.update_account_field(item_id, field, value)
     
     def soft_delete(self, item_id: int) -> bool:
         original = self.db.get_account_by_id(item_id)
@@ -310,11 +303,8 @@ class AccountRepository(VaultRepository):
     def check_duplicate(self, item_data: Dict) -> Optional[Account]:
         app = item_data.get('app_name', item_data.get('app', ''))
         username = item_data.get('username', item_data.get('account', ''))
-        accounts = self.get_all()
-        for acc in accounts:
-            if acc.app_name == app and acc.username == username:
-                return acc
-        return None
+        row = self.db.find_duplicate_account(app, username)
+        return Account.from_dict(row) if row else None
     
     def auto_classify(self, key_text: str) -> str:
         if self.classification_service:
@@ -462,16 +452,10 @@ class URLRepository(VaultRepository):
         if field not in self.ALLOWED_FIELDS:
             raise ValueError(f"字段 {field} 不在白名单中")
         
-        original = self.db.get_url_by_id(item_id)
-        if not original:
-            return False
-        
-        update_data = dict(original)
         if field == 'tags' and isinstance(value, list):
             value = json.dumps(value, ensure_ascii=False)
-        update_data[field] = value
         
-        return self.db.update_url(item_id, update_data)
+        return self.db.update_url_field(item_id, field, value)
     
     def soft_delete(self, item_id: int) -> bool:
         original = self.db.get_url_by_id(item_id)
@@ -495,11 +479,8 @@ class URLRepository(VaultRepository):
     
     def check_duplicate(self, item_data: Dict) -> Optional[URLItem]:
         url = item_data.get('url', '')
-        urls = self.get_all()
-        for u in urls:
-            if u.url == url:
-                return u
-        return None
+        row = self.db.find_by_url(url)
+        return URLItem.from_dict(row) if row else None
     
     def auto_classify(self, key_text: str) -> str:
         if self.url_service:
@@ -555,4 +536,8 @@ class RepositoryFactory:
     
     @classmethod
     def clear(cls):
+        cls._instances.clear()
+
+    @classmethod
+    def clear_instances(cls):
         cls._instances.clear()

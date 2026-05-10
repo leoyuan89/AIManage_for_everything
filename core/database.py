@@ -15,7 +15,11 @@ class _TransactionContext:
             self.db._transaction_depth -= 1
             if self.db._transaction_depth == 0:
                 if exc_type is None:
-                    self.db.conn.commit()
+                    try:
+                        self.db.conn.commit()
+                    except Exception:
+                        self.db.conn.rollback()
+                        raise
                 else:
                     self.db.conn.rollback()
         return False
@@ -43,9 +47,11 @@ def _mask_username(username: str) -> str:
         return ''
     if '@' in username:
         local, domain = username.split('@', 1)
-        if local:
-            return local[0] + '****@' + domain
-        return '****@' + domain
+        if not local:
+            return '****@' + domain
+        if len(local) <= 2:
+            return '****@' + domain
+        return local[0] + '****' + local[-1] + '@' + domain
     if len(username) < 3:
         return '****'
     return username[0] + '****' + username[-1]
@@ -94,6 +100,13 @@ class DatabaseManager:
     def transaction(self):
         """返回事务上下文管理器"""
         return _TransactionContext(self)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False
 
     
     def _create_tables(self):
@@ -226,6 +239,15 @@ class DatabaseManager:
                 return '[解密失败]'
         return ciphertext
     
+    def _decrypt_field_safe(self, ciphertext: str) -> str:
+        """解密字段，失败时返回原始值（用于兼容明文存储的字段如 ai_remark）"""
+        if self.crypto and ciphertext:
+            try:
+                return self.crypto.decrypt_from_string(ciphertext)
+            except Exception:
+                return ciphertext
+        return ciphertext
+    
     def _migrate_database(self):
         """数据库迁移：添加新字段"""
         with self._lock:
@@ -272,22 +294,21 @@ class DatabaseManager:
             self._commit()
 
     def add_password_history(self, account_id, encrypted_password):
-        with self._lock:
+        with self.transaction():
             self.cursor.execute(
                 "INSERT INTO password_history (account_id, encrypted_password) VALUES (?, ?)",
                 (account_id, encrypted_password)
             )
-            self._commit()
             self.cursor.execute("""
                 DELETE FROM password_history WHERE id IN (
                     SELECT id FROM password_history WHERE account_id = ?
                     ORDER BY changed_at DESC LIMIT -1 OFFSET 10
                 )
             """, (account_id,))
-            self._commit()
 
     def get_password_history(self, account_id):
         with self._lock:
+            logger.info("Password history accessed for account_id=%s", account_id)
             self.cursor.execute(
                 "SELECT id, encrypted_password, changed_at FROM password_history WHERE account_id = ? ORDER BY changed_at DESC",
                 (account_id,)
@@ -301,10 +322,11 @@ class DatabaseManager:
 
     def close(self):
         """关闭数据库连接"""
-        if self.conn:
-            self.conn.close()
-            self.conn = None
-            self.cursor = None
+        with self._lock:
+            if self.conn:
+                self.conn.close()
+                self.conn = None
+                self.cursor = None
     
     # ==================== 账号表操作 ====================
     
@@ -438,6 +460,56 @@ class DatabaseManager:
             self.cursor.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
             self._commit()
             return self.cursor.rowcount > 0
+
+    def update_account_field(self, account_id: int, field: str, value: Any) -> bool:
+        """
+        更新账号单个字段
+        
+        Args:
+            account_id: 账号 ID
+            field: 字段名
+            value: 新值
+            
+        Returns:
+            是否成功
+        """
+        with self._lock:
+            allowed = {'category', 'remark', 'ai_remark', 'tags', 'security_level', 'is_favorite'}
+            if field not in allowed:
+                raise ValueError(f"不允许修改的字段: {field}")
+
+            field_to_sql = {
+                'category': "UPDATE accounts SET category = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                'remark': "UPDATE accounts SET remark = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                'ai_remark': "UPDATE accounts SET ai_remark = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                'tags': "UPDATE accounts SET tags = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                'security_level': "UPDATE accounts SET security_level = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                'is_favorite': "UPDATE accounts SET is_favorite = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            }
+            self.cursor.execute(field_to_sql[field], (value, account_id))
+            self._commit()
+            return self.cursor.rowcount > 0
+
+    def find_duplicate_account(self, app_name: str, username: str) -> Optional[Dict[str, Any]]:
+        """
+        根据应用名和用户名查找重复账号
+        
+        Args:
+            app_name: 应用名
+            username: 用户名
+            
+        Returns:
+            账号数据字典（明文），不存在返回 None
+        """
+        with self._lock:
+            encrypted_app = self._encrypt_field(app_name)
+            encrypted_user = self._encrypt_field(username)
+            self.cursor.execute(
+                "SELECT * FROM accounts WHERE app_name = ? AND username = ? LIMIT 1",
+                (encrypted_app, encrypted_user)
+            )
+            row = self.cursor.fetchone()
+            return self._decrypt_row(dict(row)) if row else None
     
     def get_account_by_id(self, account_id: int) -> Optional[Dict[str, Any]]:
         """
@@ -793,8 +865,8 @@ class DatabaseManager:
             'category': row['category'],
             'tags': row.get('tags', '[]'),
             'remark': self._decrypt_field(row['remark']),
-            'ai_remark': row.get('ai_remark', ''),
-            'security_level': row.get('security_level', ''),
+            'ai_remark': self._decrypt_field_safe(row.get('ai_remark', '')),
+            'security_level': self._decrypt_field_safe(row.get('security_level', '')),
             'last_password_change': row.get('last_password_change'),
             'is_favorite': row.get('is_favorite', 0),
             'created_at': row['created_at'],
@@ -820,7 +892,6 @@ class DatabaseManager:
                        WHERE app_name_hash = ?""",
                     (app_name_hash,)
                 )
-                self._commit()
                 return row['category']
 
             return None
@@ -973,7 +1044,7 @@ class DatabaseManager:
                 app_name = account_data.get('app_name', '')
                 url = account_data.get('url', '')
                 category = account_data.get('category', '其他')
-                expires_at = datetime.now() + timedelta(days=30)
+                expires_at = datetime.utcnow() + timedelta(days=30)
             
                 self.cursor.execute("""
                     INSERT INTO recycle_bin (original_id, item_type, encrypted_data, app_name, username, url, category, expires_at)
@@ -998,7 +1069,7 @@ class DatabaseManager:
                 title = url_data.get('title', '')
                 url_str = url_data.get('url', '')
                 category = url_data.get('category', '其他')
-                expires_at = datetime.now() + timedelta(days=30)
+                expires_at = datetime.utcnow() + timedelta(days=30)
             
                 self.cursor.execute("""
                     INSERT INTO recycle_bin (original_id, item_type, encrypted_data, app_name, username, url, category, expires_at)
@@ -1057,6 +1128,10 @@ class DatabaseManager:
                 else:
                     decrypted_json = self._decrypt_field(encrypted_data.decode('utf-8') if isinstance(encrypted_data, bytes) else str(encrypted_data))
             
+                if decrypted_json == '[解密失败]':
+                    logger.error("restore_account: decrypt failed for recycle_id=%s", recycle_id)
+                    return None
+            
                 account_data = json.loads(decrypted_json)
                 account_data.pop('id', None)
                 account_data.pop('created_at', None)
@@ -1091,6 +1166,10 @@ class DatabaseManager:
                     decrypted_json = self._decrypt_field(encrypted_data)
                 else:
                     decrypted_json = self._decrypt_field(encrypted_data.decode('utf-8') if isinstance(encrypted_data, bytes) else str(encrypted_data))
+            
+                if decrypted_json == '[解密失败]':
+                    logger.error("restore_url: decrypt failed for recycle_id=%s", recycle_id)
+                    return None
             
                 url_data = json.loads(decrypted_json)
                 url_data.pop('id', None)

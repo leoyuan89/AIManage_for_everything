@@ -71,6 +71,12 @@ class OllamaClient:
                 json=payload,
                 timeout=self.timeout
             )
+            if response.status_code == 503:
+                raise Exception("Ollama 模型加载中，请稍后重试")
+            if response.status_code == 429:
+                raise Exception("请求过于频繁，请稍后重试")
+            if response.status_code != 200:
+                raise Exception(f"Ollama 服务返回错误: {response.status_code}")
             response.raise_for_status()
 
             result = response.json()
@@ -89,7 +95,10 @@ class OllamaClient:
         except requests.exceptions.Timeout:
             raise Exception("Ollama 响应超时，请检查模型是否已加载")
         except Exception as e:
-            raise Exception(f"Ollama 调用失败: {str(e)}")
+            msg = str(e)
+            if msg.startswith(("Ollama ", "请求过于频繁")):
+                raise
+            raise Exception(f"Ollama 调用失败: {msg}")
 
     def generate_stream(self, prompt: str, temperature: float = 0.1, num_predict: int = 16384) -> Generator[str, None, None]:
         """
@@ -120,7 +129,7 @@ class OllamaClient:
                 self.api_url,
                 json=payload,
                 stream=True,
-                timeout=self.timeout
+                timeout=(10, self.timeout)
             )
             response.raise_for_status()
 
@@ -171,11 +180,21 @@ class OllamaClient:
 </result>
 """
         raw = self.generate(wrapped_prompt, temperature=temperature, num_predict=num_predict)
-        think_match = re.search(r'<think\s*>\s*(.*?)\s*</think\s*>', raw, re.DOTALL)
-        result_match = re.search(r'<result\s*>\s*(.*?)\s*</result\s*>', raw, re.DOTALL)
 
-        think = think_match.group(1).strip() if think_match else ""
-        result_text = result_match.group(1).strip() if result_match else raw.strip()
+        # 使用索引提取 think 内容（避免正则过度匹配）
+        think = ""
+        think_start = raw.find('<think>')
+        if think_start != -1:
+            think_end = raw.find('</think>', think_start)
+            if think_end != -1:
+                think = raw[think_start + len('<think>'):think_end].strip()
+
+        result_text = raw.strip()
+        result_start = raw.find('<result>')
+        if result_start != -1:
+            result_end = raw.find('</result>', result_start)
+            if result_end != -1:
+                result_text = raw[result_start + len('<result>'):result_end].strip()
 
         return {"think": think, "result": result_text}
 
@@ -240,7 +259,11 @@ class OllamaClient:
 
         try:
             result = self.generate(prompt, temperature=0.2, num_predict=50)
+        except Exception as e:
+            logger.error("AI 分类网络调用失败: %s", e)
+            raise
 
+        try:
             # 清洗结果
             result = result.strip().strip('"').strip("'")
 
@@ -260,7 +283,7 @@ class OllamaClient:
             return result if result else '其他'
 
         except Exception as e:
-            logger.error("AI 分类失败: %s", e)
+            logger.warning("AI 分类结果解析失败: %s，返回默认值", e)
             return '其他'
 
     def chat(self, messages: List[dict], temperature: float = 0.3, num_predict: int = 16384) -> str:

@@ -31,8 +31,7 @@ class AccountListItem(QWidget):
         if enabled == self._compact_mode:
             return
         self._compact_mode = enabled
-        colors = ThemeManager.instance().colors
-        
+
         if enabled:
             self.setFixedHeight(32)
             self.icon_label.hide()
@@ -40,7 +39,6 @@ class AccountListItem(QWidget):
             self.lbl_arrow.hide()
             if hasattr(self, 'lbl_time'):
                 self.lbl_time.hide()
-            self.lbl_name.setStyleSheet(f"color: {colors.text_primary}; font-size: 13px; font-weight: 500;")
             self.layout().setContentsMargins(6, 0, 6, 0)
         else:
             self.setFixedHeight(56)
@@ -49,8 +47,9 @@ class AccountListItem(QWidget):
             self.lbl_arrow.show()
             if hasattr(self, 'lbl_time'):
                 self.lbl_time.show()
-            self.lbl_name.setStyleSheet(f"color: {colors.text_primary}; font-size: 15px; font-weight: 600;")
             self.layout().setContentsMargins(10, 0, 10, 0)
+
+        self.on_theme_changed()
     
     def setup_ui(self, selection_mode: bool):
         colors = ThemeManager.instance().colors
@@ -73,18 +72,9 @@ class AccountListItem(QWidget):
         
         # 圆形图标
         self.icon_label = QLabel(self._get_initial(self.account.app_name))
+        self.icon_label.setObjectName("icon_label")
         self.icon_label.setFixedSize(36, 36)
         self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        color = self._generate_icon_color(self.account.app_name)
-        self.icon_label.setStyleSheet(f"""
-            QLabel {{
-                background-color: {color};
-                color: {colors.text_on_accent};
-                border-radius: 18px;
-                font-size: 14px;
-                font-weight: bold;
-            }}
-        """)
         layout.addWidget(self.icon_label)
         
         # 文字区（垂直）
@@ -97,7 +87,7 @@ class AccountListItem(QWidget):
         title_layout.setSpacing(4)
         
         self.lbl_name = QLabel(self.account.app_name)
-        self.lbl_name.setStyleSheet(f"color: {colors.text_primary}; font-size: 15px; font-weight: 600;")
+        self.lbl_name.setObjectName("lbl_name")
         title_layout.addWidget(self.lbl_name)
         
         # 徽章标签（如 炽阳推荐）
@@ -149,25 +139,23 @@ class AccountListItem(QWidget):
         sub_layout.setContentsMargins(0, 0, 0, 0)
 
         self.lbl_account = QLabel(self.account.mask_username())
-        self.lbl_account.setStyleSheet(f"color: {colors.text_tertiary}; font-size: 12px;")
+        self.lbl_account.setObjectName("lbl_account")
         sub_layout.addWidget(self.lbl_account)
 
         time_parts = []
         created = self.account.created_at
         updated = self.account.updated_at
         if created:
-            created_str = created.strftime('%Y-%m-%d') if hasattr(created, 'strftime') else str(created)[:10]
-            time_parts.append(f"创建:{created_str}")
+            time_parts.append(f"创建:{self._format_db_time(created)}")
         if updated:
-            updated_str = updated.strftime('%Y-%m-%d') if hasattr(updated, 'strftime') else str(updated)[:10]
-            time_parts.append(f"修改:{updated_str}")
+            time_parts.append(f"修改:{self._format_db_time(updated)}")
         if time_parts:
             self.lbl_time = QLabel("  ".join(time_parts))
-            self.lbl_time.setStyleSheet(f"color: {colors.text_disabled}; font-size: 10px;")
+            self.lbl_time.setObjectName("lbl_time")
             sub_layout.addWidget(self.lbl_time)
         else:
             self.lbl_time = QLabel("")
-            self.lbl_time.setStyleSheet(f"color: {colors.text_disabled}; font-size: 10px;")
+            self.lbl_time.setObjectName("lbl_time")
             sub_layout.addWidget(self.lbl_time)
         sub_layout.addStretch()
 
@@ -177,18 +165,12 @@ class AccountListItem(QWidget):
         
         # 分类标签 Pill
         self.lbl_category = QLabel(self.account.category or '其他')
-        self.lbl_category.setStyleSheet(f"""
-            color: {colors.text_secondary};
-            font-size: 11px;
-            background-color: {colors.bg_secondary};
-            border-radius: 10px;
-            padding: 2px 8px;
-        """)
+        self.lbl_category.setObjectName("lbl_category")
         layout.addWidget(self.lbl_category)
         
         # 右箭头
         self.lbl_arrow = QLabel("›")
-        self.lbl_arrow.setStyleSheet(f"color: {colors.text_disabled}; font-size: 18px;")
+        self.lbl_arrow.setObjectName("lbl_arrow")
         layout.addWidget(self.lbl_arrow)
         
         # 复制按钮容器
@@ -215,37 +197,120 @@ class AccountListItem(QWidget):
         """
         
         self.btn_copy_url = QPushButton("URL")
+        self.btn_copy_url.setObjectName("btn_copy_url")
         self.btn_copy_url.setFixedSize(26, 26)
         self.btn_copy_url.setToolTip("复制网址")
-        self.btn_copy_url.setStyleSheet(btn_style)
         self.btn_copy_url.clicked.connect(self._on_copy_url)
         btn_layout.addWidget(self.btn_copy_url)
         
         self.btn_copy_username = QPushButton("ID")
+        self.btn_copy_username.setObjectName("btn_copy_username")
         self.btn_copy_username.setFixedSize(26, 26)
         self.btn_copy_username.setToolTip("复制账号")
-        self.btn_copy_username.setStyleSheet(btn_style)
         self.btn_copy_username.clicked.connect(self._on_copy_username)
         btn_layout.addWidget(self.btn_copy_username)
         
         self.btn_copy_password = QPushButton("PW")
+        self.btn_copy_password.setObjectName("btn_copy_password")
         self.btn_copy_password.setFixedSize(26, 26)
         self.btn_copy_password.setToolTip("复制密码")
-        self.btn_copy_password.setStyleSheet(btn_style)
         self.btn_copy_password.clicked.connect(self._on_copy_password)
         btn_layout.addWidget(self.btn_copy_password)
         
         layout.addWidget(self._copy_btn_container)
         
         self.setFixedHeight(56)
-        self.setStyleSheet(f"""
+        self.setStyleSheet(self._build_stylesheet(colors))
+    
+    def _build_stylesheet(self, colors) -> str:
+        """生成完整的样式表字符串（合并所有子控件样式，减少 setStyleSheet 调用次数）"""
+        color = self._generate_icon_color(self.account.app_name)
+        font_size = 13 if self._compact_mode else 15
+        return f"""
             #accountListItem {{
                 background-color: {colors.bg_primary};
                 border: none;
                 border-bottom: 1px solid {colors.border_light};
             }}
-        """)
-    
+            #accountListItem #icon_label {{
+                background-color: {color};
+                color: {colors.text_on_accent};
+                border-radius: 18px;
+                font-size: 14px;
+                font-weight: bold;
+            }}
+            #accountListItem #lbl_name {{
+                color: {colors.text_primary};
+                font-size: {font_size}px;
+                font-weight: 600;
+            }}
+            #accountListItem #lbl_account {{
+                color: {colors.text_tertiary};
+                font-size: 12px;
+            }}
+            #accountListItem #lbl_time {{
+                color: {colors.text_disabled};
+                font-size: 10px;
+            }}
+            #accountListItem #lbl_category {{
+                color: {colors.text_secondary};
+                font-size: 11px;
+                background-color: {colors.bg_secondary};
+                border-radius: 10px;
+                padding: 2px 8px;
+            }}
+            #accountListItem #lbl_arrow {{
+                color: {colors.text_disabled};
+                font-size: 18px;
+            }}
+            #accountListItem QPushButton#btn_copy_url,
+            #accountListItem QPushButton#btn_copy_username,
+            #accountListItem QPushButton#btn_copy_password {{
+                background-color: transparent;
+                color: {colors.text_tertiary};
+                border: none;
+                border-radius: 13px;
+                font-size: 9px;
+                font-weight: bold;
+                padding: 0px;
+            }}
+            #accountListItem QPushButton#btn_copy_url:hover,
+            #accountListItem QPushButton#btn_copy_username:hover,
+            #accountListItem QPushButton#btn_copy_password:hover {{
+                background-color: {colors.accent_blue_bg};
+                color: {colors.accent_blue};
+            }}
+        """
+
+    def on_theme_changed(self):
+        """主题切换时高效更新自身样式（合并为一次 setStyleSheet 调用）"""
+        colors = ThemeManager.instance().colors
+        self.setStyleSheet(self._build_stylesheet(colors))
+
+        # 密码强度徽章（颜色映射随主题变化，需单独处理）
+        if self._strength_label and self.account.password:
+            try:
+                from core.password_strength import evaluate_password_strength
+                result = evaluate_password_strength(self.account.password)
+                level = result['label']
+                level_colors = {
+                    "弱": colors.accent_red,
+                    "中": colors.accent_orange,
+                    "强": colors.accent_green,
+                    "极强": colors.accent_blue,
+                }
+                level_color = level_colors.get(level, colors.text_tertiary)
+                self._strength_label.setStyleSheet(f"""
+                    color: {level_color};
+                    font-size: 9px;
+                    font-weight: bold;
+                    background-color: {level_color}20;
+                    border-radius: 4px;
+                    padding: 1px 6px;
+                """)
+            except Exception:
+                pass
+
     def set_selection_mode(self, enabled: bool):
         self.checkbox.setVisible(enabled)
         self._copy_btn_container.setVisible(not enabled)
@@ -314,6 +379,33 @@ class AccountListItem(QWidget):
         except Exception:
             pass
     
+    @staticmethod
+    def _format_db_time(value) -> str:
+        """将数据库 UTC 时间转换为本地日期字符串"""
+        if not value:
+            return ''
+        if hasattr(value, 'strftime'):
+            # datetime 对象（可能是 naive，按 UTC 处理）
+            try:
+                from datetime import timezone
+                if value.tzinfo is None:
+                    value = value.replace(tzinfo=timezone.utc)
+                return value.astimezone().strftime('%Y-%m-%d')
+            except Exception:
+                return value.strftime('%Y-%m-%d')
+        # 字符串格式
+        try:
+            from datetime import datetime, timezone
+            s = str(value).replace('Z', '+00:00')
+            dt = datetime.fromisoformat(s)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            else:
+                dt = dt.astimezone(timezone.utc)
+            return dt.astimezone().strftime('%Y-%m-%d')
+        except Exception:
+            return str(value)[:10]
+
     @staticmethod
     def _generate_icon_color(text: str) -> str:
         colors = ['#E57373', '#F06292', '#BA68C8', '#9575CD', '#7986CB', '#64B5F6', '#4FC3F7', '#4DD0E1', '#4DB6AC', '#81C784', '#AED581', '#FFD54F', '#FFB74D', '#FF8A65', '#A1887F']

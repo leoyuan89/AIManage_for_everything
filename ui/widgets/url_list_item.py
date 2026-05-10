@@ -27,8 +27,7 @@ class URLListItem(QWidget):
         if enabled == self._compact_mode:
             return
         self._compact_mode = enabled
-        colors = ThemeManager.instance().colors
-        
+
         if enabled:
             self.setFixedHeight(32)
             self.icon_label.hide()
@@ -36,7 +35,6 @@ class URLListItem(QWidget):
             self.lbl_arrow.hide()
             if hasattr(self, 'lbl_time'):
                 self.lbl_time.hide()
-            self.lbl_name.setStyleSheet(f"color: {colors.text_primary}; font-size: 13px; font-weight: 500;")
             self.layout().setContentsMargins(6, 0, 6, 0)
         else:
             self.setFixedHeight(56)
@@ -45,8 +43,9 @@ class URLListItem(QWidget):
             self.lbl_arrow.show()
             if hasattr(self, 'lbl_time'):
                 self.lbl_time.show()
-            self.lbl_name.setStyleSheet(f"color: {colors.text_primary}; font-size: 15px; font-weight: 600;")
             self.layout().setContentsMargins(10, 0, 10, 0)
+
+        self.on_theme_changed()
     
     def setup_ui(self, selection_mode: bool):
         colors = ThemeManager.instance().colors
@@ -71,18 +70,9 @@ class URLListItem(QWidget):
         # 圆形图标
         title = self.url_item.get('title', '') if isinstance(self.url_item, dict) else getattr(self.url_item, 'title', '')
         self.icon_label = QLabel(self._get_initial(title))
+        self.icon_label.setObjectName("icon_label")
         self.icon_label.setFixedSize(36, 36)
         self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        color = self._generate_icon_color(title)
-        self.icon_label.setStyleSheet(f"""
-            QLabel {{
-                background-color: {color};
-                color: {colors.text_on_accent};
-                border-radius: 18px;
-                font-size: 14px;
-                font-weight: bold;
-            }}
-        """)
         layout.addWidget(self.icon_label)
         
         # 文字区（垂直）
@@ -95,7 +85,7 @@ class URLListItem(QWidget):
         title_layout.setSpacing(4)
         
         self.lbl_name = QLabel(title)
-        self.lbl_name.setStyleSheet(f"color: {colors.text_primary}; font-size: 15px; font-weight: 600;")
+        self.lbl_name.setObjectName("lbl_name")
         title_layout.addWidget(self.lbl_name)
         
         # 徽章标签（如 匹配）
@@ -117,7 +107,7 @@ class URLListItem(QWidget):
         url = self.url_item.get('url', '') if isinstance(self.url_item, dict) else getattr(self.url_item, 'url', '')
         display_url = url[:40] if len(url) <= 40 else url[:40] + '...'
         self.lbl_url = QLabel(display_url)
-        self.lbl_url.setStyleSheet(f"color: {colors.text_tertiary}; font-size: 12px;")
+        self.lbl_url.setObjectName("lbl_url")
         self.lbl_url.setToolTip(url)
         text_layout.addWidget(self.lbl_url)
         
@@ -125,17 +115,15 @@ class URLListItem(QWidget):
         created = self.url_item.get('created_at') if isinstance(self.url_item, dict) else getattr(self.url_item, 'created_at', None)
         updated = self.url_item.get('updated_at') if isinstance(self.url_item, dict) else getattr(self.url_item, 'updated_at', None)
         if created:
-            created_str = created.strftime('%Y-%m-%d') if hasattr(created, 'strftime') else str(created)[:10]
-            time_parts.append(f"创建:{created_str}")
+            time_parts.append(f"创建:{self._format_db_time(created)}")
         if updated:
-            updated_str = updated.strftime('%Y-%m-%d') if hasattr(updated, 'strftime') else str(updated)[:10]
-            time_parts.append(f"修改:{updated_str}")
+            time_parts.append(f"修改:{self._format_db_time(updated)}")
         if time_parts:
             self.lbl_time = QLabel("  ".join(time_parts))
-            self.lbl_time.setStyleSheet(f"color: {colors.text_disabled}; font-size: 10px;")
+            self.lbl_time.setObjectName("lbl_time")
         else:
             self.lbl_time = QLabel("")
-            self.lbl_time.setStyleSheet(f"color: {colors.text_disabled}; font-size: 10px;")
+            self.lbl_time.setObjectName("lbl_time")
         text_layout.addWidget(self.lbl_time)
         
         layout.addLayout(text_layout, 1)
@@ -143,18 +131,12 @@ class URLListItem(QWidget):
         # 分类标签 Pill
         category = self.url_item.get('category', '') if isinstance(self.url_item, dict) else getattr(self.url_item, 'category', '')
         self.lbl_category = QLabel(category or '其他')
-        self.lbl_category.setStyleSheet(f"""
-            color: {colors.text_secondary};
-            font-size: 11px;
-            background-color: {colors.bg_secondary};
-            border-radius: 10px;
-            padding: 2px 8px;
-        """)
+        self.lbl_category.setObjectName("lbl_category")
         layout.addWidget(self.lbl_category)
         
         # 右箭头
         self.lbl_arrow = QLabel("›")
-        self.lbl_arrow.setStyleSheet(f"color: {colors.text_disabled}; font-size: 18px;")
+        self.lbl_arrow.setObjectName("lbl_arrow")
         layout.addWidget(self.lbl_arrow)
         
         # 复制按钮容器
@@ -181,23 +163,79 @@ class URLListItem(QWidget):
         """
         
         self.btn_copy_url = QPushButton("URL")
+        self.btn_copy_url.setObjectName("btn_copy_url")
         self.btn_copy_url.setFixedSize(26, 26)
         self.btn_copy_url.setToolTip("复制网址")
-        self.btn_copy_url.setStyleSheet(btn_style)
         self.btn_copy_url.clicked.connect(self._on_copy_url)
         btn_layout.addWidget(self.btn_copy_url)
         
         layout.addWidget(self._copy_btn_container)
         
         self.setFixedHeight(56)
-        self.setStyleSheet(f"""
+        self.setStyleSheet(self._build_stylesheet(colors))
+    
+    def _build_stylesheet(self, colors) -> str:
+        """生成完整的样式表字符串（合并所有子控件样式，减少 setStyleSheet 调用次数）"""
+        title = self.url_item.get('title', '') if isinstance(self.url_item, dict) else getattr(self.url_item, 'title', '')
+        color = self._generate_icon_color(title)
+        font_size = 13 if self._compact_mode else 15
+        return f"""
             #urlListItem {{
                 background-color: {colors.bg_primary};
                 border: none;
                 border-bottom: 1px solid {colors.border_light};
             }}
-        """)
-    
+            #urlListItem #icon_label {{
+                background-color: {color};
+                color: {colors.text_on_accent};
+                border-radius: 18px;
+                font-size: 14px;
+                font-weight: bold;
+            }}
+            #urlListItem #lbl_name {{
+                color: {colors.text_primary};
+                font-size: {font_size}px;
+                font-weight: 600;
+            }}
+            #urlListItem #lbl_url {{
+                color: {colors.text_tertiary};
+                font-size: 12px;
+            }}
+            #urlListItem #lbl_time {{
+                color: {colors.text_disabled};
+                font-size: 10px;
+            }}
+            #urlListItem #lbl_category {{
+                color: {colors.text_secondary};
+                font-size: 11px;
+                background-color: {colors.bg_secondary};
+                border-radius: 10px;
+                padding: 2px 8px;
+            }}
+            #urlListItem #lbl_arrow {{
+                color: {colors.text_disabled};
+                font-size: 18px;
+            }}
+            #urlListItem QPushButton#btn_copy_url {{
+                background-color: transparent;
+                color: {colors.text_tertiary};
+                border: none;
+                border-radius: 13px;
+                font-size: 9px;
+                font-weight: bold;
+                padding: 0px;
+            }}
+            #urlListItem QPushButton#btn_copy_url:hover {{
+                background-color: {colors.accent_blue_bg};
+                color: {colors.accent_blue_dark};
+            }}
+        """
+
+    def on_theme_changed(self):
+        """主题切换时高效更新自身样式（合并为一次 setStyleSheet 调用）"""
+        colors = ThemeManager.instance().colors
+        self.setStyleSheet(self._build_stylesheet(colors))
+
     def set_selection_mode(self, enabled: bool):
         self.checkbox.setVisible(enabled)
         self._copy_btn_container.setVisible(not enabled)
@@ -243,6 +281,31 @@ class URLListItem(QWidget):
         if hasattr(parent, 'show_copy_toast'):
             parent.show_copy_toast(f"{label}已复制")
     
+    @staticmethod
+    def _format_db_time(value) -> str:
+        """将数据库 UTC 时间转换为本地日期字符串"""
+        if not value:
+            return ''
+        if hasattr(value, 'strftime'):
+            try:
+                from datetime import timezone
+                if value.tzinfo is None:
+                    value = value.replace(tzinfo=timezone.utc)
+                return value.astimezone().strftime('%Y-%m-%d')
+            except Exception:
+                return value.strftime('%Y-%m-%d')
+        try:
+            from datetime import datetime, timezone
+            s = str(value).replace('Z', '+00:00')
+            dt = datetime.fromisoformat(s)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            else:
+                dt = dt.astimezone(timezone.utc)
+            return dt.astimezone().strftime('%Y-%m-%d')
+        except Exception:
+            return str(value)[:10]
+
     @staticmethod
     def _generate_icon_color(text: str) -> str:
         colors = ['#E57373', '#F06292', '#BA68C8', '#9575CD', '#7986CB', '#64B5F6', '#4FC3F7', '#4DD0E1', '#4DB6AC', '#81C784', '#AED581', '#FFD54F', '#FFB74D', '#FF8A65', '#A1887F']

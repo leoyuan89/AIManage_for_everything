@@ -32,6 +32,12 @@ class ActionMixin:
             '竞赛': ['竞赛', '比赛', '大赛', '蓝桥', '大创', 'cvpr', 'acm', '挑战杯', 'kaggle'],
             '网盘': ['网盘', '云盘', '百度网盘', '阿里云盘', '坚果云', 'dropbox', 'onedrive', 'icloud'],
         }
+        # 优化：扁平化关键词映射，减少嵌套循环
+        keyword_to_cat = {}
+        for cat, keywords in category_keywords.items():
+            for kw in keywords:
+                keyword_to_cat[kw] = cat
+        
         preview_items = []
         for item in context_items:
             name = (repo.get_display_name(item) or '').lower()
@@ -39,8 +45,9 @@ class ActionMixin:
                 continue
             old_cat = repo.get_field_value(item, 'category') or '其他'
             new_cat = None
-            for cat, keywords in category_keywords.items():
-                if any(kw in name for kw in keywords):
+            # 使用扁平化的关键词映射，减少循环层数
+            for kw, cat in keyword_to_cat.items():
+                if kw in name:
                     new_cat = cat
                     break
             if new_cat and new_cat != old_cat:
@@ -552,14 +559,16 @@ class ActionMixin:
             error_msg = str(e)
             result_msg = f"操作失败，已回滚：{e}"
 
-        else:
-            return {
-                "success": False,
-                "affected_count": 0,
-                "affected_ids": [],
-                "transaction_id": "",
-                "error": f"不支持的 tool_name: {tool_name}"
-            }
+        # try 块正常完成（无异常且已执行了某个分支）
+        return {
+            "success": success,
+            "affected_count": len(affected_ids),
+            "affected_ids": affected_ids,
+            "transaction_id": transaction_id,
+            "result_msg": result_msg,
+            "error": error_msg or "",
+            "fail_ids": fail_ids
+        }
 
         # 写入审计日志
         try:

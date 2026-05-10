@@ -28,7 +28,11 @@ class _TransactionContext:
             self.db._transaction_depth -= 1
             if self.db._transaction_depth == 0:
                 if exc_type is None:
-                    self.db.conn.commit()
+                    try:
+                        self.db.conn.commit()
+                    except Exception:
+                        self.db.conn.rollback()
+                        raise
                 else:
                     self.db.conn.rollback()
         return False
@@ -75,6 +79,13 @@ class URLDatabaseManager:
     def transaction(self):
         """返回事务上下文管理器"""
         return _TransactionContext(self)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False
 
     
     def _create_tables(self):
@@ -150,10 +161,11 @@ class URLDatabaseManager:
     
     def close(self):
         """关闭数据库连接"""
-        if self.conn:
-            self.conn.close()
-            self.conn = None
-            self.cursor = None
+        with self._lock:
+            if self.conn:
+                self.conn.close()
+                self.conn = None
+                self.cursor = None
     
     def _ensure_columns(self):
         """确保 urls 表包含所有必要列（自动迁移）"""
@@ -293,7 +305,7 @@ class URLDatabaseManager:
         with self._lock:
             try:
                 from datetime import datetime, timedelta
-                expires_at = datetime.now() + timedelta(days=30)
+                expires_at = datetime.utcnow() + timedelta(days=30)
                 self.cursor.execute("""
                     INSERT INTO url_recycle_bin (original_id, title, url, category, tags, password, is_favorite, ai_remark, remark, expires_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -358,7 +370,6 @@ class URLDatabaseManager:
                     "UPDATE url_recycle_bin SET is_restored = 1, restored_at = CURRENT_TIMESTAMP WHERE id = ?",
                     (recycle_id,)
                 )
-                self._commit()
             
                 url_data['id'] = new_id
                 return url_data
@@ -592,18 +603,16 @@ class URLDatabaseManager:
             if field not in allowed:
                 raise ValueError(f"不允许修改的字段: {field}")
 
-            # 使用预编译 SQL 模板，彻底消除动态拼接
-            sql = (
-                "UPDATE urls SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                "UPDATE urls SET url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                "UPDATE urls SET category = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                "UPDATE urls SET tags = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                "UPDATE urls SET related_account_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                "UPDATE urls SET visit_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                "UPDATE urls SET ai_remark = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                "UPDATE urls SET remark = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            )
-            field_to_sql = dict(zip(sorted(allowed), sql))
+            field_to_sql = {
+                'title': "UPDATE urls SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                'url': "UPDATE urls SET url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                'category': "UPDATE urls SET category = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                'tags': "UPDATE urls SET tags = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                'related_account_id': "UPDATE urls SET related_account_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                'visit_count': "UPDATE urls SET visit_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                'ai_remark': "UPDATE urls SET ai_remark = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                'remark': "UPDATE urls SET remark = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            }
             self.cursor.execute(field_to_sql[field], (value, url_id))
             self._commit()
             return self.cursor.rowcount > 0

@@ -20,12 +20,12 @@ class HistoryMixin:
         )
         if mode == 'plan':
             self._history.append(msg)
-            if len(self._history) > self._max_history * 2:
-                self._history = self._history[-self._max_history * 2:]
+            if len(self._history) > self._max_history:
+                self._history = self._history[-self._max_history:]
         else:
             self._history_build.append(msg)
-            if len(self._history_build) > self._max_history * 2:
-                self._history_build = self._history_build[-self._max_history * 2:]
+            if len(self._history_build) > self._max_history:
+                self._history_build = self._history_build[-self._max_history:]
 
     def get_history(self, mode: str = 'plan') -> List[ConversationMessage]:
         """获取对话历史"""

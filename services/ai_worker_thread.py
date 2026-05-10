@@ -294,7 +294,9 @@ class AIWorkerThread(QThread):
                 prompt = task.payload.get("prompt", "")
                 if not prompt:
                     raise ValueError("CLASSIFY_BATCH 任务需要提供 prompt")
-                raw = client.generate(prompt, temperature=0.2, num_predict=500)
+                temperature = task.payload.get("temperature", 0.2)
+                num_predict = task.payload.get("num_predict", 500)
+                raw = client.generate(prompt, temperature=temperature, num_predict=num_predict)
                 result = raw
 
             else:

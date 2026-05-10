@@ -147,10 +147,12 @@ class AIServiceManager(QObject):
             "query": query, "app_list": app_list, "accounts_info": accounts_info or []
         })
 
-    def classify_batch_async(self, prompt: str) -> str:
+    def classify_batch_async(self, prompt: str, temperature: float = 0.2, num_predict: int = 500) -> str:
         """异步批量分类（prompt 由调用方构建），返回 task_id"""
         return self.submit_task(AITaskType.CLASSIFY_BATCH, {
-            "prompt": prompt
+            "prompt": prompt,
+            "temperature": temperature,
+            "num_predict": num_predict,
         })
 
     # ── 刷新请求 ──

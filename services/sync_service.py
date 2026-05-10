@@ -59,7 +59,7 @@ def _serialize_accounts(accounts: List[Account], category_orders: dict = None) -
             'username': acc.username,
             'password': acc.password,
             'category': acc.category,
-            'tags': acc.tags if isinstance(acc.tags, str) else json.dumps(acc.tags, ensure_ascii=False),
+            'tags': acc.tags,
             'remark': acc.remark,
             'ai_remark': getattr(acc, 'ai_remark', None),
             'security_level': acc.security_level,
@@ -88,7 +88,7 @@ def _serialize_urls(urls: List, category_orders: dict = None) -> list:
             'title': u.title,
             'url': u.url,
             'category': u.category,
-            'tags': u.tags if isinstance(u.tags, str) else json.dumps(u.tags, ensure_ascii=False),
+            'tags': u.tags,
             'visit_count': u.visit_count,
             'password': getattr(u, 'password', None),
             'ai_remark': u.ai_remark,
@@ -151,6 +151,15 @@ class SyncService:
         if urls is None:
             raise ValueError("urls 不能为 None")
         
+        # 0. 预验证输出路径可写性（避免昂贵加密后写入失败）
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with open(output_path, 'a', encoding='utf-8'):
+                pass
+        except OSError as e:
+            raise ValueError(f"输出路径不可写: {output_path}") from e
+        
         # 1. 序列化账号和网址数据（含排序字段，按软件中设置的类别顺序）
         accounts_data = _serialize_accounts(accounts, account_category_orders)
         urls_data = _serialize_urls(urls, url_category_orders)
@@ -175,20 +184,22 @@ class SyncService:
             template = f.read()
         
         # 5. 注入加密数据和 salt 到模板变量
+        iterations = getattr(crypto_manager, 'iterations', 600000)
         html_content = template.replace('{{ENCRYPTED_DATA}}', encrypted_data)
         html_content = html_content.replace('{{SALT_BASE64}}', salt_b64)
-        html_content = html_content.replace('{{ITERATIONS}}', str(crypto_manager.iterations))
+        html_content = html_content.replace('{{ITERATIONS}}', str(iterations))
         html_content = html_content.replace('{{GENERATED_AT}}', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
         html_content = html_content.replace('{{ACCOUNT_COUNT}}', str(len(accounts_data)))
         html_content = html_content.replace('{{URL_COUNT}}', str(len(urls_data)))
         
-        # 6. 原子写入 HTML 文件（先写临时文件，成功后替换）
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        
+        # 6. 原子写入 HTML 文件（先写临时文件，成功后替换；异常时清理临时文件）
         tmp_path = output_path.with_suffix('.tmp')
-        with open(tmp_path, 'w', encoding='utf-8') as f:
-            f.write(html_content)
-        os.replace(str(tmp_path), str(output_path))
+        try:
+            with open(tmp_path, 'w', encoding='utf-8') as f:
+                f.write(html_content)
+            os.replace(str(tmp_path), str(output_path))
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink(missing_ok=True)
         
         return str(output_path)

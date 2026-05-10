@@ -86,9 +86,8 @@ class _PasswordChangeThread(QThread):
                     'username': _safe_re_encrypt(row['username']),
                     'password': _safe_re_encrypt(row['password']),
                     'remark': _safe_re_encrypt(row['remark']),
-                    'ai_remark': _safe_re_encrypt(row['ai_remark']),
-                    'security_level': _safe_re_encrypt(row['security_level']),
                 }
+                # ai_remark 和 security_level 为明文存储，不参与加密轮换
                 self.db.cursor.execute(
                     "UPDATE accounts SET app_name = ?, url = ?, username = ?, password = ?, "
                     "remark = ?, ai_remark = ?, security_level = ?, updated_at = CURRENT_TIMESTAMP "
@@ -96,8 +95,8 @@ class _PasswordChangeThread(QThread):
                     (
                         encrypted_data['app_name'], encrypted_data['url'],
                         encrypted_data['username'], encrypted_data['password'],
-                        encrypted_data['remark'], encrypted_data['ai_remark'],
-                        encrypted_data['security_level'], row['id']
+                        encrypted_data['remark'], row['ai_remark'] or '',
+                        row['security_level'] or '', row['id']
                     )
                 )
                 self.progress.emit(idx + 1, total)

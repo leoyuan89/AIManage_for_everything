@@ -66,6 +66,59 @@ class AIClassificationService:
     # 低置信度阈值
     LOW_CONFIDENCE_THRESHOLD = 0.6
 
+    def _submit_and_wait(self, prompt: str, temperature: float = 0.2, num_predict: int = 500) -> str:
+        """通过 AIServiceManager 提交异步任务并同步等待结果"""
+        from services.ai_service_manager import AIServiceManager
+        from PyQt6.QtCore import QEventLoop
+        ai_manager = AIServiceManager.instance()
+        
+        loop = QEventLoop()
+        result = [None]
+        error = [None]
+        task_id = [None]
+        
+        def on_finished(finished_task_id, res):
+            if finished_task_id == task_id[0]:
+                result[0] = res
+                loop.quit()
+        
+        def on_failed(failed_task_id, err):
+            if failed_task_id == task_id[0]:
+                error[0] = err
+                loop.quit()
+        
+        ai_manager.task_finished.connect(on_finished)
+        ai_manager.task_failed.connect(on_failed)
+        
+        try:
+            task_id[0] = ai_manager.classify_batch_async(
+                prompt, temperature=temperature, num_predict=num_predict
+            )
+            loop.exec()
+            
+            if error[0] is not None:
+                raise Exception(f"AI 分类任务失败: {error[0]}")
+            
+            return result[0] or ""
+        finally:
+            try:
+                ai_manager.task_finished.disconnect(on_finished)
+            except Exception:
+                pass
+            try:
+                ai_manager.task_failed.disconnect(on_failed)
+            except Exception:
+                pass
+    
+    @staticmethod
+    def _infer_item_type(items: List) -> str:
+        """从条目列表推断类型"""
+        if not items:
+            return ''
+        if hasattr(items[0], 'app_name'):
+            return 'account'
+        return 'url'
+
     def _format_category_tree(self, categories: list) -> str:
         """将分类列表格式化为树形文本，用于注入 Prompt"""
         from core.category_utils import build_category_tree
@@ -88,8 +141,6 @@ class AIClassificationService:
         if not cleaned:
             return '其他'
 
-        parent = None
-        child = None
         try:
             parent, child = parse_category_path(cleaned)
             if not validate_category_name(parent) or (child and not validate_category_name(child)):
@@ -97,12 +148,10 @@ class AIClassificationService:
             cleaned = format_category_path(parent, child)
         except ValueError:
             # 回退：尝试提取一级分类
-            if parent is not None:
-                parent_fallback = parent
-            else:
-                sep_idx = cleaned.find('>')
-                parent_fallback = cleaned[:sep_idx].strip() if sep_idx != -1 else cleaned.strip()
+            sep_idx = cleaned.find('>')
+            parent_fallback = cleaned[:sep_idx].strip() if sep_idx != -1 else cleaned.strip()
 
+            # 修复：确保 parent_fallback 本身也经过验证
             if validate_category_name(parent_fallback) and parent_fallback in approved_categories:
                 return parent_fallback
             # 完全回退到"其他"
@@ -155,6 +204,10 @@ class AIClassificationService:
             # 降级：使用启发式分类
             return self._heuristic_pre_analyze(accounts, existing_categories, 'account')
         
+        # 超过200条时截断到150条
+        if len(accounts) > 200:
+            accounts = accounts[:150]
+        
         # 构建元数据文本
         items_text = []
         for i, acc in enumerate(accounts):
@@ -165,7 +218,6 @@ class AIClassificationService:
                 f"标签:{tags_str} 备注:{acc.remark}"
             )
         
-        # 传入全部数据，超过200条时截断到150条
         items_str = '\n'.join(items_text)
         prompt = f"""你是一款密码管理软件的AI分类专家。请对以下所有账号进行深度分析，提出一套精细、合理的分类体系。
 
@@ -203,11 +255,8 @@ class AIClassificationService:
         result = None
         json_str = None
         try:
-            from ai.ollama_client import OllamaClient
-            state = ai_manager.get_state()
-            # TODO(P0-3): 迁移到 AIServiceManager.submit_task() 异步执行，避免主线程阻塞
-            ollama = OllamaClient(model=state.model_name or "gemma4:4b", timeout=300)
-            result = ollama.generate(prompt, temperature=0.3)
+            # 通过 AIServiceManager 异步执行，避免主线程阻塞
+            result = self._submit_and_wait(prompt, temperature=0.3, num_predict=2000)
             
             # 提取JSON
             json_str = self._extract_json(result)
@@ -248,6 +297,10 @@ class AIClassificationService:
         if not ai_manager.is_available():
             return self._heuristic_pre_analyze(urls, existing_categories, 'url')
         
+        # 超过200条时截断到150条
+        if len(urls) > 200:
+            urls = urls[:150]
+        
         items_text = []
         for i, item in enumerate(urls):
             tags = item.get_tags_list()
@@ -256,7 +309,6 @@ class AIClassificationService:
                 f"[{i}] 标题:{item.title} 网址:{item.url} 分类:{item.category} 标签:{tags_str}"
             )
         
-        # 传入全部数据，超过200条时截断到150条
         items_str = '\n'.join(items_text)
         prompt = f"""你是一款网址管理软件的AI分类专家。请对以下所有网址进行深度分析，提出一套精细、合理的分类体系。
 
@@ -292,11 +344,8 @@ class AIClassificationService:
 - 任何字段的值都不要包含英文双引号"，如果必须引用请使用中文引号「」"""
         
         try:
-            from ai.ollama_client import OllamaClient
-            state = ai_manager.get_state()
-            # TODO(P0-3): 迁移到 AIServiceManager.submit_task() 异步执行，避免主线程阻塞
-            ollama = OllamaClient(model=state.model_name or "gemma4:4b", timeout=300)
-            result = ollama.generate(prompt, temperature=0.3)
+            # 通过 AIServiceManager 异步执行，避免主线程阻塞
+            result = self._submit_and_wait(prompt, temperature=0.3, num_predict=2000)
             json_str = self._extract_json(result)
             data = json.loads(json_str)
             
@@ -363,7 +412,10 @@ class AIClassificationService:
             changes.extend(batch_changes)
             
             if progress_callback:
-                progress_callback(min(batch_start + batch_size, total), total)
+                try:
+                    progress_callback(min(batch_start + batch_size, total), total)
+                except Exception as e:
+                    logger.error("Progress callback error: %s", e)
         
         self._pending_changes = changes
         return changes
@@ -452,6 +504,12 @@ class AIClassificationService:
         if not snapshot:
             return False
         
+        # 修复：校验 item_type 一致性
+        inferred_type = self._infer_item_type(items)
+        if snapshot.item_type != inferred_type:
+            logger.error("Snapshot item_type mismatch: snapshot=%s, items=%s", snapshot.item_type, inferred_type)
+            return False
+        
         # 回滚分类并写入数据库
         for item in items:
             item_id = item.id if hasattr(item, 'id') else 0
@@ -513,8 +571,9 @@ class AIClassificationService:
             if item_type == 'account':
                 tags = item.get_tags_list()
                 tags_str = ','.join(tags) if tags else ''
+                # 修复：不再将备注明文发送至外部 LLM
                 items_text.append(
-                    f"[{i}] {item.app_name}|{item.url}|{item.category}|{tags_str}|{item.remark}"
+                    f"[{i}] {item.app_name}|{item.url}|{item.category}|{tags_str}"
                 )
             else:
                 items_text.append(
@@ -528,7 +587,7 @@ class AIClassificationService:
 {self._format_category_tree(categories)}
 
 ## 分类原则
-1. 仔细阅读每个条目的名称、网址、备注，找到与类别的最佳匹配
+1. 仔细阅读每个条目的名称、网址、当前分类和标签，找到与类别的最佳匹配
 2. 只要条目与某个类别有一定相关性，就优先归入该类别，**不要偷懒归入"其他"**
 3. 只有当条目与所有类别的关联度都极低（几乎完全不相关）时，才归入"其他"
 4. "其他"的使用比例应控制在 10% 以内
@@ -537,7 +596,7 @@ class AIClassificationService:
 7. 如果某个条目只属于一个大类、不需要细分，可只输出主类，如 `学术与研究`
 8. 分类名禁止包含 `/`、`>`、`·` 三个符号（`>` 仅作为层级分隔符出现一次）
 
-## 条目列表（格式：序号|名称|网址|当前分类|备注）：
+## 条目列表（格式：序号|名称|网址|当前分类|标签）：
 {items_str}
 
 ## 输出格式（严格JSON）
@@ -551,13 +610,8 @@ class AIClassificationService:
         result = None
         json_str = None
         try:
-            from services.ai_service_manager import AIServiceManager
-            ai_manager = AIServiceManager.instance()
-            from ai.ollama_client import OllamaClient
-            state = ai_manager.get_state()
-            # TODO(P0-3): 迁移到 AIServiceManager.submit_task() 异步执行，避免主线程阻塞
-            ollama = OllamaClient(model=state.model_name or "gemma4:4b", timeout=300)
-            result = ollama.generate(prompt, temperature=0.2)
+            # 通过 AIServiceManager 异步执行，避免主线程阻塞
+            result = self._submit_and_wait(prompt, temperature=0.2, num_predict=500)
             json_str = self._extract_json(result)
             data = json.loads(json_str)
             

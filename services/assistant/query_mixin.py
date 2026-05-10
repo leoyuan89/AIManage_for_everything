@@ -128,7 +128,7 @@ class QueryMixin:
         
         # 指代消解
         from services.conversation_context import ReferenceResolver
-        enhanced_query, _ = ReferenceResolver.resolve(query, self.conversation_context)
+        enhanced_query = ReferenceResolver.resolve(query, self.conversation_context)
 
         # 根据查询筛选目标分类下的账号（局部操作时不传全部数据）
         filtered_accounts, scope_hint = self._filter_items_by_query(accounts or [], enhanced_query)
@@ -287,7 +287,7 @@ class QueryMixin:
         
         # 指代消解
         from services.conversation_context import ReferenceResolver
-        enhanced_query, _ = ReferenceResolver.resolve(query, self.conversation_context)
+        enhanced_query = ReferenceResolver.resolve(query, self.conversation_context)
 
         # 根据查询筛选目标分类下的账号（局部操作时不传全部数据）
         filtered_accounts, scope_hint = self._filter_items_by_query(accounts or [], enhanced_query)
@@ -318,7 +318,9 @@ class QueryMixin:
         
         prompt = CLASSIFY_PROMPT.format(scope_hint=scope_hint, db_summary=db_summary, history_str=history_str, enhanced_query=enhanced_query)
         
-        full_text = ""
+        # 使用列表累积 token，避免频繁的字符串拼接；buffer 用于状态机检测
+        full_text_parts = []
+        buffer = ""
         seen_thinking_open = False
         seen_thinking_close = False
         seen_response_open = False
@@ -335,16 +337,20 @@ class QueryMixin:
             token_count = 0
             for token in ollama.generate_stream(prompt, temperature=0.2):
                 token_count += 1
-                full_text += token
+                full_text_parts.append(token)
+                buffer += token
+                # 限制 buffer 长度，避免状态机检测时内存线性增长
+                if len(buffer) > 200:
+                    buffer = buffer[-100:]
                 
                 # 简单状态机标记 section
-                if '<思考' in full_text:
+                if '<思考' in buffer:
                     seen_thinking_open = True
-                if '</思考' in full_text:
+                if '</思考' in buffer:
                     seen_thinking_close = True
-                if '<回复' in full_text:
+                if '<回复' in buffer:
                     seen_response_open = True
-                if '</回复' in full_text:
+                if '</回复' in buffer:
                     seen_response_close = True
                 
                 # 决定当前 token 的 section
@@ -368,6 +374,7 @@ class QueryMixin:
                     except Exception as cb_err:
                         logger.error("on_token callback error: %s", cb_err)
             
+            full_text = "".join(full_text_parts)
             logger.info("generate_stream finished, total_tokens=%d, response_len=%d", token_count, len(full_text))
             # 解析完整结果
             result = ollama._extract_command(full_text)
@@ -505,7 +512,7 @@ class QueryMixin:
 
         # 1. 指代消解（先处理，以便后续根据查询内容筛选）
         from services.conversation_context import ReferenceResolver
-        enhanced_query = ReferenceResolver.resolve(query, self.conversation_context)[0]
+        enhanced_query = ReferenceResolver.resolve(query, self.conversation_context)
 
         # 2. 构建分类树（先用总数，后续根据大模型解析的目标分类更新）
         repo = RepositoryFactory.get_repository(vault_type)

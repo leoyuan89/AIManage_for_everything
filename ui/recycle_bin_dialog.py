@@ -4,15 +4,34 @@
 """
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox
+    QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox,
+    QTextEdit
 )
 from PyQt6.QtCore import Qt
 from typing import Optional
 import logging
+from datetime import datetime, timezone
 
 from core.theme_manager import ThemeManager, ThemeColors
 
 logger = logging.getLogger(__name__)
+
+
+def _utc_to_local_str(utc_str) -> str:
+    """将 UTC 时间字符串转换为本地时间字符串"""
+    if not utc_str:
+        return ''
+    try:
+        s = str(utc_str).replace('Z', '+00:00')
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        local_dt = dt.astimezone()
+        return local_dt.strftime('%Y-%m-%d %H:%M:%S')
+    except Exception:
+        return str(utc_str)
 
 
 class RecycleBinDialog(QDialog):
@@ -58,6 +77,7 @@ class RecycleBinDialog(QDialog):
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.cellDoubleClicked.connect(self._on_item_double_clicked)
         layout.addWidget(self.table)
 
         # 操作按钮
@@ -85,6 +105,7 @@ class RecycleBinDialog(QDialog):
         else:
             items = self.db.get_recycle_bin_items()
 
+        self._items = items
         self.table.setRowCount(len(items))
         for i, item in enumerate(items):
             self.table.setItem(i, 0, QTableWidgetItem(str(item['id'])))
@@ -97,15 +118,16 @@ class RecycleBinDialog(QDialog):
                 self.table.setItem(i, 2, QTableWidgetItem(item.get('url', '')[:40]))
 
             self.table.setItem(i, 3, QTableWidgetItem(item.get('category', '')))
-            self.table.setItem(i, 4, QTableWidgetItem(str(item.get('deleted_at', ''))))
+            self.table.setItem(i, 4, QTableWidgetItem(_utc_to_local_str(item.get('deleted_at', ''))))
 
-            # 计算剩余天数
-            from datetime import datetime
+            # 计算剩余天数（统一按 UTC 计算）
             expires = item.get('expires_at', '')
             if expires:
                 try:
-                    exp = datetime.fromisoformat(expires.replace('Z', '+00:00'))
-                    days = (exp - datetime.now()).days
+                    exp = datetime.fromisoformat(str(expires).replace('Z', '+00:00'))
+                    if exp.tzinfo is None:
+                        exp = exp.replace(tzinfo=timezone.utc)
+                    days = (exp - datetime.now(timezone.utc)).days
                     self.table.setItem(i, 5, QTableWidgetItem(f"{days}天"))
                 except Exception:
                     logger.debug("回收站条目剩余天数计算失败", exc_info=True)
@@ -150,6 +172,83 @@ class RecycleBinDialog(QDialog):
         if reply == QMessageBox.StandardButton.Yes:
             self.db.permanently_delete_recycle_item(recycle_id)
             self.load_items()
+
+    def _on_item_double_clicked(self, row, column):
+        """双击表格行查看完整详情"""
+        if row < 0 or row >= len(getattr(self, '_items', [])):
+            return
+        item = self._items[row]
+        self._show_item_detail(item)
+
+    def _show_item_detail(self, item):
+        """弹出对话框展示回收站条目的完整解密内容"""
+        try:
+            encrypted_data = item.get('encrypted_data', '')
+            if not encrypted_data:
+                QMessageBox.information(self, "详情", "无详细数据")
+                return
+
+            decrypted_json = self.db._decrypt_field(encrypted_data)
+            if decrypted_json == '[解密失败]':
+                QMessageBox.warning(self, "错误", "数据解密失败")
+                return
+
+            import json
+            data = json.loads(decrypted_json)
+
+            # 计算剩余天数
+            from datetime import datetime
+            expires = item.get('expires_at', '')
+            remaining = "30天"
+            if expires:
+                try:
+                    exp = datetime.fromisoformat(expires.replace('Z', '+00:00'))
+                    days = (exp - datetime.now()).days
+                    remaining = f"{days}天"
+                except Exception:
+                    pass
+
+            if self.vault_type == 'accounts':
+                lines = [
+                    f"应用名：{data.get('app_name', '')}",
+                    f"用户名：{data.get('username', '')}",
+                    f"密码：{data.get('password', '')}",
+                    f"网址：{data.get('url', '')}",
+                    f"备注：{data.get('remark', '') or '（无）'}",
+                    f"分类：{data.get('category', '')}",
+                    f"删除时间：{_utc_to_local_str(item.get('deleted_at', ''))}",
+                    f"剩余天数：{remaining}",
+                ]
+            else:
+                lines = [
+                    f"标题：{data.get('title', '')}",
+                    f"网址：{data.get('url', '')}",
+                    f"用户名：{data.get('username', '') or '（无）'}",
+                    f"密码：{data.get('password', '') or '（无）'}",
+                    f"备注：{data.get('remark', '') or '（无）'}",
+                    f"分类：{data.get('category', '')}",
+                    f"删除时间：{_utc_to_local_str(item.get('deleted_at', ''))}",
+                    f"剩余天数：{remaining}",
+                ]
+
+            dialog = QDialog(self)
+            dialog.setWindowTitle("回收站条目详情")
+            dialog.setMinimumSize(450, 350)
+            layout = QVBoxLayout(dialog)
+
+            text = QTextEdit()
+            text.setReadOnly(True)
+            text.setText("\n".join(lines))
+            layout.addWidget(text)
+
+            btn = QPushButton("关闭")
+            btn.clicked.connect(dialog.accept)
+            layout.addWidget(btn)
+
+            dialog.exec()
+        except Exception as e:
+            logger.exception("查看回收站详情失败")
+            QMessageBox.critical(self, "错误", f"查看详情失败：{str(e)}")
 
     def on_empty(self):
         reply = QMessageBox.question(

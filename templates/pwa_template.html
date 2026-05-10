@@ -728,52 +728,9 @@ function popScreen() {
 
 
 // ===== TEST DATA =====
-function getTestAccounts() {
-  return [
-    { app_name: '微信', username: 'wxuser_2024', password: 'wx#Pass789', category: '通信与社交', _alpha_key: 'W', _sort_key: 'weixin', security_level: '强' },
-    { app_name: 'QQ', username: 'qq_gamer', password: 'QQ@2024!', category: '通信与社交', _alpha_key: 'Q', _sort_key: 'QQ', security_level: '中' },
-    { app_name: '微博', username: 'wb_star', password: 'wb_Star99', category: '通信与社交', _alpha_key: 'W', _sort_key: 'weibo', security_level: '中' },
-    { app_name: 'GitHub', username: 'dev_coder', password: 'gh#Secure42', category: '编程学习与工具>代码托管', _alpha_key: 'G', _sort_key: 'github', security_level: '极强' },
-    { app_name: 'Gmail', username: 'dev.coder', password: 'gm@2024#Safe', category: '工具与系统>邮箱', _alpha_key: 'G', _sort_key: 'gmail', security_level: '强' },
-    { app_name: '支付宝', username: '138****8888', password: 'zfb#Pay2024', category: '金融与支付', _alpha_key: 'Z', _sort_key: 'zhifubao', security_level: '极强' },
-    { app_name: '淘宝', username: 'tb_shopper', password: 'tb#Buy99', category: '电商与购物', _alpha_key: 'T', _sort_key: 'taobao', security_level: '中' },
-    { app_name: '京东', username: 'jd_buyer', password: 'jd#Shop2024', category: '电商与购物', _alpha_key: 'J', _sort_key: 'jingdong', security_level: '中' },
-    { app_name: 'Netflix', username: 'movie_fan', password: 'nf#Watch2024', category: '影音娱乐>视频', _alpha_key: 'N', _sort_key: 'netflix', security_level: '强' },
-    { app_name: 'Spotify', username: 'music_lover', password: 'sp#Listen99', category: '影音娱乐>音乐', _alpha_key: 'S', _sort_key: 'spotify', security_level: '中' },
-    { app_name: 'Steam', username: 'gamer_pro', password: 'st#Game2024!', category: '游戏', _alpha_key: 'S', _sort_key: 'steam', security_level: '强' },
-    { app_name: 'Apple ID', username: 'ios_user@icloud.com', password: 'ap#ID2024!', category: '工具与系统', _alpha_key: 'A', _sort_key: 'apple id', security_level: '极强' },
-    { app_name: '百度网盘', username: 'bd_pan99', password: 'bd#Cloud88', category: '工具与系统>云盘', _alpha_key: 'B', _sort_key: 'baidu wangpan', security_level: '中' },
-    { app_name: '哔哩哔哩', username: 'bili_fans', password: 'bl#Video99', category: '影音娱乐>视频', _alpha_key: 'B', _sort_key: 'bilibili', security_level: '中' },
-    { app_name: '知乎', username: 'zhihu_user', password: 'zh#Answer42', category: '社交与资讯', _alpha_key: 'Z', _sort_key: 'zhihu', security_level: '中' },
-    { app_name: '小红书', username: 'xhs_life', password: 'xhs#Life2024', category: '社交与资讯', _alpha_key: 'X', _sort_key: 'xiaohongshu', security_level: '弱' },
-    { app_name: '美团', username: 'mt_user', password: 'mt#Food88', category: '生活与服务>外卖', _alpha_key: 'M', _sort_key: 'meituan', security_level: '弱' },
-    { app_name: '飞书', username: 'feishu_work', password: 'fs#Work2024', category: '工作办公>协作', _alpha_key: 'F', _sort_key: 'feishu', security_level: '强' },
-    { app_name: 'Dropbox', username: 'db_backup', password: 'db#Cloud99', category: '工具与系统>云盘', _alpha_key: 'D', _sort_key: 'dropbox', security_level: '强' },
-    { app_name: 'Twitter / X', username: 'x_user', password: 'tw#Post42', category: '通信与社交', _alpha_key: 'T', _sort_key: 'twitter', security_level: '中' },
-  ];
-}
-
-function getTestUrls() {
-  return [
-    { title: 'ChatGPT', url: 'https://chat.openai.com', category: 'AI工具', _alpha_key: 'C', _sort_key: 'chatgpt' },
-    { title: 'Claude', url: 'https://claude.ai', category: 'AI工具', _alpha_key: 'C', _sort_key: 'claude' },
-    { title: 'GitHub', url: 'https://github.com', category: '开发工具', _alpha_key: 'G', _sort_key: 'github' },
-    { title: 'Stack Overflow', url: 'https://stackoverflow.com', category: '开发工具', _alpha_key: 'S', _sort_key: 'stackoverflow' },
-    { title: 'V2EX', url: 'https://v2ex.com', category: '技术社区', _alpha_key: 'V', _sort_key: 'v2ex' },
-    { title: '豆瓣', url: 'https://douban.com', category: '文化社区', _alpha_key: 'D', _sort_key: 'douban' },
-    { title: 'YouTube', url: 'https://youtube.com', category: '视频', _alpha_key: 'Y', _sort_key: 'youtube' },
-    { title: 'Hacker News', url: 'https://news.ycombinator.com', category: '技术社区', _alpha_key: 'H', _sort_key: 'hacker news' },
-  ];
-}
-
 // ===== RENDER: Lock Screen =====
 function initLockScreen() {
-  // 测试模式提示
-  if(ENCRYPTED_DATA.startsWith('{{')) {
-    $('#lockInfo').textContent = '【测试模式】主密码：test';
-  } else {
-    $('#lockInfo').textContent = `生成时间：${GENERATED_AT}  |  ${ACCOUNT_COUNT} 条账号 + ${URL_COUNT} 条网址`;
-  }
+  $('#lockInfo').textContent = `生成时间：${GENERATED_AT}  |  ${ACCOUNT_COUNT} 条账号 + ${URL_COUNT} 条网址`;
   $('#lockInput').addEventListener('keydown', e => { if(e.key==='Enter') doUnlock(); });
   $('#unlockBtn').addEventListener('click', doUnlock);
   $('#togglePwd').addEventListener('click', () => {
@@ -789,24 +746,6 @@ async function doUnlock() {
   const err = $('#lockError');
   if(!pwd) { err.textContent = '请输入主密码'; return; }
   btn.classList.add('loading'); btn.disabled = true; err.textContent = '';
-
-  // ===== 测试模式 =====
-  // 当模板尚未注入真实数据（占位符未被替换）时，使用 "test" 作为主密码进入测试模式
-  if(ENCRYPTED_DATA.startsWith('{{') && pwd === 'test') {
-    await new Promise(r => setTimeout(r, 400)); // 模拟解密耗时
-    vault.accounts = getTestAccounts();
-    vault.urls = getTestUrls();
-    vault.account_category_orders = {};
-    vault.url_category_orders = {};
-    vault.decrypted = true;
-    $('#lockInput').value = '';
-    hide('lockScreen');
-    show('mainScreen');
-    $('#mainScreen').classList.add('active');
-    renderMainScreen();
-    btn.classList.remove('loading'); btn.disabled = false;
-    return;
-  }
 
   try {
     const jsonStr = await decryptData(pwd, ENCRYPTED_DATA, SALT_BASE64);

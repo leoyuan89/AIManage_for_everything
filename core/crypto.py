@@ -159,7 +159,7 @@ class CryptoManager:
         
         Args:
             new_password: 新密码明文
-            iterations: 新密码的迭代次数（默认使用 ITERATIONS=600000）
+            iterations: 新密码的迭代次数（默认 ITERATIONS=600000，OWASP 2023 推荐）
         """
         if iterations is None:
             iterations = self.ITERATIONS

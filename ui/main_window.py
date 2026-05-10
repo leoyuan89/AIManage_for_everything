@@ -1421,9 +1421,24 @@ class MainWindow(QMainWindow):
             self.on_ai_toggle_panel()
     
     def _shortcut_toggle_theme(self):
-        current = ThemeManager.instance().current
+        current = ThemeManager.instance().current_theme
         new_theme = 'dark' if current == 'light' else 'light'
-        ThemeManager.instance().apply_theme(new_theme)
+        self.setUpdatesEnabled(False)
+        try:
+            ThemeManager.instance().apply_theme(new_theme)
+        finally:
+            self.setUpdatesEnabled(True)
+        # 持久化主题配置（与设置对话框行为一致）
+        if self.config_path:
+            try:
+                import json
+                with open(self.config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                config['theme'] = new_theme
+                with open(self.config_path, 'w', encoding='utf-8') as f:
+                    json.dump(config, f, indent=2, ensure_ascii=False)
+            except Exception:
+                pass
     
     def _shortcut_lock(self):
         self.show_lock_screen()
@@ -1947,19 +1962,20 @@ class MainWindow(QMainWindow):
         self.btn_compact_view.setToolTip("切换紧凑视图")
         self.btn_compact_view.setStyleSheet(f"""
             QPushButton {{
-                border: none;
-                background: transparent;
+                border: 1px solid {colors.border_default};
+                background-color: {colors.bg_tertiary};
+                border-radius: 4px;
                 font-size: 14px;
                 color: {colors.text_secondary};
             }}
             QPushButton:hover {{
                 background-color: {colors.bg_hover};
-                border-radius: 4px;
+                border-color: {colors.border_medium};
             }}
             QPushButton:checked {{
                 background-color: {colors.accent_blue_bg};
                 color: {colors.accent_blue};
-                border-radius: 4px;
+                border-color: {colors.accent_blue};
             }}
         """)
         self.btn_compact_view.clicked.connect(self._toggle_compact_view)
@@ -3151,7 +3167,7 @@ class MainWindow(QMainWindow):
         self._smart_refresh()
     
     def _save_compact_preference(self, enabled: bool):
-        import json, os
+        import json, os, threading
         config_path = str(COMPACT_VIEW_PATH)
         config = {}
         try:
@@ -3161,8 +3177,15 @@ class MainWindow(QMainWindow):
             pass
         config[self.current_vault] = enabled
         os.makedirs(os.path.dirname(config_path), exist_ok=True)
-        with open(config_path, 'w') as f:
-            json.dump(config, f)
+        
+        def _do_save():
+            try:
+                with open(config_path, 'w') as f:
+                    json.dump(config, f)
+            except Exception as e:
+                logger.warning("保存紧凑视图配置失败: %s", e)
+        
+        threading.Thread(target=_do_save, daemon=True).start()
     
     def _load_compact_preference(self) -> bool:
         import json, os
@@ -3273,10 +3296,14 @@ class MainWindow(QMainWindow):
                 self.list_stack.setCurrentIndex(1)
                 self.dashboard.set_vault(self.current_vault)
             self.alpha_nav.hide()
+            self.lbl_list_title.hide()
+            self.btn_compact_view.hide()
             return
         
         self.list_stack.setCurrentIndex(0)
         self.alpha_nav.show()
+        self.lbl_list_title.show()
+        self.btn_compact_view.show()
         self._cache_dirty = True
         self._url_cache_dirty = True
         if self.current_vault == 'accounts':
@@ -3287,23 +3314,25 @@ class MainWindow(QMainWindow):
     def _rename_parent_category(self, old_name: str, new_name: str):
         """重命名一级分类：批量修改所有旧名称和旧名称>xxx的前缀"""
         if self.current_vault == 'accounts':
-            conn = self.db.conn
-            table = 'accounts'
+            db = self.db
         else:
-            conn = self._url_db.conn
-            table = 'urls'
+            db = self._url_db
         
-        if table not in ('accounts', 'urls'):
+        TABLE_MAP = {'accounts': 'accounts', 'urls': 'urls'}
+        table = TABLE_MAP.get('accounts' if self.current_vault == 'accounts' else 'urls')
+        if table not in TABLE_MAP.values():
             raise ValueError(f"Invalid table: {table}")
-        cursor = conn.cursor()
-        # 1. 精确匹配的旧名称
-        cursor.execute(f"UPDATE {table} SET category = ? WHERE category = ?", (new_name, old_name))
-        # 2. 前缀匹配：old_name>xxx → new_name>xxx
-        cursor.execute(
-            f"UPDATE {table} SET category = ? || SUBSTR(category, ?) WHERE category LIKE ?",
-            (new_name, len(old_name) + 1, f"{old_name}>%")
-        )
-        conn.commit()
+        
+        with db._lock:
+            cursor = db.conn.cursor()
+            # 1. 精确匹配的旧名称
+            cursor.execute(f"UPDATE {table} SET category = ? WHERE category = ?", (new_name, old_name))
+            # 2. 前缀匹配：old_name>xxx → new_name>xxx
+            cursor.execute(
+                f"UPDATE {table} SET category = ? || SUBSTR(category, ?) WHERE category LIKE ?",
+                (new_name, len(old_name) + 1, f"{old_name}>%")
+            )
+            db.conn.commit()
     
     def _on_category_context_menu(self, pos: QPoint):
         """分类右键菜单：点击条目显示重命名/删除；点击空白处显示新建类别"""
@@ -3714,22 +3743,24 @@ class MainWindow(QMainWindow):
         # 删除前保存数据快照（用于撤销）
         deleted_items_data = []
         deleted = 0
-        for item_id in self._selected_ids:
-            try:
-                if self.current_vault == 'accounts':
-                    account = self.account_service.get_account(item_id)
-                    if account:
-                        deleted_items_data.append(('account', account.to_dict()))
-                        self.db.soft_delete_account(item_id, account.to_dict())
-                        deleted += 1
-                else:
-                    url_item = self._url_service.get_url(item_id)
-                    if url_item:
-                        deleted_items_data.append(('url', url_item.to_dict()))
-                        self._url_db.soft_delete_url(item_id, url_item.to_dict())
-                        deleted += 1
-            except Exception as e:
-                logger.warning(f" Failed to delete {item_id}: {e}")
+        db = self.db if self.current_vault == 'accounts' else self._url_db
+        with db.transaction():
+            for item_id in self._selected_ids:
+                try:
+                    if self.current_vault == 'accounts':
+                        account = self.account_service.get_account(item_id)
+                        if account:
+                            deleted_items_data.append(('account', account.to_dict()))
+                            self.db.soft_delete_account(item_id, account.to_dict())
+                            deleted += 1
+                    else:
+                        url_item = self._url_service.get_url(item_id)
+                        if url_item:
+                            deleted_items_data.append(('url', url_item.to_dict()))
+                            self._url_db.soft_delete_url(item_id, url_item.to_dict())
+                            deleted += 1
+                except Exception as e:
+                    logger.warning(f" Failed to delete {item_id}: {e}")
         
         self._selection_mode = False
         self._selected_ids.clear()
@@ -3770,22 +3801,24 @@ class MainWindow(QMainWindow):
             return
         
         count = 0
-        for item_id in self._selected_ids:
-            try:
-                if self.current_vault == 'accounts':
-                    acc = self.account_service.get_account(item_id)
-                    if acc:
-                        acc.category = category
-                        self.account_service.update_account(acc)
-                        count += 1
-                else:
-                    url = self._url_service.get_url(item_id)
-                    if url:
-                        url.category = category
-                        self._url_service.update_url(url)
-                        count += 1
-            except Exception as e:
-                logger.warning(f"Batch categorize failed for {item_id}: {e}")
+        db = self.db if self.current_vault == 'accounts' else self._url_db
+        with db.transaction():
+            for item_id in self._selected_ids:
+                try:
+                    if self.current_vault == 'accounts':
+                        acc = self.account_service.get_account(item_id)
+                        if acc:
+                            acc.category = category
+                            self.account_service.update_account(acc)
+                            count += 1
+                    else:
+                        url = self._url_service.get_url(item_id)
+                        if url:
+                            url.category = category
+                            self._url_service.update_url(url)
+                            count += 1
+                except Exception as e:
+                    logger.warning(f"Batch categorize failed for {item_id}: {e}")
         
         self._exit_selection_mode()
         self._smart_refresh()
@@ -3821,28 +3854,30 @@ class MainWindow(QMainWindow):
             return
         
         count = 0
-        for item_id in self._selected_ids:
-            try:
-                if self.current_vault == 'accounts':
-                    acc = self.account_service.get_account(item_id)
-                    if acc:
-                        if '添加' in mode:
-                            acc.add_tag(tag)
-                        else:
-                            acc.remove_tag(tag)
-                        self.account_service.update_account(acc)
-                        count += 1
-                else:
-                    url = self._url_service.get_url(item_id)
-                    if url:
-                        if '添加' in mode:
-                            url.add_tag(tag)
-                        else:
-                            url.remove_tag(tag)
-                        self._url_service.update_url(url)
-                        count += 1
-            except Exception as e:
-                logger.warning(f"Batch tag failed for {item_id}: {e}")
+        db = self.db if self.current_vault == 'accounts' else self._url_db
+        with db.transaction():
+            for item_id in self._selected_ids:
+                try:
+                    if self.current_vault == 'accounts':
+                        acc = self.account_service.get_account(item_id)
+                        if acc:
+                            if '添加' in mode:
+                                acc.add_tag(tag)
+                            else:
+                                acc.remove_tag(tag)
+                            self.account_service.update_account(acc)
+                            count += 1
+                    else:
+                        url = self._url_service.get_url(item_id)
+                        if url:
+                            if '添加' in mode:
+                                url.add_tag(tag)
+                            else:
+                                url.remove_tag(tag)
+                            self._url_service.update_url(url)
+                            count += 1
+                except Exception as e:
+                    logger.warning(f"Batch tag failed for {item_id}: {e}")
         
         self._exit_selection_mode()
         self._smart_refresh()
@@ -3872,23 +3907,33 @@ class MainWindow(QMainWindow):
     def _undo_delete(self, deleted_items):
         """撤销批量删除，恢复条目"""
         restored = 0
-        for item_type, item_data in deleted_items:
-            try:
-                if item_type == 'account':
-                    item_data.pop('id', None)
-                    item_data.pop('created_at', None)
-                    item_data.pop('updated_at', None)
-                    item_data.pop('last_password_change', None)
-                    self.db.insert_account(item_data)
+        account_items = [d for t, d in deleted_items if t == 'account']
+        url_items = [d for t, d in deleted_items if t == 'url']
+        
+        with self.db.transaction():
+            for item_data in account_items:
+                try:
+                    data = dict(item_data)
+                    data.pop('id', None)
+                    data.pop('created_at', None)
+                    data.pop('updated_at', None)
+                    data.pop('last_password_change', None)
+                    self.db.insert_account(data)
                     restored += 1
-                else:
-                    item_data.pop('id', None)
-                    item_data.pop('created_at', None)
-                    item_data.pop('updated_at', None)
-                    self._url_db.insert_url(item_data)
+                except Exception as e:
+                    logger.warning(f"Failed to restore account: {e}")
+        
+        with self._url_db.transaction():
+            for item_data in url_items:
+                try:
+                    data = dict(item_data)
+                    data.pop('id', None)
+                    data.pop('created_at', None)
+                    data.pop('updated_at', None)
+                    self._url_db.insert_url(data)
                     restored += 1
-            except Exception as e:
-                logger.warning(f"Failed to restore {item_type}: {e}")
+                except Exception as e:
+                    logger.warning(f"Failed to restore url: {e}")
         
         self._dismiss_undo_banner()
         self._cache_dirty = True
@@ -4492,16 +4537,31 @@ class MainWindow(QMainWindow):
         dialog.exec()
     
     def _apply_theme(self, theme_name: str):
-        """应用主题（由设置对话框触发）"""
-        ThemeManager.instance().apply_theme(theme_name)
-        # 在模态弹窗链中直接触发重绘，绕过信号可能被延迟的问题
-        self._reapply_styles(ThemeManager.instance().colors)
-        self.repaint()
-        QApplication.processEvents()
+        """应用主题（由设置对话框触发）
+
+        样式重刷统一由 ThemeManager.theme_changed → _on_theme_changed 触发，
+        避免 _apply_theme 与信号回调重复调用 _reapply_styles。
+        """
+        self.setUpdatesEnabled(False)
+        try:
+            ThemeManager.instance().apply_theme(theme_name)
+        finally:
+            self.setUpdatesEnabled(True)
+            self.update()
 
     def _on_theme_changed(self, theme_name: str):
         """主题切换后重建 UI 样式（由 ThemeManager 信号触发）"""
         self._reapply_styles(ThemeManager.instance().colors)
+        # 批量更新列表项，冻结列表避免中间重绘
+        self.account_list.setUpdatesEnabled(False)
+        try:
+            for i in range(self.account_list.count()):
+                item = self.account_list.item(i)
+                widget = self.account_list.itemWidget(item)
+                if widget and hasattr(widget, 'on_theme_changed'):
+                    widget.on_theme_changed()
+        finally:
+            self.account_list.setUpdatesEnabled(True)
 
     def _reapply_styles(self, colors: ThemeColors):
         """重新应用所有静态样式（主题切换时调用）"""
@@ -4804,6 +4864,24 @@ class MainWindow(QMainWindow):
                 background-color: {colors.bg_hover};
             }}
         """)
+        self.btn_compact_view.setStyleSheet(f"""
+            QPushButton {{
+                border: 1px solid {colors.border_default};
+                background-color: {colors.bg_tertiary};
+                border-radius: 4px;
+                font-size: 14px;
+                color: {colors.text_secondary};
+            }}
+            QPushButton:hover {{
+                background-color: {colors.bg_hover};
+                border-color: {colors.border_medium};
+            }}
+            QPushButton:checked {{
+                background-color: {colors.accent_blue_bg};
+                color: {colors.accent_blue};
+                border-color: {colors.accent_blue};
+            }}
+        """)
 
         # === 筛选面板 ===
         self.filter_panel.setStyleSheet(f"background-color: {colors.bg_secondary}; border-bottom: 1px solid {colors.border_default};")
@@ -4861,11 +4939,7 @@ class MainWindow(QMainWindow):
         if self.dashboard:
             self.dashboard.refresh()
 
-        # === 重建账号/网址列表（列表项使用新主题色） ===
-        if self.current_vault == 'accounts':
-            self.load_accounts()
-        else:
-            self.load_urls()
+        # 列表项样式已在 _on_theme_changed 中通过遍历更新，不再重建
 
     def on_settings(self):
         """打开设置对话框"""
@@ -4893,8 +4967,7 @@ class MainWindow(QMainWindow):
         # 更新会话版本（密码修改后会递增）
         self._session_version = self.db.get_session_version()
 
-        # 弹窗关闭后无条件重绘，确保主题彻底生效（解决嵌套模态弹窗的 paint 延迟）
-        self._reapply_styles(ThemeManager.instance().colors)
+        # 主题切换的样式重刷已由 _on_theme_changed 统一处理
         self.repaint()
     
     def _on_ai_state_changed(self, state):
@@ -5194,11 +5267,11 @@ class MainWindow(QMainWindow):
                     from PyQt6.QtCore import QTimer
                     self._ai_refresh_timer = QTimer(self)
                     self._ai_refresh_timer.setSingleShot(True)
-                    self._ai_refresh_timer.timeout.connect(self._ai_update_chat_display)
+                    self._ai_refresh_timer.timeout.connect(self._on_ai_refresh_timeout)
                 self._ai_refresh_timer.stop()
                 self._ai_refresh_timer.start(1000)
             else:
-                logger.info(" _on_result_token: no assistant msg to append")
+                logger.warning(" _on_result_token: no assistant msg to append")
         except Exception as e:
             logger.exception(f" _on_result_token error: {e}")
     
@@ -5826,6 +5899,10 @@ class MainWindow(QMainWindow):
         import traceback
         logger.info(f" _on_ai_query_finished called, json_len={len(result_json)}")
         
+        # 竞态保护：如果查询已经结束，忽略延迟到达的信号
+        if not getattr(self, '_ai_query_running', False):
+            return
+        
         # ========== 第零步：安全关闸 ==========
         # 标记查询已结束，延迟 token 将被 _on_thinking_token/_on_result_token 丢弃
         self._ai_query_running = False
@@ -6231,6 +6308,11 @@ class MainWindow(QMainWindow):
         scrollbar = self.result_area.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
     
+    def _on_ai_refresh_timeout(self):
+        """AI 聊天防抖定时器超时：仅在查询结束（状态切换）时执行全量重建"""
+        if not getattr(self, '_ai_query_running', False):
+            self._ai_update_chat_display()
+    
     def _ai_update_chat_display(self):
         """根据对话历史重新渲染整个聊天区域为 HTML"""
         colors = ThemeManager.instance().colors
@@ -6303,7 +6385,8 @@ class MainWindow(QMainWindow):
                 .replace("&", "&amp;")
                 .replace("<", "&lt;")
                 .replace(">", "&gt;")
-                .replace('"', "&quot;"))
+                .replace('"', "&quot;")
+                .replace("'", "&#39;"))
     
     def _ai_welcome_md(self) -> str:
         """欢迎语 Markdown（根据当前库切换内容）"""
@@ -6678,250 +6761,6 @@ class MainWindow(QMainWindow):
     
     def on_ai_show_help(self):
         """显示 炽阳 使用说明对话框"""
-        colors = ThemeManager.instance().colors
-        from PyQt6.QtWidgets import (
-            QDialog, QVBoxLayout, QHBoxLayout, QLabel,
-            QPushButton, QScrollArea, QFrame, QWidget
-        )
-        from PyQt6.QtCore import Qt
-
-        # 排查：局部类 vs 模块级类
-        class LocalHelpDialog(QDialog):
-            def __init__(self, parent=None):
-                colors = ThemeManager.instance().colors
-                super().__init__(parent)
-                self.setWindowTitle("炽阳 使用说明")
-                self.setMinimumSize(540, 620)
-                self.resize(580, 700)
-
-                main_layout = QVBoxLayout(self)
-                main_layout.setContentsMargins(0, 0, 0, 0)
-                main_layout.setSpacing(0)
-
-                header = QWidget()
-                h_layout = QVBoxLayout(header)
-                h_layout.setContentsMargins(32, 24, 32, 16)
-                h_layout.setSpacing(4)
-                lbl_title = QLabel("炽阳")
-                lbl_title.setStyleSheet(f"color: {colors.text_primary}; font-size: 22px; font-weight: 600;")
-                h_layout.addWidget(lbl_title)
-                lbl_sub = QLabel("你的本地密码库 AI 助手")
-                lbl_sub.setStyleSheet(f"color: {colors.welcome_sub}; font-size: 14px;")
-                h_layout.addWidget(lbl_sub)
-                main_layout.addWidget(header)
-
-                sep = QFrame()
-                sep.setFrameShape(QFrame.Shape.HLine)
-                sep.setFixedHeight(1)
-                sep.setStyleSheet(f"background-color: {colors.border_light};")
-                main_layout.addWidget(sep)
-
-                scroll = QScrollArea()
-                scroll.setWidgetResizable(True)
-                scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-
-                content = QWidget()
-                c_layout = QVBoxLayout(content)
-                c_layout.setContentsMargins(32, 20, 32, 12)
-                c_layout.setSpacing(0)
-                c_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-
-                intro = QLabel("基于 Ollama + gemma4:4b 本地运行，数据不会上传云端。\n"
-                               "支持 Plan（只读查询）与 Build（确认后执行）两种模式。")
-                intro.setWordWrap(True)
-                intro.setStyleSheet(f"color: {colors.welcome_sub}; font-size: 13px; line-height: 1.7; padding-bottom: 24px;")
-                c_layout.addWidget(intro)
-
-                # Plan
-                plan_header = QHBoxLayout()
-                plan_header.setSpacing(10)
-                plan_badge = QLabel("Plan")
-                plan_badge.setStyleSheet(f"color: {colors.accent_blue}; background-color: {colors.accent_blue_bg_light}; font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 12px;")
-                plan_name = QLabel("规划模式")
-                plan_name.setStyleSheet(f"color: {colors.text_primary}; font-size: 17px; font-weight: 600;")
-                plan_header.addWidget(plan_badge)
-                plan_header.addWidget(plan_name)
-                plan_header.addStretch()
-                c_layout.addLayout(plan_header)
-
-                desc_plan = QLabel("仅查询和分析现有数据，不会修改、添加或删除任何内容。")
-                desc_plan.setWordWrap(True)
-                desc_plan.setStyleSheet(f"color: {colors.welcome_sub}; font-size: 13px; padding-top: 4px; padding-bottom: 18px;")
-                c_layout.addWidget(desc_plan)
-
-                features_plan = [
-                    ("语义搜索", "用自然语言描述你想找的内容，炽阳会理解意图并返回相关结果。",
-                     ["帮我找一下跟学习有关的账号", "有哪些支付类的网站"]),
-                    ("条件筛选", "按分类、标签等条件精确筛选条目。",
-                     ["列出分类是工作>开发工具的所有账号", "筛选标签包含「支付」的网址"]),
-                    ("分类与统计", "查看当前库的分类结构、统计信息和最近变更记录。",
-                     ["看一下我有哪些分类", "统计一下密码库里有多少条数据", "最近修改了哪些账号"]),
-                    ("密码强度检测", "分析密码强度等级，仅做检测不保存。",
-                     ["检测一下这个密码强不强：MyP@ssw0rd"]),
-                ]
-                for title, desc, examples in features_plan:
-                    lbl_title = QLabel(title)
-                    lbl_title.setStyleSheet(f"color: {colors.text_primary}; font-size: 15px; font-weight: 500; padding-bottom: 4px; padding-top: 2px;")
-                    c_layout.addWidget(lbl_title)
-                    lbl_desc = QLabel(desc)
-                    lbl_desc.setWordWrap(True)
-                    lbl_desc.setStyleSheet(f"color: {colors.welcome_sub}; font-size: 13px; padding-bottom: 8px;")
-                    c_layout.addWidget(lbl_desc)
-                    card = QWidget()
-                    card.setObjectName("helpCard")
-                    card.setStyleSheet(f"""
-                        #helpCard {{
-                            background-color: {colors.bg_primary};
-                            border-radius: 10px;
-                            border: 1px solid {colors.border_subtle};
-                        }}
-                    """)
-                    card_layout = QVBoxLayout(card)
-                    card_layout.setContentsMargins(14, 12, 14, 12)
-                    card_layout.setSpacing(6)
-                    for ex in examples:
-                        ex_lbl = QLabel(f'"{ex}"')
-                        ex_lbl.setWordWrap(True)
-                        ex_lbl.setStyleSheet(f"color: {colors.text_primary}; font-size: 13px; line-height: 1.7;")
-                        card_layout.addWidget(ex_lbl)
-                    c_layout.addWidget(card)
-                    c_layout.addSpacing(18)
-
-                c_layout.addSpacing(24)
-                div = QFrame()
-                div.setFrameShape(QFrame.Shape.HLine)
-                div.setFixedHeight(1)
-                div.setStyleSheet(f"background-color: {colors.border_light};")
-                c_layout.addWidget(div)
-                c_layout.addSpacing(24)
-
-                # Build
-                build_header = QHBoxLayout()
-                build_header.setSpacing(10)
-                build_badge = QLabel("Build")
-                build_badge.setStyleSheet(f"color: {colors.accent_orange_text}; background-color: {colors.accent_orange_bg}; font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 12px;")
-                build_name = QLabel("构建模式")
-                build_name.setStyleSheet(f"color: {colors.text_primary}; font-size: 17px; font-weight: 600;")
-                build_header.addWidget(build_badge)
-                build_header.addWidget(build_name)
-                build_header.addStretch()
-                c_layout.addLayout(build_header)
-
-                desc_build = QLabel("执行增删改操作前会展示预览，经你确认后才会生效。")
-                desc_build.setWordWrap(True)
-                desc_build.setStyleSheet(f"color: {colors.welcome_sub}; font-size: 13px; padding-top: 4px; padding-bottom: 18px;")
-                c_layout.addWidget(desc_build)
-
-                features_build = [
-                    ("批量新增", "一次性添加多条账号或网址。",
-                     ["批量添加：B站 username1 pass1，知乎 username2 pass2"]),
-                    ("批量更新与重组", "批量修改分类、标签、备注，或由 AI 智能调整分类结构。",
-                     ["把金融类的账号都改成金融与支付", "帮我把未分类的网址整理一下", "给刚才找到的账号都加上「重要」标签"]),
-                    ("AI 生成备注并应用", "为指定条目生成备注，预览确认后写入数据库。",
-                     ["给 GitHub 生成一条备注并加上", "帮刚才找到的账号都生成备注"]),
-                    ("智能整理", "AI 自动分析数据并建议分类方案，支持细分二级子类。",
-                     ["帮我把教育类的账号细分一下二级分类", "整理一下重复的网址"]),
-                    ("批量操作", "将条目移入回收站、批量修改分类或标签，超过 50 条时额外二次确认。",
-                     ["删除所有分类是测试的账号", "把刚才筛选出来的网址删掉"]),
-                    ("生成强密码", "生成随机高强度密码，可指定长度和字符类型。",
-                     ["生成一个 16 位的强密码", "帮我生成不含特殊字符的 12 位密码"]),
-                ]
-                for title, desc, examples in features_build:
-                    lbl_title = QLabel(title)
-                    lbl_title.setStyleSheet(f"color: {colors.text_primary}; font-size: 15px; font-weight: 500; padding-bottom: 4px; padding-top: 2px;")
-                    c_layout.addWidget(lbl_title)
-                    lbl_desc = QLabel(desc)
-                    lbl_desc.setWordWrap(True)
-                    lbl_desc.setStyleSheet(f"color: {colors.welcome_sub}; font-size: 13px; padding-bottom: 8px;")
-                    c_layout.addWidget(lbl_desc)
-                    card = QWidget()
-                    card.setObjectName("helpCard")
-                    card.setStyleSheet(f"""
-                        #helpCard {{
-                            background-color: {colors.bg_primary};
-                            border-radius: 10px;
-                            border: 1px solid {colors.border_subtle};
-                        }}
-                    """)
-                    card_layout = QVBoxLayout(card)
-                    card_layout.setContentsMargins(14, 12, 14, 12)
-                    card_layout.setSpacing(6)
-                    for ex in examples:
-                        ex_lbl = QLabel(f'"{ex}"')
-                        ex_lbl.setWordWrap(True)
-                        ex_lbl.setStyleSheet(f"color: {colors.text_primary}; font-size: 13px; line-height: 1.7;")
-                        card_layout.addWidget(ex_lbl)
-                    c_layout.addWidget(card)
-                    c_layout.addSpacing(18)
-
-                c_layout.addSpacing(24)
-                div2 = QFrame()
-                div2.setFrameShape(QFrame.Shape.HLine)
-                div2.setFixedHeight(1)
-                div2.setStyleSheet(f"background-color: {colors.border_light};")
-                c_layout.addWidget(div2)
-                c_layout.addSpacing(20)
-
-                # 小贴士
-                tips_card = QWidget()
-                tips_card.setObjectName("helpTipsCard")
-                tips_card.setStyleSheet(f"""
-                    #helpTipsCard {{
-                        background-color: {colors.bg_primary};
-                        border-radius: 12px;
-                        border: 1px solid {colors.border_subtle};
-                    }}
-                """)
-                tips_layout = QVBoxLayout(tips_card)
-                tips_layout.setContentsMargins(18, 16, 18, 16)
-                tips_layout.setSpacing(10)
-                tips_title = QLabel("使用小贴士")
-                tips_title.setStyleSheet(f"color: {colors.text_primary}; font-size: 15px; font-weight: 500;")
-                tips_layout.addWidget(tips_title)
-                tips = [
-                    "首次使用请发送任意消息完成「神经连接预热」。",
-                    "支持上下文对话，可用「刚才找到的」「前面那些」指代历史结果。",
-                    "Build 模式下所有操作先展示预览表格，可勾选后再确认执行。",
-                    "不确定操作是否安全时，先切到 Plan 模式询问。",
-                ]
-                for tip in tips:
-                    row = QHBoxLayout()
-                    row.setSpacing(8)
-                    row.setContentsMargins(0, 0, 0, 0)
-                    dot = QLabel("\u2022")
-                    dot.setStyleSheet(f"color: {colors.text_disabled}; font-size: 14px;")
-                    dot.setAlignment(Qt.AlignmentFlag.AlignTop)
-                    txt = QLabel(tip)
-                    txt.setWordWrap(True)
-                    txt.setStyleSheet(f"color: {colors.text_primary}; font-size: 13px; line-height: 1.6;")
-                    row.addWidget(dot)
-                    row.addWidget(txt, 1)
-                    tips_layout.addLayout(row)
-                c_layout.addWidget(tips_card)
-
-                c_layout.addStretch()
-                scroll.setWidget(content)
-                main_layout.addWidget(scroll)
-
-                footer = QWidget()
-                f_layout = QHBoxLayout(footer)
-                f_layout.setContentsMargins(32, 8, 32, 18)
-                f_layout.addStretch()
-                btn = QPushButton("完成")
-                btn.setFixedSize(120, 34)
-                btn.setStyleSheet(f"""
-                    QPushButton {{
-                        background-color: {colors.accent_orange_dark}; color: {colors.text_on_accent}; border: none;
-                        border-radius: 17px; font-size: 14px; font-weight: 500;
-                    }}
-                    QPushButton:hover {{ background-color: {colors.accent_orange_dark}; }}
-                    QPushButton:pressed {{ background-color: {colors.accent_orange_dark}; }}
-                """)
-                btn.clicked.connect(self.accept)
-                f_layout.addWidget(btn)
-                f_layout.addStretch()
-                main_layout.addWidget(footer)
-
         dialog = LocalHelpDialog(self)
         dialog.exec()
     
@@ -7192,3 +7031,244 @@ class MainWindow(QMainWindow):
         while len(files) > keep_count:
             os.remove(files[0])
             files.pop(0)
+
+
+class LocalHelpDialog(QDialog):
+    """炽阳 使用说明对话框（模块级类，避免每次调用重复定义）"""
+
+    def __init__(self, parent=None):
+        colors = ThemeManager.instance().colors
+        super().__init__(parent)
+        self.setWindowTitle("炽阳 使用说明")
+        self.setMinimumSize(540, 620)
+        self.resize(580, 700)
+
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        header = QWidget()
+        h_layout = QVBoxLayout(header)
+        h_layout.setContentsMargins(32, 24, 32, 16)
+        h_layout.setSpacing(4)
+        lbl_title = QLabel("炽阳")
+        lbl_title.setStyleSheet(f"color: {colors.text_primary}; font-size: 22px; font-weight: 600;")
+        h_layout.addWidget(lbl_title)
+        lbl_sub = QLabel("你的本地密码库 AI 助手")
+        lbl_sub.setStyleSheet(f"color: {colors.welcome_sub}; font-size: 14px;")
+        h_layout.addWidget(lbl_sub)
+        main_layout.addWidget(header)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFixedHeight(1)
+        sep.setStyleSheet(f"background-color: {colors.border_light};")
+        main_layout.addWidget(sep)
+
+        from PyQt6.QtWidgets import QScrollArea
+        from PyQt6.QtCore import Qt
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        content = QWidget()
+        c_layout = QVBoxLayout(content)
+        c_layout.setContentsMargins(32, 20, 32, 12)
+        c_layout.setSpacing(0)
+        c_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        intro = QLabel("基于 Ollama + gemma4:4b 本地运行，数据不会上传云端。\n"
+                       "支持 Plan（只读查询）与 Build（确认后执行）两种模式。")
+        intro.setWordWrap(True)
+        intro.setStyleSheet(f"color: {colors.welcome_sub}; font-size: 13px; line-height: 1.7; padding-bottom: 24px;")
+        c_layout.addWidget(intro)
+
+        # Plan
+        plan_header = QHBoxLayout()
+        plan_header.setSpacing(10)
+        plan_badge = QLabel("Plan")
+        plan_badge.setStyleSheet(f"color: {colors.accent_blue}; background-color: {colors.accent_blue_bg_light}; font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 12px;")
+        plan_name = QLabel("规划模式")
+        plan_name.setStyleSheet(f"color: {colors.text_primary}; font-size: 17px; font-weight: 600;")
+        plan_header.addWidget(plan_badge)
+        plan_header.addWidget(plan_name)
+        plan_header.addStretch()
+        c_layout.addLayout(plan_header)
+
+        desc_plan = QLabel("仅查询和分析现有数据，不会修改、添加或删除任何内容。")
+        desc_plan.setWordWrap(True)
+        desc_plan.setStyleSheet(f"color: {colors.welcome_sub}; font-size: 13px; padding-top: 4px; padding-bottom: 18px;")
+        c_layout.addWidget(desc_plan)
+
+        features_plan = [
+            ("语义搜索", "用自然语言描述你想找的内容，炽阳会理解意图并返回相关结果。",
+             ["帮我找一下跟学习有关的账号", "有哪些支付类的网站"]),
+            ("条件筛选", "按分类、标签等条件精确筛选条目。",
+             ["列出分类是工作>开发工具的所有账号", "筛选标签包含「支付」的网址"]),
+            ("分类与统计", "查看当前库的分类结构、统计信息和最近变更记录。",
+             ["看一下我有哪些分类", "统计一下密码库里有多少条数据", "最近修改了哪些账号"]),
+            ("密码强度检测", "分析密码强度等级，仅做检测不保存。",
+             ["检测一下这个密码强不强：MyP@ssw0rd"]),
+        ]
+        for title, desc, examples in features_plan:
+            lbl_title = QLabel(title)
+            lbl_title.setStyleSheet(f"color: {colors.text_primary}; font-size: 15px; font-weight: 500; padding-bottom: 4px; padding-top: 2px;")
+            c_layout.addWidget(lbl_title)
+            lbl_desc = QLabel(desc)
+            lbl_desc.setWordWrap(True)
+            lbl_desc.setStyleSheet(f"color: {colors.welcome_sub}; font-size: 13px; padding-bottom: 8px;")
+            c_layout.addWidget(lbl_desc)
+            card = QWidget()
+            card.setObjectName("helpCard")
+            card.setStyleSheet(f"""
+                #helpCard {{
+                    background-color: {colors.bg_primary};
+                    border-radius: 10px;
+                    border: 1px solid {colors.border_subtle};
+                }}
+            """)
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(14, 12, 14, 12)
+            card_layout.setSpacing(6)
+            for ex in examples:
+                ex_lbl = QLabel(f'"{ex}"')
+                ex_lbl.setWordWrap(True)
+                ex_lbl.setStyleSheet(f"color: {colors.text_primary}; font-size: 13px; line-height: 1.7;")
+                card_layout.addWidget(ex_lbl)
+            c_layout.addWidget(card)
+            c_layout.addSpacing(18)
+
+        c_layout.addSpacing(24)
+        div = QFrame()
+        div.setFrameShape(QFrame.Shape.HLine)
+        div.setFixedHeight(1)
+        div.setStyleSheet(f"background-color: {colors.border_light};")
+        c_layout.addWidget(div)
+        c_layout.addSpacing(24)
+
+        # Build
+        build_header = QHBoxLayout()
+        build_header.setSpacing(10)
+        build_badge = QLabel("Build")
+        build_badge.setStyleSheet(f"color: {colors.accent_orange_text}; background-color: {colors.accent_orange_bg}; font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 12px;")
+        build_name = QLabel("构建模式")
+        build_name.setStyleSheet(f"color: {colors.text_primary}; font-size: 17px; font-weight: 600;")
+        build_header.addWidget(build_badge)
+        build_header.addWidget(build_name)
+        build_header.addStretch()
+        c_layout.addLayout(build_header)
+
+        desc_build = QLabel("执行增删改操作前会展示预览，经你确认后才会生效。")
+        desc_build.setWordWrap(True)
+        desc_build.setStyleSheet(f"color: {colors.welcome_sub}; font-size: 13px; padding-top: 4px; padding-bottom: 18px;")
+        c_layout.addWidget(desc_build)
+
+        features_build = [
+            ("批量新增", "一次性添加多条账号或网址。",
+             ["批量添加：B站 username1 pass1，知乎 username2 pass2"]),
+            ("批量更新与重组", "批量修改分类、标签、备注，或由 AI 智能调整分类结构。",
+             ["把金融类的账号都改成金融与支付", "帮我把未分类的网址整理一下", "给刚才找到的账号都加上「重要」标签"]),
+            ("AI 生成备注并应用", "为指定条目生成备注，预览确认后写入数据库。",
+             ["给 GitHub 生成一条备注并加上", "帮刚才找到的账号都生成备注"]),
+            ("智能整理", "AI 自动分析数据并建议分类方案，支持细分二级子类。",
+             ["帮我把教育类的账号细分一下二级分类", "整理一下重复的网址"]),
+            ("批量操作", "将条目移入回收站、批量修改分类或标签，超过 50 条时额外二次确认。",
+             ["删除所有分类是测试的账号", "把刚才筛选出来的网址删掉"]),
+            ("生成强密码", "生成随机高强度密码，可指定长度和字符类型。",
+             ["生成一个 16 位的强密码", "帮我生成不含特殊字符的 12 位密码"]),
+        ]
+        for title, desc, examples in features_build:
+            lbl_title = QLabel(title)
+            lbl_title.setStyleSheet(f"color: {colors.text_primary}; font-size: 15px; font-weight: 500; padding-bottom: 4px; padding-top: 2px;")
+            c_layout.addWidget(lbl_title)
+            lbl_desc = QLabel(desc)
+            lbl_desc.setWordWrap(True)
+            lbl_desc.setStyleSheet(f"color: {colors.welcome_sub}; font-size: 13px; padding-bottom: 8px;")
+            c_layout.addWidget(lbl_desc)
+            card = QWidget()
+            card.setObjectName("helpCard")
+            card.setStyleSheet(f"""
+                #helpCard {{
+                    background-color: {colors.bg_primary};
+                    border-radius: 10px;
+                    border: 1px solid {colors.border_subtle};
+                }}
+            """)
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(14, 12, 14, 12)
+            card_layout.setSpacing(6)
+            for ex in examples:
+                ex_lbl = QLabel(f'"{ex}"')
+                ex_lbl.setWordWrap(True)
+                ex_lbl.setStyleSheet(f"color: {colors.text_primary}; font-size: 13px; line-height: 1.7;")
+                card_layout.addWidget(ex_lbl)
+            c_layout.addWidget(card)
+            c_layout.addSpacing(18)
+
+        c_layout.addSpacing(24)
+        div2 = QFrame()
+        div2.setFrameShape(QFrame.Shape.HLine)
+        div2.setFixedHeight(1)
+        div2.setStyleSheet(f"background-color: {colors.border_light};")
+        c_layout.addWidget(div2)
+        c_layout.addSpacing(20)
+
+        # 小贴士
+        tips_card = QWidget()
+        tips_card.setObjectName("helpTipsCard")
+        tips_card.setStyleSheet(f"""
+            #helpTipsCard {{
+                background-color: {colors.bg_primary};
+                border-radius: 12px;
+                border: 1px solid {colors.border_subtle};
+            }}
+        """)
+        tips_layout = QVBoxLayout(tips_card)
+        tips_layout.setContentsMargins(18, 16, 18, 16)
+        tips_layout.setSpacing(10)
+        tips_title = QLabel("使用小贴士")
+        tips_title.setStyleSheet(f"color: {colors.text_primary}; font-size: 15px; font-weight: 500;")
+        tips_layout.addWidget(tips_title)
+        tips = [
+            "首次使用请发送任意消息完成「神经连接预热」。",
+            "支持上下文对话，可用「刚才找到的」「前面那些」指代历史结果。",
+            "Build 模式下所有操作先展示预览表格，可勾选后再确认执行。",
+            "不确定操作是否安全时，先切到 Plan 模式询问。",
+        ]
+        for tip in tips:
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            row.setContentsMargins(0, 0, 0, 0)
+            dot = QLabel("\u2022")
+            dot.setStyleSheet(f"color: {colors.text_disabled}; font-size: 14px;")
+            dot.setAlignment(Qt.AlignmentFlag.AlignTop)
+            txt = QLabel(tip)
+            txt.setWordWrap(True)
+            txt.setStyleSheet(f"color: {colors.text_primary}; font-size: 13px; line-height: 1.6;")
+            row.addWidget(dot)
+            row.addWidget(txt, 1)
+            tips_layout.addLayout(row)
+        c_layout.addWidget(tips_card)
+
+        c_layout.addStretch()
+        scroll.setWidget(content)
+        main_layout.addWidget(scroll)
+
+        footer = QWidget()
+        f_layout = QHBoxLayout(footer)
+        f_layout.setContentsMargins(32, 8, 32, 18)
+        f_layout.addStretch()
+        btn = QPushButton("完成")
+        btn.setFixedSize(120, 34)
+        btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.accent_orange_dark}; color: {colors.text_on_accent}; border: none;
+                border-radius: 17px; font-size: 14px; font-weight: 500;
+            }}
+            QPushButton:hover {{ background-color: {colors.accent_orange_dark}; }}
+            QPushButton:pressed {{ background-color: {colors.accent_orange_dark}; }}
+        """)
+        btn.clicked.connect(self.accept)
+        f_layout.addWidget(btn)
+        f_layout.addStretch()
+        main_layout.addWidget(footer)

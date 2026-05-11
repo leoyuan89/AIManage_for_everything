@@ -817,6 +817,10 @@ class CategoryTreeWidget(QTreeWidget):
         self._auto_scroll_timer = QTimer(self)
         self._auto_scroll_timer.setInterval(50)
         self._auto_scroll_timer.timeout.connect(self._perform_auto_scroll)
+        import os
+        _base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self._branch_closed_svg = os.path.join(_base_dir, 'assets', 'icons', 'branch_closed.svg').replace('\\', '/')
+        self._branch_open_svg = os.path.join(_base_dir, 'assets', 'icons', 'branch_open.svg').replace('\\', '/')
     
     def _perform_auto_scroll(self):
         scrollbar = self.verticalScrollBar()
@@ -864,6 +868,14 @@ class CategoryTreeWidget(QTreeWidget):
                 QTreeWidget::item:hover {{
                     background-color: {colors.bg_hover};
                 }}
+                QTreeWidget::branch:has-children:!has-siblings:closed,
+                QTreeWidget::branch:closed:has-children:has-siblings {{
+                    image: url("{self._branch_closed_svg}");
+                }}
+                QTreeWidget::branch:open:has-children:!has-siblings,
+                QTreeWidget::branch:open:has-children:has-siblings {{
+                    image: url("{self._branch_open_svg}");
+                }}
             """)
         else:
             self.setDragEnabled(False)
@@ -903,6 +915,14 @@ class CategoryTreeWidget(QTreeWidget):
                 }}
                 QTreeWidget::item:hover {{
                     background-color: {colors.bg_hover};
+                }}
+                QTreeWidget::branch:has-children:!has-siblings:closed,
+                QTreeWidget::branch:closed:has-children:has-siblings {{
+                    image: url("{self._branch_closed_svg}");
+                }}
+                QTreeWidget::branch:open:has-children:!has-siblings,
+                QTreeWidget::branch:open:has-children:has-siblings {{
+                    image: url("{self._branch_open_svg}");
                 }}
             """)
         else:
@@ -1860,6 +1880,10 @@ class MainWindow(QMainWindow):
         self.category_tree.setColumnCount(1)
         # 新增：占满父容器高度
         self.category_tree.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        import os
+        _base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self._branch_closed_svg = os.path.join(_base_dir, 'assets', 'icons', 'branch_closed.svg').replace('\\', '/')
+        self._branch_open_svg = os.path.join(_base_dir, 'assets', 'icons', 'branch_open.svg').replace('\\', '/')
         self._category_tree_normal_style = f"""
             QTreeWidget {{
                 background-color: {colors.bg_surface};
@@ -1878,7 +1902,16 @@ class MainWindow(QMainWindow):
                 background-color: {colors.bg_hover};
                 border-left: 3px solid {colors.accent_blue_light};
             }}
+            QTreeWidget::branch:has-children:!has-siblings:closed,
+            QTreeWidget::branch:closed:has-children:has-siblings {{
+                image: url("{self._branch_closed_svg}");
+            }}
+            QTreeWidget::branch:open:has-children:!has-siblings,
+            QTreeWidget::branch:open:has-children:has-siblings {{
+                image: url("{self._branch_open_svg}");
+            }}
         """
+        
         self._category_tree_checkbox_style = f"""
             QTreeWidget {{
                 background-color: {colors.bg_surface};
@@ -1906,7 +1939,16 @@ class MainWindow(QMainWindow):
                 background-color: {colors.accent_blue};
                 border: 2px solid {colors.accent_blue};
             }}
+            QTreeWidget::branch:has-children:!has-siblings:closed,
+            QTreeWidget::branch:closed:has-children:has-siblings {{
+                image: url("{self._branch_closed_svg}");
+            }}
+            QTreeWidget::branch:open:has-children:!has-siblings,
+            QTreeWidget::branch:open:has-children:has-siblings {{
+                image: url("{self._branch_open_svg}");
+            }}
         """
+        
         self.category_tree.set_normal_style(self._category_tree_normal_style)
         self.category_tree.setStyleSheet(self._category_tree_normal_style)
         self.category_tree.itemClicked.connect(self._on_category_clicked)
@@ -2473,10 +2515,12 @@ class MainWindow(QMainWindow):
         bottom_layout.addSpacing(10)
         
         # 同步按钮
-        btn_sync = QPushButton("同步到手机")
-        btn_sync.setFixedHeight(36)
-        btn_sync.clicked.connect(self.on_sync_to_mobile)
-        bottom_layout.addWidget(btn_sync)
+        self.btn_sync = QPushButton("同步到手机")
+        self.btn_sync.setFixedHeight(36)
+        self.btn_sync.clicked.connect(self.on_sync_to_mobile)
+        self.btn_sync.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.btn_sync.customContextMenuRequested.connect(self._on_sync_button_context_menu)
+        bottom_layout.addWidget(self.btn_sync)
         
         main_layout.addWidget(self.bottom_bar)
         
@@ -2630,6 +2674,7 @@ class MainWindow(QMainWindow):
         accounts = self._cached_accounts.copy()
         
         # 扁平列表显示（按拼音首字母排序：英文/中文排前面，数字符号归为#排最后）
+        # 最近使用页面保持按 updated_at 排序，不重新按字母排序
         if not accounts:
             self.btn_compact_view.setChecked(False)
             item = QListWidgetItem("暂无账号")
@@ -2637,17 +2682,18 @@ class MainWindow(QMainWindow):
             self.account_list.addItem(item)
             return
         
-        from core.pinyin import PinyinConverter
-        def _account_sort_key(acc):
-            text = acc.app_name or ''
-            if not text:
-                return (1, '')
-            fc = text[0]
-            if ('a' <= fc.lower() <= 'z') or ('\u4e00' <= fc <= '\u9fff'):
-                return (0, PinyinConverter.get_pinyin_initials(text).lower())
-            return (1, text.lower())
-        
-        accounts.sort(key=_account_sort_key)
+        if self.current_category != '__recent__':
+            from core.pinyin import PinyinConverter
+            def _account_sort_key(acc):
+                text = acc.app_name or ''
+                if not text:
+                    return (1, '')
+                fc = text[0]
+                if ('a' <= fc.lower() <= 'z') or ('\u4e00' <= fc <= '\u9fff'):
+                    return (0, PinyinConverter.get_pinyin_initials(text).lower())
+                return (1, text.lower())
+            
+            accounts.sort(key=_account_sort_key)
         
         is_compact = self._load_compact_preference()
         item_height = 32 if is_compact else 56
@@ -3153,18 +3199,20 @@ class MainWindow(QMainWindow):
             self.account_list.addItem(item)
             return
         
-        # 按拼音首字母排序（英文/中文排前面，数字符号归为#排最后）
-        from core.pinyin import PinyinConverter
-        def _url_sort_key(url_item):
-            text = (url_item.get('title', '') if isinstance(url_item, dict) else getattr(url_item, 'title', '')) or ''
-            if not text:
-                return (1, '')
-            fc = text[0]
-            if ('a' <= fc.lower() <= 'z') or ('\u4e00' <= fc <= '\u9fff'):
-                return (0, PinyinConverter.get_pinyin_initials(text).lower())
-            return (1, text.lower())
-        
-        urls.sort(key=_url_sort_key)
+        # 最近使用页面保持按 updated_at 排序，不重新按字母排序
+        if self.current_category != '__recent__':
+            # 按拼音首字母排序（英文/中文排前面，数字符号归为#排最后）
+            from core.pinyin import PinyinConverter
+            def _url_sort_key(url_item):
+                text = (url_item.get('title', '') if isinstance(url_item, dict) else getattr(url_item, 'title', '')) or ''
+                if not text:
+                    return (1, '')
+                fc = text[0]
+                if ('a' <= fc.lower() <= 'z') or ('\u4e00' <= fc <= '\u9fff'):
+                    return (0, PinyinConverter.get_pinyin_initials(text).lower())
+                return (1, text.lower())
+            
+            urls.sort(key=_url_sort_key)
         
         is_compact = self._load_compact_preference()
         item_height = 32 if is_compact else 56
@@ -3345,7 +3393,10 @@ class MainWindow(QMainWindow):
             return
         
         self.list_stack.setCurrentIndex(0)
-        self.alpha_nav.show()
+        if self.current_category == '__recent__':
+            self.alpha_nav.hide()
+        else:
+            self.alpha_nav.show()
         self.lbl_list_title.show()
         self.btn_compact_view.show()
         self._cache_dirty = True
@@ -4640,6 +4691,14 @@ class MainWindow(QMainWindow):
                 background-color: {colors.bg_hover};
                 border-left: 3px solid {colors.accent_blue_light};
             }}
+            QTreeWidget::branch:has-children:!has-siblings:closed,
+            QTreeWidget::branch:closed:has-children:has-siblings {{
+                image: url("{self._branch_closed_svg}");
+            }}
+            QTreeWidget::branch:open:has-children:!has-siblings,
+            QTreeWidget::branch:open:has-children:has-siblings {{
+                image: url("{self._branch_open_svg}");
+            }}
         """
         self._category_tree_checkbox_style = f"""
             QTreeWidget {{
@@ -4668,7 +4727,16 @@ class MainWindow(QMainWindow):
                 background-color: {colors.accent_blue};
                 border: 2px solid {colors.accent_blue};
             }}
+            QTreeWidget::branch:has-children:!has-siblings:closed,
+            QTreeWidget::branch:closed:has-children:has-siblings {{
+                image: url("{self._branch_closed_svg}");
+            }}
+            QTreeWidget::branch:open:has-children:!has-siblings,
+            QTreeWidget::branch:open:has-children:has-siblings {{
+                image: url("{self._branch_open_svg}");
+            }}
         """
+        
         self.category_tree.set_normal_style(self._category_tree_normal_style)
         if self._category_selection_mode:
             self.category_tree.setStyleSheet(self._category_tree_checkbox_style)
@@ -6586,13 +6654,14 @@ class MainWindow(QMainWindow):
         self.account_list.clear()
         
         # 根据当前 vault 选择数据源和 Widget 类型
+        # 注意：高亮筛选应基于全局数据，不受当前分类缓存限制
         if self.current_vault == 'accounts':
-            all_items = self._cached_accounts if self._cached_accounts else self.account_service.get_all_accounts()
+            all_items = self.account_service.get_all_accounts()
             item_name = "账号"
             ItemWidget = AccountListItem
             use_badges = True
         else:
-            all_items = self._cached_urls if self._cached_urls else self._url_service.get_all_urls()
+            all_items = self._url_service.get_all_urls()
             item_name = "网址"
             ItemWidget = URLListItem
             use_badges = False
@@ -6600,8 +6669,9 @@ class MainWindow(QMainWindow):
         matched_items = [item for item in all_items if getattr(item, 'id', None) in self._highlight_matched_ids]
         unmatched_items = [item for item in all_items if getattr(item, 'id', None) not in self._highlight_matched_ids]
         
-        # 隐藏列表标题（筛选信息已在横幅中显示）
+        # 隐藏列表标题和紧凑视图按钮（筛选信息已在横幅中显示）
         self.lbl_list_title.hide()
+        self.btn_compact_view.hide()
         
         # 显示匹配项（置顶，蓝色边框）
         if matched_items:
@@ -6639,8 +6709,9 @@ class MainWindow(QMainWindow):
                 container_layout = QVBoxLayout(container)
                 container_layout.setContentsMargins(0, 0, 0, 0)
                 container_layout.addWidget(widget)
-                # 让原 widget 背景透明
-                widget.setStyleSheet("background-color: transparent;")
+                # 让原 widget 背景透明（追加而非覆盖，保留所有子控件样式）
+                old_ss = widget.styleSheet()
+                widget.setStyleSheet(old_ss + f"\n#accountListItem {{ background-color: transparent; border: none; }}")
                 widget.setAutoFillBackground(False)
                 # 分类标签背景也透明
                 if hasattr(widget, 'lbl_category'):
@@ -6707,8 +6778,9 @@ class MainWindow(QMainWindow):
         self._view_mode = 'default'
         if hasattr(self, 'ai_filter_banner'):
             self.ai_filter_banner.hide()
-        # 恢复列表标题显示
+        # 恢复列表标题和紧凑视图按钮显示
         self.lbl_list_title.show()
+        self.btn_compact_view.show()
         if self.current_vault == 'accounts':
             self.load_accounts()
         else:
@@ -6907,6 +6979,49 @@ class MainWindow(QMainWindow):
             return False
         return True
     
+    def _on_sync_button_context_menu(self, pos):
+        """同步到手机按钮的右键菜单"""
+        menu = QMenu(self)
+        action_set_name = menu.addAction("✏️ 修改默认文件名")
+        action = menu.exec(self.btn_sync.mapToGlobal(pos))
+        if action == action_set_name:
+            self._on_set_sync_default_filename()
+    
+    def _load_sync_default_filename(self) -> str:
+        """读取同步到手机的默认文件名配置"""
+        from core.constants import EXPORT_CONFIG_PATH
+        try:
+            if EXPORT_CONFIG_PATH.exists():
+                with open(EXPORT_CONFIG_PATH, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                return config.get('sync_default_filename', 'leopassword.html')
+        except Exception:
+            pass
+        return 'leopassword.html'
+    
+    def _on_set_sync_default_filename(self):
+        """修改同步到手机的默认文件名"""
+        from core.constants import EXPORT_CONFIG_PATH
+        current_name = self._load_sync_default_filename()
+        new_name, ok = QInputDialog.getText(
+            self, "修改默认文件名",
+            "请输入同步到手机的默认文件名（含扩展名）：",
+            text=current_name
+        )
+        if ok and new_name.strip():
+            new_name = new_name.strip()
+            try:
+                config = {}
+                if EXPORT_CONFIG_PATH.exists():
+                    with open(EXPORT_CONFIG_PATH, 'r', encoding='utf-8') as f:
+                        config = json.load(f)
+                config['sync_default_filename'] = new_name
+                with open(EXPORT_CONFIG_PATH, 'w', encoding='utf-8') as f:
+                    json.dump(config, f, indent=2, ensure_ascii=False)
+                QMessageBox.information(self, "保存成功", f"默认文件名已修改为：{new_name}")
+            except Exception as e:
+                QMessageBox.warning(self, "保存失败", f"配置保存失败：{str(e)}")
+
     def on_sync_to_mobile(self):
         """同步到手机：生成加密 HTML 密包（同时导出密码库 + 网址库）"""
         try:
@@ -6930,7 +7045,7 @@ class MainWindow(QMainWindow):
                     return
             
             # 弹出保存对话框
-            default_name = "leopassword.html"
+            default_name = self._load_sync_default_filename()
             from PyQt6.QtWidgets import QFileDialog
             output_path, _ = QFileDialog.getSaveFileName(
                 self,

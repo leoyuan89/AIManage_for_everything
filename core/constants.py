@@ -18,6 +18,9 @@ BACKUP_DIR = DATA_DIR / 'backups'
 CONFIG_PATH = DATA_DIR / 'config.json'
 COMPACT_VIEW_PATH = DATA_DIR / 'compact_view.json'
 
+# 导出配置路径
+EXPORT_CONFIG_PATH = DATA_DIR / 'export_config.json'
+
 # 日志文件路径
 LOG_PATH = DATA_DIR / 'app.log'
 

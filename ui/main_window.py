@@ -54,6 +54,7 @@ from .lock_screen import LockScreen, IdleTimer
 from .widgets.account_list_item import AccountListItem
 from .widgets.url_list_item import URLListItem
 from .widgets.dashboard_widget import DashboardWidget
+from .widgets.search_history_panel import SearchHistoryPanel
 
 logger = logging.getLogger(__name__)
 
@@ -1524,6 +1525,18 @@ class MainWindow(QMainWindow):
         
         self.search_box.installEventFilter(self)
         self._search_completer.activated.connect(self.on_search)
+        
+        # 搜索历史面板（弹出层，设为独立窗口避免 Qt 子 widget 层级冲突）
+        self.search_history_panel = SearchHistoryPanel(None)
+        self.search_history_panel.setWindowFlags(
+            Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint
+        )
+        self.search_history_panel.search_requested.connect(self._on_history_search)
+        self.search_history_panel.delete_requested.connect(self._on_history_delete)
+        self.search_history_panel.clear_all_requested.connect(self._on_history_clear_all)
+        
+        # 输入文字时隐藏历史面板（让 QCompleter 接管）
+        self.search_box.textChanged.connect(self._on_search_text_changed)
         
         # 筛选切换按钮
         self.btn_toggle_filter = QPushButton("🔍筛选")
@@ -4565,6 +4578,9 @@ class MainWindow(QMainWindow):
         1. 精确区：精确匹配 + 拼音匹配（同步，立即渲染）
         2. AI增强区：大模型语义推理（异步，结果返回后追加）
         """
+        # 隐藏搜索历史面板
+        self.search_history_panel.hide()
+        
         text = self.search_box.text().strip()
         
         if not text:
@@ -4592,6 +4608,55 @@ class MainWindow(QMainWindow):
             # 网址搜索
             results = self._url_service.search_urls(text)
             self._display_url_search_results(results)
+    
+    def _on_search_text_changed(self, text: str):
+        """搜索框文本变化时：有文字则隐藏历史面板，空文字且获得焦点则显示面板"""
+        if text.strip():
+            self.search_history_panel.hide()
+        elif self.search_box.hasFocus():
+            history = self.search_service.get_search_history()
+            if history:
+                self._show_search_history_panel()
+
+    def _show_search_history_panel(self):
+        """显示搜索历史面板（定位在搜索框下方）"""
+        history = self.search_service.get_search_history()
+        if not history:
+            self.search_history_panel.hide()
+            return
+        self.search_history_panel.set_history(history)
+        # 全局坐标定位（Popup 窗口使用屏幕坐标）
+        pos = self.search_box.mapToGlobal(self.search_box.rect().bottomLeft())
+        self.search_history_panel.setFixedWidth(self.search_box.width())
+        self.search_history_panel.move(pos.x(), pos.y() + 2)
+        self.search_history_panel.show()
+    
+    def _hide_search_history_panel(self):
+        """隐藏搜索历史面板（如果焦点不在面板内）"""
+        # 如果焦点在搜索框或面板内，不隐藏
+        focus_widget = self.focusWidget()
+        if focus_widget in (self.search_box, self.search_history_panel):
+            return
+        # 检查焦点是否在面板的子控件上
+        if focus_widget and self.search_history_panel.isAncestorOf(focus_widget):
+            return
+        self.search_history_panel.hide()
+    
+    def _on_history_search(self, text: str):
+        """点击历史记录：填充搜索框并触发搜索"""
+        self.search_box.setText(text)
+        self.search_history_panel.hide()
+        self.on_search()
+    
+    def _on_history_delete(self, text: str):
+        """删除单条搜索历史"""
+        self.search_service.remove_history_item(text)
+        self.search_history_panel.set_history(self.search_service.get_search_history())
+    
+    def _on_history_clear_all(self):
+        """清空全部搜索历史"""
+        self.search_service.clear_history()
+        self.search_history_panel.hide()
     
     def _display_search_results(self, exact_results, all_accounts):
         """展示搜索结果：精确匹配 + 拼音匹配"""
@@ -4808,6 +4873,9 @@ class MainWindow(QMainWindow):
                     widget.on_theme_changed()
         finally:
             self.account_list.setUpdatesEnabled(True)
+        # 更新搜索历史面板主题
+        if hasattr(self, 'search_history_panel'):
+            self.search_history_panel.on_theme_changed()
         # AI 聊天区域需要全量重建以应用新主题色
         self._ai_update_chat_display()
 
@@ -7089,10 +7157,23 @@ class MainWindow(QMainWindow):
         """事件过滤器：检测用户活动，重置空闲定时器；更新搜索历史"""
         event_type = event.type()
 
-        # 搜索框获得焦点时更新补全历史
-        if watched == self.search_box and event_type == event.Type.FocusIn:
-            history = self.search_service.get_search_history()
-            self._search_model.setStringList(history)
+        # 搜索框焦点处理：更新补全历史；点击时显示历史面板
+        if watched == self.search_box:
+            if event_type == event.Type.FocusIn:
+                history = self.search_service.get_search_history()
+                self._search_model.setStringList(history)
+            elif event_type == event.Type.MouseButtonPress:
+                # 点击搜索框时显示历史面板（避免启动时自动弹出）
+                if not self.search_box.text().strip():
+                    history = self.search_service.get_search_history()
+                    if history:
+                        self._show_search_history_panel()
+            elif event_type == event.Type.FocusOut:
+                # 延迟隐藏，给面板内按钮点击留出时间
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(200, self._hide_search_history_panel)
+
+        # Popup 窗口会自动在点击外部时关闭，无需额外处理
 
         # 检测用户活动，重置空闲定时器
         if self._idle_timer and self._lock_screen and not self._lock_screen.isVisible():

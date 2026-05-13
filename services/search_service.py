@@ -3,12 +3,15 @@
 分层搜索：精确匹配 + 拼音搜索（语义搜索由调用方异步处理）
 """
 import json
+import threading
+from pathlib import Path
 from typing import List, Optional
 from dataclasses import dataclass
 from datetime import datetime
 
 from core.database import DatabaseManager
 from core.pinyin import PinyinConverter
+from core.constants import DATA_DIR
 from models.account import Account
 
 
@@ -44,6 +47,8 @@ class SearchService:
         self.db = db_manager
         self._search_history: List[str] = []  # 搜索历史
         self._max_history = 10  # 最大历史记录数
+        self._history_path = DATA_DIR / 'search_history.json'
+        self._load_history()
     
     def search(self, query: str, accounts: List[Account] = None) -> List[SearchResult]:
         """
@@ -245,18 +250,47 @@ class SearchService:
         # 限制历史记录数
         if len(self._search_history) > self._max_history:
             self._search_history = self._search_history[:self._max_history]
+        
+        self._save_history()
     
     def get_search_history(self) -> List[str]:
         """获取搜索历史"""
         return self._search_history.copy()
     
+    def remove_history_item(self, query: str):
+        """删除单条搜索历史"""
+        if query in self._search_history:
+            self._search_history.remove(query)
+            self._save_history()
+    
     def clear_history(self):
         """清空搜索历史"""
         self._search_history.clear()
+        self._save_history()
     
     def clear_search_history(self):
         """清空搜索历史 (别名)"""
-        self._search_history.clear()
+        self.clear_history()
+    
+    def _load_history(self):
+        """从本地 JSON 加载搜索历史"""
+        try:
+            if self._history_path.exists():
+                with open(self._history_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    self._search_history = data[:self._max_history]
+        except Exception:
+            self._search_history = []
+    
+    def _save_history(self):
+        """保存搜索历史到本地 JSON（同步，数据量极小）"""
+        try:
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            with open(self._history_path, 'w', encoding='utf-8') as f:
+                json.dump(self._search_history, f, ensure_ascii=False)
+        except Exception:
+            pass
     
     def search_by_category(self, category: str, accounts: List[Account] = None) -> List[Account]:
         """

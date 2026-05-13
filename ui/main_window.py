@@ -2699,24 +2699,32 @@ class MainWindow(QMainWindow):
         item_height = 32 if is_compact else 56
         col_config = self._load_column_config()
         
-        for idx, account in enumerate(accounts):
-            item = QListWidgetItem()
-            item.setSizeHint(QSize(self.account_list.width() - 20, item_height))
-            item.setData(Qt.ItemDataRole.UserRole, account)
-            self.account_list.addItem(item)
-            
-            widget = AccountListItem(account, selection_mode=self._selection_mode, parent=self.account_list)
-            widget.hide()  # 防止无parent时短暂显示为独立窗口
-            if self._selection_mode:
-                widget.on_check_changed = lambda checked, aid=account.id: self._on_item_checkbox_changed(aid, checked)
-            if self._selection_mode and account.id in self._selected_ids:
-                widget.set_checked(True)
-            if is_compact:
-                widget.set_compact_mode(True)
-            self.account_list.setItemWidget(item, widget)
-            for key, visible in col_config.items():
-                if not visible:
-                    widget.set_column_visible(key, False)
+        # 批量添加时禁用更新与信号，避免 O(n²) 布局重算
+        self.account_list.setUpdatesEnabled(False)
+        self.account_list.blockSignals(True)
+        try:
+            for idx, account in enumerate(accounts):
+                item = QListWidgetItem()
+                item.setSizeHint(QSize(self.account_list.width() - 20, item_height))
+                item.setData(Qt.ItemDataRole.UserRole, account)
+                self.account_list.addItem(item)
+                
+                widget = AccountListItem(account, selection_mode=self._selection_mode, parent=self.account_list)
+                widget.hide()  # 防止无parent时短暂显示为独立窗口
+                if self._selection_mode:
+                    widget.on_check_changed = lambda checked, aid=account.id: self._on_item_checkbox_changed(aid, checked)
+                if self._selection_mode and account.id in self._selected_ids:
+                    widget.set_checked(True)
+                if is_compact:
+                    widget.set_compact_mode(True)
+                self.account_list.setItemWidget(item, widget)
+                for key, visible in col_config.items():
+                    if not visible:
+                        widget.set_column_visible(key, False)
+        finally:
+            self.account_list.blockSignals(False)
+            self.account_list.setUpdatesEnabled(True)
+            self.account_list.update()
         
         self.btn_compact_view.setChecked(is_compact)
         
@@ -3218,26 +3226,34 @@ class MainWindow(QMainWindow):
         item_height = 32 if is_compact else 56
         col_config = self._load_column_config()
         
-        for url_item in urls:
-            list_item = QListWidgetItem()
-            list_item.setSizeHint(QSize(self.account_list.width() - 20, item_height))
-            list_item.setData(Qt.ItemDataRole.UserRole, url_item)
-            self.account_list.addItem(list_item)
-            
-            widget = URLListItem(url_item, selection_mode=self._selection_mode, parent=self.account_list)
-            widget.hide()  # 防止无parent时短暂显示为独立窗口
-            if self._selection_mode:
-                uid = getattr(url_item, 'id', None) or (url_item.get('id') if isinstance(url_item, dict) else None)
-                if uid:
-                    widget.on_check_changed = lambda checked, id=uid: self._on_item_checkbox_changed(id, checked)
-                if uid and uid in self._selected_ids:
-                    widget.set_checked(True)
-            if is_compact:
-                widget.set_compact_mode(True)
-            self.account_list.setItemWidget(list_item, widget)
-            for key, visible in col_config.items():
-                if not visible:
-                    widget.set_column_visible(key, False)
+        # 批量添加时禁用更新与信号，避免 O(n²) 布局重算
+        self.account_list.setUpdatesEnabled(False)
+        self.account_list.blockSignals(True)
+        try:
+            for url_item in urls:
+                list_item = QListWidgetItem()
+                list_item.setSizeHint(QSize(self.account_list.width() - 20, item_height))
+                list_item.setData(Qt.ItemDataRole.UserRole, url_item)
+                self.account_list.addItem(list_item)
+                
+                widget = URLListItem(url_item, selection_mode=self._selection_mode, parent=self.account_list)
+                widget.hide()  # 防止无parent时短暂显示为独立窗口
+                if self._selection_mode:
+                    uid = getattr(url_item, 'id', None) or (url_item.get('id') if isinstance(url_item, dict) else None)
+                    if uid:
+                        widget.on_check_changed = lambda checked, id=uid: self._on_item_checkbox_changed(id, checked)
+                    if uid and uid in self._selected_ids:
+                        widget.set_checked(True)
+                if is_compact:
+                    widget.set_compact_mode(True)
+                self.account_list.setItemWidget(list_item, widget)
+                for key, visible in col_config.items():
+                    if not visible:
+                        widget.set_column_visible(key, False)
+        finally:
+            self.account_list.blockSignals(False)
+            self.account_list.setUpdatesEnabled(True)
+            self.account_list.update()
         
         self.btn_compact_view.setChecked(is_compact)
         
@@ -3256,7 +3272,29 @@ class MainWindow(QMainWindow):
     
     def _toggle_compact_view(self, checked: bool):
         self._save_compact_preference(checked)
-        self._smart_refresh()
+        # 直接修改当前列表中所有 widget，避免全部重建（比 _smart_refresh 快得多）
+        self._apply_compact_mode_to_current_list(checked)
+    
+    def _apply_compact_mode_to_current_list(self, enabled: bool):
+        """直接修改现有列表项的紧凑模式，不重建控件"""
+        item_height = 32 if enabled else 56
+        width = max(self.account_list.width() - 20, 50)
+        
+        self.account_list.setUpdatesEnabled(False)
+        try:
+            for i in range(self.account_list.count()):
+                item = self.account_list.item(i)
+                if item.flags() == Qt.ItemFlag.NoItemFlags:
+                    continue  # 跳过提示性 item（如"暂无账号"）
+                widget = self.account_list.itemWidget(item)
+                if widget and hasattr(widget, 'set_compact_mode'):
+                    widget.set_compact_mode(enabled)
+                item.setSizeHint(QSize(width, item_height))
+        finally:
+            self.account_list.setUpdatesEnabled(True)
+            self.account_list.update()
+        
+        self.btn_compact_view.setChecked(enabled)
     
     def _save_compact_preference(self, enabled: bool):
         import json, os, threading

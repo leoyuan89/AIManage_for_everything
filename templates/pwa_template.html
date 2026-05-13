@@ -92,6 +92,19 @@ html, body { width:100%; height:100%; overflow:hidden; background:var(--ios-bg);
 .nav-bar .nav-title { font-size:17px; font-weight:600; text-align:center; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:60%; }
 .nav-bar .nav-action { position:absolute; right:16px; top:50%; transform:translateY(-50%); color:var(--ios-blue); font-size:17px; background:none; border:none; font-family:inherit; cursor:pointer; }
 
+/* ===== Lock Button in Nav Bar ===== */
+.nav-lock-btn {
+  position:absolute; right:16px; top:50%; transform:translateY(-50%);
+  width:32px; height:32px; border-radius:50%;
+  background:none; border:none; cursor:pointer;
+  display:flex; align-items:center; justify-content:center;
+  color:var(--ios-blue);
+  padding:0; font-family:inherit;
+  transition:background .15s;
+}
+.nav-lock-btn:active { background:var(--ios-gray5); }
+.nav-lock-btn svg { width:20px; height:20px; }
+
 /* ===== Search Bar ===== */
 .search-bar { flex-shrink:0; padding:8px 16px; background:var(--ios-card); border-bottom:0.5px solid var(--ios-gray4); }
 .search-bar .search-wrap { display:flex; align-items:center; background:var(--ios-gray6); border-radius:10px; padding:7px 10px; }
@@ -132,7 +145,7 @@ html, body { width:100%; height:100%; overflow:hidden; background:var(--ios-bg);
 .lock-screen .lock-hint-title svg { width:14px; height:14px; }
 .lock-screen .lock-hint ul { list-style:none; text-align:left; }
 .lock-screen .lock-hint li { font-size:12px; color:rgba(255,255,255,.35); padding:3px 0; padding-left:16px; position:relative; }
-.lock-screen .lock-hint li::before { content:"•"; position:absolute; left:4px; color:var(--ios-blue); }
+.lock-screen .lock-hint li::before { content:"\2022"; position:absolute; left:4px; color:var(--ios-blue); }
 
 /* ===== Category Grid ===== */
 .category-header { padding:16px 16px 8px; }
@@ -259,6 +272,9 @@ html, body { width:100%; height:100%; overflow:hidden; background:var(--ios-bg);
 <div id="mainScreen" class="screen hidden">
   <div class="nav-bar translucent">
     <span class="nav-title" id="mainTitle">密码库</span>
+    <button class="nav-lock-btn" id="lockBtn" title="立即锁定">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+    </button>
   </div>
   <div class="search-bar">
     <div class="search-wrap">
@@ -727,7 +743,51 @@ function popScreen() {
 }
 
 
-// ===== TEST DATA =====
+// ===== LOCK / VAULT =====
+function lockVault() {
+  // 1. 清除所有敏感数据
+  vault = { accounts: [], urls: [], account_category_orders: {}, url_category_orders: {}, decrypted: false };
+  currentVault = 'accounts';
+  navStack = [];
+  searchScope = 'all';
+
+  // 2. 清空所有屏幕内容
+  $('#catGrid').innerHTML = '';
+  $('#itemsContent').innerHTML = '';
+  $('#subcatContent').innerHTML = '';
+  $('#detailContent').innerHTML = '';
+  $('#searchContent').innerHTML = '';
+  $('#searchRealInput').value = '';
+  $('#itemsFilterInput').value = '';
+
+  // 3. 重置所有 screen 的显示状态
+  $all('.screen').forEach(s => {
+    s.classList.remove('active', 'behind', 'popped');
+    s.classList.add('hidden');
+    s.style.transform = '';
+    s.style.transition = '';
+    s.style.setProperty('--shadow-opacity', '0');
+  });
+
+  // 4. 清理导航栏内联样式
+  $all('.screen .nav-bar').forEach(nb => {
+    nb.style.opacity = '';
+    nb.style.transition = '';
+  });
+
+  // 5. 移除蒙层
+  const overlay = document.querySelector('.nav-overlay');
+  if(overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+
+  // 6. 显示锁定屏幕
+  $('#lockInput').value = '';
+  $('#lockError').textContent = '';
+  $('#lockScreen').classList.remove('hidden', 'behind', 'popped');
+  show('lockScreen');
+
+  toast('已锁定');
+}
+
 // ===== RENDER: Lock Screen =====
 function initLockScreen() {
   $('#lockInfo').textContent = `生成时间：${GENERATED_AT}  |  ${ACCOUNT_COUNT} 条账号 + ${URL_COUNT} 条网址`;
@@ -919,7 +979,7 @@ function createItemCell(item, isAccount) {
   // 如果有备注或AI备注，优先显示在副标题中
   const note = item.ai_remark || item.remark || '';
   if(note) {
-    subtitle = subtitle ? (subtitle + ' · ' + note) : note;
+    subtitle = subtitle ? (subtitle + ' \u00b7 ' + note) : note;
   }
   const color = generateIconColor(name);
   const initial = getInitial(name);
@@ -942,7 +1002,7 @@ function createItemCell(item, isAccount) {
     <div class="item-meta">
       <span class="item-badge" style="background:var(--ios-gray6);color:var(--ios-gray);">${catShort}</span>
       ${badges}
-      <span class="item-chevron">›</span>
+      <span class="item-chevron">\u203a</span>
     </div>
   `;
   cell.addEventListener('click', () => openDetail(item, isAccount));
@@ -1466,6 +1526,9 @@ function initNav() {
   $('#itemsBack').addEventListener('click', popScreen);
   $('#subcatBack').addEventListener('click', popScreen);
   $('#detailBack').addEventListener('click', popScreen);
+
+  // Lock button
+  $('#lockBtn').addEventListener('click', lockVault);
 
   // Override items list render to store current items for filtering
   const origOpenItems = openItemsList;

@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QProgressDialog, QApplication, QFrame, QListWidget, QScrollArea
 )
 from PyQt6.QtCore import QPoint
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QEvent
 from PyQt6.QtGui import QFont, QPixmap, QColor, QPalette
 
 from core.database import DatabaseManager
@@ -431,6 +431,50 @@ class PopupComboBox(QWidget):
             self._list_widget = None
 
 
+class ClickableComboBox(QComboBox):
+    """可编辑 QComboBox，点击文本区域也弹出下拉列表
+    
+    解决 qt-material 主题下可编辑 QComboBox 下拉箭头 SVG 图标无法加载、
+    点击文本区域无法弹出列表的问题。
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setEditable(True)
+        self.lineEdit().installEventFilter(self)
+        colors = ThemeManager.instance().colors
+        
+        # 隐藏默认的 SVG 箭头，保留 drop-down 可点击区域
+        self.setStyleSheet("""
+            QComboBox::drop-down {
+                border: none;
+                width: 24px;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                width: 0px;
+                height: 0px;
+            }
+        """)
+        
+        # 用 QLabel 绘制自定义箭头覆盖在右侧
+        self._arrow = QLabel("▼", self)
+        self._arrow.setStyleSheet(f"color: {colors.text_secondary}; font-size: 10px; background: transparent;")
+        self._arrow.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._arrow.setFixedSize(20, 20)
+        self._arrow.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+    
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # 箭头固定在右侧居中
+        self._arrow.move(self.width() - 24, (self.height() - 20) // 2)
+    
+    def eventFilter(self, obj, event):
+        if obj == self.lineEdit() and event.type() == QEvent.Type.MouseButtonPress:
+            if not self.view().isVisible():
+                self.showPopup()
+        return super().eventFilter(obj, event)
+
+
 class JustifyLabel(QLabel):
     """两端对齐标签：主文字在可用宽度内均匀分布，支持后缀（如 *）"""
     def __init__(self, text: str, suffix: str = "", parent=None):
@@ -555,13 +599,13 @@ class AccountDialog(QDialog):
         """加载主类下拉框"""
         tree = self.account_service.get_category_tree()
         self.cmb_parent.clear()
-        self.cmb_parent.addItem("请选择")
+        self.cmb_parent.addItem("自定义")
         self.cmb_parent.addItems(sorted(tree.keys()))
     
     def _on_parent_changed(self, parent_name):
         """主类改变时更新子类下拉框"""
         self.cmb_child.clear()
-        self.cmb_child.addItem("")  # 空表示无子类（一级分类）
+        self.cmb_child.addItem("自定义")  # 自定义表示无子类（一级分类）
         
         tree = self.account_service.get_category_tree()
         if parent_name in tree:
@@ -801,9 +845,8 @@ class AccountDialog(QDialog):
         lbl_category.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         category_layout.addWidget(lbl_category)
         
-        self.cmb_parent = QComboBox()
-        self.cmb_parent.setEditable(True)
-        self.cmb_parent.setPlaceholderText("请选择")
+        self.cmb_parent = ClickableComboBox()
+        self.cmb_parent.setPlaceholderText("自定义")
         self.cmb_parent.setFixedHeight(36)
         self.cmb_parent.currentTextChanged.connect(self._on_parent_changed)
         self.cmb_parent.currentTextChanged.connect(self._mark_dirty)
@@ -814,9 +857,8 @@ class AccountDialog(QDialog):
         lbl_sep.setAlignment(Qt.AlignmentFlag.AlignCenter)
         category_layout.addWidget(lbl_sep)
         
-        self.cmb_child = QComboBox()
-        self.cmb_child.setEditable(True)
-        self.cmb_child.setPlaceholderText("子类（可选）")
+        self.cmb_child = ClickableComboBox()
+        self.cmb_child.setPlaceholderText("自定义")
         self.cmb_child.setFixedHeight(36)
         self.cmb_child.currentTextChanged.connect(self._mark_dirty)
         category_layout.addWidget(self.cmb_child)
@@ -1091,7 +1133,7 @@ class AccountDialog(QDialog):
             return
         
         current_parent = self.cmb_parent.currentText().strip()
-        if not current_parent or current_parent == "请选择":
+        if not current_parent or current_parent == "自定义":
             QMessageBox.warning(self, "提示", "请先选择一级分类，或点击左侧「AI」按钮自动分析一级分类")
             return
         
@@ -1437,7 +1479,7 @@ class AccountDialog(QDialog):
         parent = self.cmb_parent.currentText().strip()
         child = self.cmb_child.currentText().strip()
         from core.category_utils import format_category_path
-        category = format_category_path(parent if parent != "请选择" else "", child if child else None)
+        category = format_category_path(parent if parent != "自定义" else "", child if child else None)
         
         if not app_name:
             QMessageBox.warning(self, "提示", "请先输入应用名")
@@ -1502,7 +1544,7 @@ class AccountDialog(QDialog):
         parent = self.cmb_parent.currentText().strip()
         child = self.cmb_child.currentText().strip()
         
-        if not parent or parent == "请选择":
+        if not parent or parent == "自定义":
             QMessageBox.warning(self, "验证失败", "请选择主分类")
             return
         
@@ -1619,7 +1661,7 @@ class AccountDialog(QDialog):
         parent = self.cmb_parent.currentText().strip()
         child = self.cmb_child.currentText().strip()
         from core.category_utils import format_category_path
-        category = format_category_path(parent if parent != "请选择" else "", child if child else None)
+        category = format_category_path(parent if parent != "自定义" else "", child if child else None)
         
         # 创建临时账号对象（用于编辑）
         temp_account = Account(

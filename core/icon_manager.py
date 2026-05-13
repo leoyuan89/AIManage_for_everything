@@ -68,3 +68,8 @@ class IconManager:
     def compact_icon(cls, size: int = 20, color: str = '#666666') -> QIcon:
         """加载紧凑视图列表图标"""
         return cls.load_svg('icon_compact.svg', size=size, color=color)
+
+    @classmethod
+    def settings_icon(cls, size: int = 20, color: str = '#666666') -> QIcon:
+        """加载列设置图标"""
+        return cls.load_svg('icon_settings.svg', size=size, color=color)

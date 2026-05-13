@@ -1,6 +1,7 @@
 """
 网址服务模块
 """
+import functools
 import logging
 from typing import List, Optional, Dict
 from urllib.parse import urlparse
@@ -38,7 +39,9 @@ class URLService:
         url_data.pop('created_at', None)
         url_data.pop('updated_at', None)
         
-        return self.db.insert_url(url_data)
+        result = self.db.insert_url(url_data)
+        self.get_all_urls.cache_clear()
+        return result
     
     def update_url(self, url_item: URLItem) -> bool:
         """
@@ -58,7 +61,9 @@ class URLService:
         url_data.pop('created_at', None)
         url_data.pop('updated_at', None)
         
-        return self.db.update_url(url_item.id, url_data)
+        result = self.db.update_url(url_item.id, url_data)
+        self.get_all_urls.cache_clear()
+        return result
     
     def delete_url(self, url_id: int) -> bool:
         """
@@ -70,7 +75,9 @@ class URLService:
         Returns:
             是否成功
         """
-        return self.db.delete_url(url_id)
+        result = self.db.delete_url(url_id)
+        self.get_all_urls.cache_clear()
+        return result
     
     def get_url(self, url_id: int) -> Optional[URLItem]:
         """
@@ -87,6 +94,7 @@ class URLService:
             return URLItem.from_dict(data)
         return None
     
+    @functools.lru_cache(maxsize=1)
     def get_all_urls(self) -> List[URLItem]:
         """
         获取所有网址
@@ -235,6 +243,7 @@ class URLService:
                     updated = True
             # 同步更新 category_order 表（包括空分类）
             self.db.rename_category_order(old_category, new_category)
+        self.get_all_urls.cache_clear()
         return updated
     
     def add_category(self, category_name: str) -> bool:
@@ -267,6 +276,7 @@ class URLService:
                         updated = True
             # 同步从排序表中删除，确保该分类真正消失
             self.db.delete_category(category)
+        self.get_all_urls.cache_clear()
         return updated
 
     def _delete_category_no_commit(self, category: str) -> bool:
@@ -294,11 +304,14 @@ class URLService:
                         updated = True
             # 同步从排序表中删除，确保该分类真正消失
             self.db.delete_category(category)
+        self.get_all_urls.cache_clear()
         return updated
 
     def promote_category(self, category_path: str) -> bool:
         """将二级分类升级为一级分类"""
-        return self.db.promote_category(category_path)
+        result = self.db.promote_category(category_path)
+        self.get_all_urls.cache_clear()
+        return result
     
     def reparent_category(self, old_path: str, new_parent: str = "") -> bool:
         """
@@ -316,7 +329,9 @@ class URLService:
         else:
             new_path = child_name
         
-        return self.db.reparent_category(old_path, new_path) > 0
+        result = self.db.reparent_category(old_path, new_path) > 0
+        self.get_all_urls.cache_clear()
+        return result
     
     def toggle_favorite(self, url_id: int) -> bool:
         """Toggle favorite status for a URL, returns new status"""
@@ -325,6 +340,7 @@ class URLService:
             return False
         new_status = not current.is_favorite
         self.db.update_url(url_id, {'is_favorite': int(new_status)})
+        self.get_all_urls.cache_clear()
         return new_status
 
     def get_favorites(self) -> list:

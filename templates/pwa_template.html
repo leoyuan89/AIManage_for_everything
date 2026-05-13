@@ -20,8 +20,9 @@
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
   --font-mono: "SF Mono", "Courier New", monospace;
 }
-html, body { width:100%; height:100%; overflow:hidden; background:var(--ios-bg); font-family:var(--font); color:var(--ios-label); -webkit-font-smoothing:antialiased; }
-#app { width:100%; height:100%; position:relative; overflow:hidden; overscroll-behavior-x:none; }
+html { width:100%; height:100%; height:-webkit-fill-available; }
+body { width:100%; height:100%; height:-webkit-fill-available; overflow:hidden; background:var(--ios-bg); font-family:var(--font); color:var(--ios-label); -webkit-font-smoothing:antialiased; }
+#app { width:100%; height:100%; height:-webkit-fill-available; position:relative; overflow:hidden; overscroll-behavior-x:none; }
 
 /* ===== Animations ===== */
 @keyframes fadeIn { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
@@ -85,16 +86,16 @@ html, body { width:100%; height:100%; overflow:hidden; background:var(--ios-bg);
 }
 
 /* ===== Navigation Bar ===== */
-.nav-bar { flex-shrink:0; display:flex; align-items:center; justify-content:center; height:44px; padding:0 16px; position:relative; background:var(--ios-card); border-bottom:0.5px solid var(--ios-gray4); z-index:10; }
+.nav-bar { flex-shrink:0; display:flex; align-items:center; justify-content:center; height:calc(44px + var(--safe-top)); padding:var(--safe-top) 16px 0; position:relative; background:var(--ios-card); border-bottom:0.5px solid var(--ios-gray4); z-index:10; }
 .nav-bar.translucent { background:rgba(255,255,255,.85); backdrop-filter:saturate(180%) blur(20px); -webkit-backdrop-filter:saturate(180%) blur(20px); }
 .nav-bar .nav-back { position:absolute; left:0; top:0; bottom:0; display:flex; align-items:center; color:var(--ios-blue); font-size:17px; font-weight:400; cursor:pointer; background:none; border:none; padding:0 12px; font-family:inherit; -webkit-touch-callout:none; }
 .nav-bar .nav-back::before { content:""; display:inline-block; width:10px; height:10px; border-left:2.5px solid var(--ios-blue); border-bottom:2.5px solid var(--ios-blue); transform:rotate(45deg); margin-right:2px; }
 .nav-bar .nav-title { font-size:17px; font-weight:600; text-align:center; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:60%; }
-.nav-bar .nav-action { position:absolute; right:16px; top:50%; transform:translateY(-50%); color:var(--ios-blue); font-size:17px; background:none; border:none; font-family:inherit; cursor:pointer; }
+.nav-bar .nav-action { position:absolute; right:16px; top:calc(var(--safe-top) + 22px); transform:translateY(-50%); color:var(--ios-blue); font-size:17px; background:none; border:none; font-family:inherit; cursor:pointer; }
 
 /* ===== Lock Button in Nav Bar ===== */
 .nav-lock-btn {
-  position:absolute; right:16px; top:50%; transform:translateY(-50%);
+  position:absolute; right:16px; top:calc(var(--safe-top) + 22px); transform:translateY(-50%);
   width:32px; height:32px; border-radius:50%;
   background:none; border:none; cursor:pointer;
   display:flex; align-items:center; justify-content:center;
@@ -122,7 +123,7 @@ html, body { width:100%; height:100%; overflow:hidden; background:var(--ios-bg);
 
 /* ===== Lock Screen ===== */
 .lock-screen { background:linear-gradient(160deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); justify-content:center; align-items:center; z-index:100; }
-.lock-screen .lock-content { width:100%; max-width:320px; padding:24px; text-align:center; }
+.lock-screen .lock-content { width:100%; max-width:320px; padding:max(24px, var(--safe-top)) 24px 24px; text-align:center; }
 .lock-screen .lock-icon { width:72px; height:72px; margin:0 auto 24px; background:linear-gradient(135deg, var(--ios-blue) 0%, #5856D6 100%); border-radius:20px; display:flex; align-items:center; justify-content:center; box-shadow:0 8px 32px rgba(0,122,255,.3); }
 .lock-screen .lock-icon svg { width:36px; height:36px; color:#fff; }
 .lock-screen .lock-title { font-size:28px; font-weight:700; color:#fff; margin-bottom:8px; letter-spacing:-0.5px; }
@@ -306,7 +307,10 @@ html, body { width:100%; height:100%; overflow:hidden; background:var(--ios-bg);
   <div class="nav-bar">
     <button class="nav-back" id="itemsBack">返回</button>
     <span class="nav-title" id="itemsTitle">条目</span>
-    <span class="nav-action" id="itemsCount"></span>
+    <span style="position:absolute;right:52px;top:calc(var(--safe-top) + 22px);transform:translateY(-50%);font-size:13px;color:var(--ios-gray);" id="itemsCount"></span>
+    <button class="nav-lock-btn" title="立即锁定">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+    </button>
   </div>
   <div class="search-bar" id="itemsSearchBar" style="display:none;">
     <div class="search-wrap">
@@ -323,6 +327,9 @@ html, body { width:100%; height:100%; overflow:hidden; background:var(--ios-bg);
   <div class="nav-bar">
     <button class="nav-back" id="subcatBack">返回</button>
     <span class="nav-title" id="subcatTitle">子分类</span>
+    <button class="nav-lock-btn" title="立即锁定">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+    </button>
   </div>
   <div class="screen-content" id="subcatContent"></div>
 </div>
@@ -332,6 +339,9 @@ html, body { width:100%; height:100%; overflow:hidden; background:var(--ios-bg);
   <div class="nav-bar">
     <button class="nav-back" id="detailBack">返回</button>
     <span class="nav-title">详情</span>
+    <button class="nav-lock-btn" title="立即锁定">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+    </button>
   </div>
   <div class="screen-content" id="detailContent"></div>
 </div>
@@ -341,6 +351,9 @@ html, body { width:100%; height:100%; overflow:hidden; background:var(--ios-bg);
   <div class="nav-bar">
     <button class="nav-back" id="searchBack">取消</button>
     <span class="nav-title">搜索</span>
+    <button class="nav-lock-btn" title="立即锁定">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+    </button>
   </div>
   <div class="search-bar" style="border-bottom:none;">
     <div class="search-wrap">
@@ -1527,8 +1540,8 @@ function initNav() {
   $('#subcatBack').addEventListener('click', popScreen);
   $('#detailBack').addEventListener('click', popScreen);
 
-  // Lock button
-  $('#lockBtn').addEventListener('click', lockVault);
+  // Lock buttons (all screens)
+  $all('.nav-lock-btn').forEach(btn => btn.addEventListener('click', lockVault));
 
   // Override items list render to store current items for filtering
   const origOpenItems = openItemsList;

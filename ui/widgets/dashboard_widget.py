@@ -171,8 +171,13 @@ class DashboardWidget(QScrollArea):
         cards_l.setSpacing(16)
         cards_l.setContentsMargins(0, 0, 0, 0)
         
-        all_acc = self.account_service.get_all_accounts()
-        all_url = self.url_service.get_all_urls()
+        # 按需查询另一库数据，避免每次构建首页都查两个库
+        if vault == 'accounts':
+            all_acc = accounts
+            all_url = self.url_service.get_all_urls()
+        else:
+            all_acc = self.account_service.get_all_accounts()
+            all_url = accounts
         
         recent_7 = self._get_recent_items(accounts, 7)
         

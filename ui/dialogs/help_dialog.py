@@ -342,12 +342,26 @@ class HelpDialog(QDialog):
         # ==================== 章节 6：快捷键与使用技巧 ====================
         self._add_section(c_layout, "💡 快捷键与使用技巧")
 
+        shortcuts = [
+            ("Ctrl + F", "聚焦搜索框"),
+            ("Ctrl + N", "添加新条目"),
+            ("Ctrl + M", "进入 / 退出批量选择模式"),
+            ("Delete", "删除当前选中条目"),
+            ("Escape", "清除搜索 / 退出选择模式"),
+            ("Ctrl + D", "切换深色 / 浅色主题"),
+            ("Ctrl + L", "锁定应用"),
+            ("Ctrl + 1", "切换到密码库"),
+            ("Ctrl + 2", "切换到网址库"),
+            ("Ctrl + Z", "撤销批量删除"),
+        ]
+        self._add_shortcuts_card(c_layout, shortcuts)
+
         tips = [
             "双击列表中的条目可快速进入编辑模式。",
             "在搜索框中输入内容时，列表会实时过滤，无需按回车。",
             "拖拽分类节点可以快速调整层级结构。",
             "收藏夹中的条目会显示星标，方便一眼识别。",
-            "批量操作时，按住 Ctrl 或 Shift 可以多选条目。",
+            "批量选择模式下，按住 Ctrl 并拖动鼠标可框选多个条目。",
             "在 AI 面板中，可用「刚才找到的」「前面那些」指代历史搜索结果。",
             "导出的 .vault 文件是最安全的备份方式，建议定期导出并存放到安全位置。",
             "密码生成器支持自定义长度和字符类型，可在添加账号时快速调用。",
@@ -541,6 +555,44 @@ class HelpDialog(QDialog):
             row.addWidget(txt, 1)
             tips_layout.addLayout(row)
         layout.addWidget(tips_card)
+
+    def _add_shortcuts_card(self, layout, shortcuts: list):
+        colors = ThemeManager.instance().colors
+        card = QWidget()
+        card.setObjectName("helpShortcutsCard")
+        card.setStyleSheet(f"""
+            #helpShortcutsCard {{
+                background-color: {colors.bg_primary};
+                border-radius: 12px;
+                border: 1px solid {colors.border_subtle};
+            }}
+        """)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(18, 16, 18, 16)
+        card_layout.setSpacing(8)
+        title = QLabel("快捷键一览")
+        title.setStyleSheet(f"color: {colors.text_primary}; font-size: 15px; font-weight: 500;")
+        card_layout.addWidget(title)
+        for key, desc in shortcuts:
+            row = QHBoxLayout()
+            row.setSpacing(12)
+            row.setContentsMargins(0, 0, 0, 0)
+            key_lbl = QLabel(key)
+            key_lbl.setStyleSheet(f"""
+                color: {colors.accent_blue_text};
+                background-color: {colors.accent_blue_bg};
+                font-size: 12px;
+                font-weight: 600;
+                padding: 2px 8px;
+                border-radius: 4px;
+            """)
+            key_lbl.setFixedHeight(22)
+            desc_lbl = QLabel(desc)
+            desc_lbl.setStyleSheet(f"color: {colors.text_primary}; font-size: 13px;")
+            row.addWidget(key_lbl)
+            row.addWidget(desc_lbl, 1)
+            card_layout.addLayout(row)
+        layout.addWidget(card)
 
     def _add_faq_item(self, layout, question: str, answer: str):
         colors = ThemeManager.instance().colors

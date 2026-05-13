@@ -19,7 +19,6 @@ from services.ai_worker_thread import AIStatus
 logger = logging.getLogger(__name__)
 from core.theme_manager import ThemeManager, ThemeColors
 from core.icon_manager import IconManager
-from core.password_generator import generate_password
 
 
 class URLEditDialog(QDialog):
@@ -111,40 +110,6 @@ class URLEditDialog(QDialog):
         self.txt_url.textChanged.connect(self._mark_dirty)
         url_layout.addWidget(self.txt_url)
         layout.addLayout(url_layout)
-        
-        # ===== 密码 =====
-        password_layout = QHBoxLayout()
-        lbl_password = QLabel("密码：")
-        lbl_password.setFixedWidth(80)
-        lbl_password.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        password_layout.addWidget(lbl_password)
-        
-        self.txt_password = QLineEdit()
-        self.txt_password.setPlaceholderText("请输入密码（可选）")
-        self.txt_password.setEchoMode(QLineEdit.EchoMode.Password)
-        self.txt_password.setFixedHeight(36)
-        self.txt_password.textChanged.connect(self._mark_dirty)
-        password_layout.addWidget(self.txt_password)
-        
-        self.btn_show_url_password = QPushButton("显示")
-        self.btn_show_url_password.setFixedSize(80, 36)
-        self.btn_show_url_password.setCheckable(True)
-        self.btn_show_url_password.toggled.connect(self._toggle_url_password_visibility)
-        password_layout.addWidget(self.btn_show_url_password)
-        
-        self.btn_generate_url_password = QPushButton("生成")
-        self.btn_generate_url_password.setFixedSize(60, 36)
-        self.btn_generate_url_password.setToolTip("随机生成密码")
-        self.btn_generate_url_password.clicked.connect(self._on_generate_url_password)
-        password_layout.addWidget(self.btn_generate_url_password)
-        
-        self.btn_generator_url_settings = QPushButton("⚙")
-        self.btn_generator_url_settings.setFixedSize(30, 36)
-        self.btn_generator_url_settings.setToolTip("密码生成器设置")
-        self.btn_generator_url_settings.clicked.connect(self._on_generate_url_password_settings)
-        password_layout.addWidget(self.btn_generator_url_settings)
-        
-        layout.addLayout(password_layout)
         
         # ===== 分类 + AI 按钮 =====
         category_layout = QHBoxLayout()
@@ -351,8 +316,6 @@ class URLEditDialog(QDialog):
                 self.cmb_child.setCurrentText(child)
         self.txt_remark.setText(self.url_item.remark)
         self.txt_ai_remark.setText(self.url_item.ai_remark)
-        self.txt_password.setText(self.url_item.password)
-        
         tags = self.url_item.get_tags_list()
         self.txt_tags.setText(", ".join(tags))
         self._is_dirty = False  # 加载数据不视为修改
@@ -546,29 +509,6 @@ class URLEditDialog(QDialog):
         self.btn_ai_child.setText("AI")
         QMessageBox.warning(self, "分类失败", f"AI 二级分类失败：{error}")
     
-    def _toggle_url_password_visibility(self, checked):
-        """切换 URL 密码可见性"""
-        if checked:
-            self.txt_password.setEchoMode(QLineEdit.EchoMode.Normal)
-            self.btn_show_url_password.setText("隐藏")
-        else:
-            self.txt_password.setEchoMode(QLineEdit.EchoMode.Password)
-            self.btn_show_url_password.setText("显示")
-    
-    def _on_generate_url_password(self):
-        """快速生成 URL 密码（默认设置）"""
-        pwd = generate_password()
-        self.txt_password.setText(pwd)
-    
-    def _on_generate_url_password_settings(self):
-        """打开密码生成器设置弹窗（URL）"""
-        from ui.dialogs.password_generator_dialog import PasswordGeneratorDialog
-        dlg = PasswordGeneratorDialog(self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            pwd = dlg.generated_password
-            if pwd:
-                self.txt_password.setText(pwd)
-    
     def on_save(self):
         """保存网址"""
         url = self.txt_url.text().strip()
@@ -615,7 +555,6 @@ class URLEditDialog(QDialog):
         self.url_item.category = category
         self.url_item.remark = self.txt_remark.toPlainText().strip()
         self.url_item.ai_remark = self.txt_ai_remark.toPlainText().strip()
-        self.url_item.password = self.txt_password.text().strip()
         self.url_item.set_tags_list(tags)
         
         try:

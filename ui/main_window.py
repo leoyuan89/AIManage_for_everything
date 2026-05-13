@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Dict
+from collections import defaultdict
 from enum import Enum
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -1313,9 +1314,9 @@ class MainWindow(QMainWindow):
         self.current_category = '全部'
         self.selected_account: Optional[Account] = None
         
-        # 账号列表缓存（避免每次搜索都读数据库）
-        self._cached_accounts: List[Account] = []
-        self._cache_dirty = True
+        # 账号列表全量缓存（一次加载，内存过滤，避免反复解密和 service 调用）
+        self._all_accounts_cache: List[Account] = []
+        self._accounts_cache_dirty = True
         
         # 会话安全：锁定界面
         self._lock_screen = None
@@ -1323,8 +1324,8 @@ class MainWindow(QMainWindow):
         
         # 库切换状态
         self.current_vault = 'accounts'  # 'accounts' | 'urls'
-        self._cached_urls: List = []
-        self._url_cache_dirty = True
+        self._all_urls_cache: List = []
+        self._urls_cache_dirty = True
         self._mode_change_guard = False
         
         # 网址服务（延迟初始化）
@@ -1334,6 +1335,10 @@ class MainWindow(QMainWindow):
         # 批量选择模式（主条目）
         self._selection_mode = False
         self._selected_ids = set()
+        self._last_selected_index = None
+        self._drag_selecting = False
+        self._drag_checked_ids = set()  # 拖动过程中已处理过的条目ID（避免重复触发）
+        self._drag_in_progress = False  # 标记是否正在进行拖动选择（用于屏蔽 itemClicked）
         self._normal_title = ""  # 保存正常模式下的列表标题
         
         # 类别批量删除模式
@@ -1408,6 +1413,7 @@ class MainWindow(QMainWindow):
             (QKeySequence("Ctrl+1"), lambda: self._on_vault_tab_changed(0)),
             (QKeySequence("Ctrl+2"), lambda: self._on_vault_tab_changed(1)),
             (QKeySequence("Ctrl+Z"), self._shortcut_undo),
+            (QKeySequence("Ctrl+M"), self._shortcut_toggle_selection_mode),
         ]
         for key_seq, slot in shortcuts:
             QShortcut(key_seq, self).activated.connect(slot)
@@ -1470,6 +1476,13 @@ class MainWindow(QMainWindow):
         """Ctrl+Z 撤销最近的批量删除"""
         if hasattr(self, '_undo_banner') and self._undo_banner and self._undo_banner.isVisible():
             self._undo_delete(self._undo_deleted_items)
+    
+    def _shortcut_toggle_selection_mode(self):
+        """Ctrl+M 切换批量选择模式"""
+        if self._selection_mode:
+            self._exit_selection_mode()
+        else:
+            self._enter_selection_mode()
     
     def setup_ui(self):
         """设置界面"""
@@ -2052,6 +2065,25 @@ class MainWindow(QMainWindow):
         self.btn_compact_view.clicked.connect(self._toggle_compact_view)
         title_header.addWidget(self.btn_compact_view)
         
+        self.btn_column_settings = QPushButton()
+        self.btn_column_settings.setFixedSize(28, 28)
+        self.btn_column_settings.setToolTip("设置列表显示内容")
+        self.btn_column_settings.setIcon(IconManager.settings_icon(size=16, color=colors.text_secondary))
+        self.btn_column_settings.setIconSize(QSize(16, 16))
+        self.btn_column_settings.setStyleSheet(f"""
+            QPushButton {{
+                border: 1px solid {colors.border_default};
+                background-color: {colors.bg_tertiary};
+                border-radius: 4px;
+            }}
+            QPushButton:hover {{
+                background-color: {colors.bg_hover};
+                border-color: {colors.border_medium};
+            }}
+        """)
+        self.btn_column_settings.clicked.connect(self._on_column_settings_clicked)
+        title_header.addWidget(self.btn_column_settings)
+        
         center_layout.addLayout(title_header)
         
         # AI 筛选横幅
@@ -2148,6 +2180,7 @@ class MainWindow(QMainWindow):
         self.account_list.itemDoubleClicked.connect(self.on_account_double_clicked)
         self.account_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.account_list.customContextMenuRequested.connect(self._on_list_item_context_menu)
+        self.account_list.viewport().installEventFilter(self)
         
         self.list_stack = QStackedWidget()
         self.list_stack.addWidget(self.account_list)
@@ -2657,21 +2690,21 @@ class MainWindow(QMainWindow):
         self.lbl_list_title.show()
         self.account_list.clear()
         
-        # 获取账号（使用缓存）
-        if self._cache_dirty or not self._cached_accounts:
-            if self.current_category == '__favorites__':
-                self._cached_accounts = self.account_service.get_favorites()
-            elif self.current_category == '__recent__':
-                all_accs = self.account_service.get_all_accounts()
-                all_accs.sort(key=lambda a: a.updated_at or datetime.min, reverse=True)
-                self._cached_accounts = all_accs[:20]
-            elif self.current_category == '全部':
-                self._cached_accounts = self.account_service.get_all_accounts()
-            else:
-                self._cached_accounts = self.account_service.get_accounts_by_category(self.current_category)
-            self._cache_dirty = False
+        # 全量缓存：只在数据变更时从 service 加载一次，类别切换只做内存过滤
+        if self._accounts_cache_dirty or not self._all_accounts_cache:
+            self._all_accounts_cache = self.account_service.get_all_accounts()
+            self._accounts_cache_dirty = False
         
-        accounts = self._cached_accounts.copy()
+        if self.current_category == '__favorites__':
+            accounts = [a for a in self._all_accounts_cache if a.is_favorite]
+        elif self.current_category == '__recent__':
+            accounts = sorted(self._all_accounts_cache, key=lambda a: a.updated_at or datetime.min, reverse=True)[:20]
+        elif self.current_category == '全部':
+            accounts = self._all_accounts_cache.copy()
+        else:
+            from core.category_utils import get_prefix_matcher
+            matcher = get_prefix_matcher(self.current_category)
+            accounts = [a for a in self._all_accounts_cache if matcher(a.category)]
         
         # 扁平列表显示（按拼音首字母排序：英文/中文排前面，数字符号归为#排最后）
         # 最近使用页面保持按 updated_at 排序，不重新按字母排序
@@ -2698,6 +2731,7 @@ class MainWindow(QMainWindow):
         is_compact = self._load_compact_preference()
         item_height = 32 if is_compact else 56
         col_config = self._load_column_config()
+        item_width = max(self.account_list.width() - 20, 50)
         
         # 批量添加时禁用更新与信号，避免 O(n²) 布局重算
         self.account_list.setUpdatesEnabled(False)
@@ -2705,7 +2739,7 @@ class MainWindow(QMainWindow):
         try:
             for idx, account in enumerate(accounts):
                 item = QListWidgetItem()
-                item.setSizeHint(QSize(self.account_list.width() - 20, item_height))
+                item.setSizeHint(QSize(item_width, item_height))
                 item.setData(Qt.ItemDataRole.UserRole, account)
                 self.account_list.addItem(item)
                 
@@ -2830,6 +2864,25 @@ class MainWindow(QMainWindow):
         cat_sel_mode = getattr(self, '_category_selection_mode', False)
         reorg_mode = getattr(self, '_category_reorganize_mode', False)
         
+        # 预计算所有分类计数（一次查询，避免每个节点都查库）
+        category_counts = defaultdict(int)
+        if self.current_vault == 'accounts':
+            all_items = self.account_service.get_all_accounts()
+            fav_count = sum(1 for a in all_items if a.is_favorite)
+        else:
+            all_items = self._url_service.get_all_urls()
+            fav_count = sum(1 for u in all_items if u.is_favorite)
+        
+        for item in all_items:
+            cat = getattr(item, 'category', None) or '其他'
+            category_counts[cat] += 1
+            if '>' in cat:
+                parent = cat.split('>')[0].strip()
+                category_counts[parent] += 1
+        
+        total_count = len(all_items)
+        category_counts['全部'] = total_count
+        
         # 添加"🏠 首页"节点
         home_item = QTreeWidgetItem(self.category_tree)
         home_item.setText(0, "🏠 首页")
@@ -2840,7 +2893,6 @@ class MainWindow(QMainWindow):
             home_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
         
         # 添加"⭐ 收藏"节点
-        fav_count = len(self.account_service.get_favorites()) if self.current_vault == 'accounts' else len(self._url_service.get_favorites())
         root_fav = QTreeWidgetItem(self.category_tree)
         root_fav.setText(0, f"⭐ 收藏 ({fav_count})")
         root_fav.setData(0, Qt.ItemDataRole.UserRole, "__favorites__")
@@ -2850,7 +2902,6 @@ class MainWindow(QMainWindow):
             root_fav.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
         
         # 添加"全部"节点
-        total_count = self._get_total_count()
         root_all = QTreeWidgetItem(self.category_tree)
         root_all.setText(0, f"全部 ({total_count})")
         root_all.setData(0, Qt.ItemDataRole.UserRole, "全部")
@@ -2871,7 +2922,7 @@ class MainWindow(QMainWindow):
         # 添加一级节点
         for parent_name in tree_data.keys():
             info = tree_data[parent_name]
-            count = self._get_category_count(parent_name)
+            count = category_counts.get(parent_name, 0)
             
             # 过滤空分类（保留"全部"和"其他"，以及编辑/选择/重组模式下的所有分类）
             if not edit_mode and not cat_sel_mode and not reorg_mode and parent_name not in ('全部', '其他') and count == 0 and not info['children']:
@@ -2897,7 +2948,7 @@ class MainWindow(QMainWindow):
             # 添加子节点（已按自定义排序排好序）
             for child_name in info['children']:
                 full_path = f"{parent_name}>{child_name}"
-                child_count = self._get_category_count(full_path)
+                child_count = category_counts.get(full_path, 0)
                 
                 # 导航栏过滤空子类：非编辑/选择/重组模式下，count==0 的子类不显示
                 # 但下拉框中仍保留（由 get_categories() 保证）
@@ -3076,10 +3127,10 @@ class MainWindow(QMainWindow):
         if reply == QMessageBox.StandardButton.Yes:
             if self.current_vault == 'accounts':
                 success = self.account_service.reparent_category(source_path, target_parent)
-                self._cache_dirty = True
+                self._accounts_cache_dirty = True
             else:
                 success = self._url_service.reparent_category(source_path, target_parent)
-                self._url_cache_dirty = True
+                self._urls_cache_dirty = True
             
             if success:
                 # 如果当前正查看被移动的旧分类，重置为"全部"避免显示空列表
@@ -3168,8 +3219,8 @@ class MainWindow(QMainWindow):
         
         self._selected_categories.clear()
         self._on_category_batch_delete_toggle()  # 退出选择模式
-        self._cache_dirty = True
-        self._url_cache_dirty = True
+        self._accounts_cache_dirty = True
+        self._urls_cache_dirty = True
         self.current_category = '全部'
         self._reload_categories()
         if self.current_vault == 'accounts':
@@ -3185,20 +3236,21 @@ class MainWindow(QMainWindow):
         self.lbl_list_title.show()
         self.account_list.clear()
         
-        if self._url_cache_dirty or not self._cached_urls:
-            if self.current_category == '__favorites__':
-                self._cached_urls = self._url_service.get_favorites()
-            elif self.current_category == '__recent__':
-                all_urls = self._url_service.get_all_urls()
-                all_urls.sort(key=lambda u: (getattr(u, 'updated_at', None) or (u.get('updated_at') if isinstance(u, dict) else None) or datetime.min), reverse=True)
-                self._cached_urls = all_urls[:20]
-            elif self.current_category == '全部':
-                self._cached_urls = self._url_service.get_all_urls()
-            else:
-                self._cached_urls = self._url_service.get_urls_by_category(self.current_category)
-            self._url_cache_dirty = False
+        # 全量缓存：只在数据变更时从 service 加载一次
+        if self._urls_cache_dirty or not self._all_urls_cache:
+            self._all_urls_cache = self._url_service.get_all_urls()
+            self._urls_cache_dirty = False
         
-        urls = self._cached_urls.copy()
+        if self.current_category == '__favorites__':
+            urls = [u for u in self._all_urls_cache if (u.get('is_favorite') if isinstance(u, dict) else getattr(u, 'is_favorite', False))]
+        elif self.current_category == '__recent__':
+            urls = sorted(self._all_urls_cache, key=lambda u: (getattr(u, 'updated_at', None) or (u.get('updated_at') if isinstance(u, dict) else None) or datetime.min), reverse=True)[:20]
+        elif self.current_category == '全部':
+            urls = self._all_urls_cache.copy()
+        else:
+            from core.category_utils import get_prefix_matcher
+            matcher = get_prefix_matcher(self.current_category)
+            urls = [u for u in self._all_urls_cache if matcher(u.get('category', '') if isinstance(u, dict) else getattr(u, 'category', ''))]
         
         if not urls:
             self.btn_compact_view.setChecked(False)
@@ -3225,6 +3277,7 @@ class MainWindow(QMainWindow):
         is_compact = self._load_compact_preference()
         item_height = 32 if is_compact else 56
         col_config = self._load_column_config()
+        item_width = max(self.account_list.width() - 20, 50)
         
         # 批量添加时禁用更新与信号，避免 O(n²) 布局重算
         self.account_list.setUpdatesEnabled(False)
@@ -3232,7 +3285,7 @@ class MainWindow(QMainWindow):
         try:
             for url_item in urls:
                 list_item = QListWidgetItem()
-                list_item.setSizeHint(QSize(self.account_list.width() - 20, item_height))
+                list_item.setSizeHint(QSize(item_width, item_height))
                 list_item.setData(Qt.ItemDataRole.UserRole, url_item)
                 self.account_list.addItem(list_item)
                 
@@ -3331,10 +3384,10 @@ class MainWindow(QMainWindow):
         """保存当前列表的滚动位置和选中项ID"""
         if self.current_vault == 'accounts':
             list_widget = self.account_list
-            cached = self._cached_accounts
+            cached = self._all_accounts_cache
         else:
             list_widget = self.account_list
-            cached = self._cached_urls
+            cached = self._all_urls_cache
         
         self._scroll_state = {
             'vault_type': self.current_vault,
@@ -3356,10 +3409,10 @@ class MainWindow(QMainWindow):
         
         if self.current_vault == 'accounts':
             list_widget = self.account_list
-            cached = self._cached_accounts
+            cached = self._all_accounts_cache
         else:
             list_widget = self.account_list
-            cached = self._cached_urls
+            cached = self._all_urls_cache
         
         selected_id = self._scroll_state.get('selected_id')
         if selected_id is not None:
@@ -3428,6 +3481,7 @@ class MainWindow(QMainWindow):
             self.alpha_nav.hide()
             self.lbl_list_title.hide()
             self.btn_compact_view.hide()
+            self.btn_column_settings.hide()
             return
         
         self.list_stack.setCurrentIndex(0)
@@ -3437,11 +3491,12 @@ class MainWindow(QMainWindow):
             self.alpha_nav.show()
         self.lbl_list_title.show()
         self.btn_compact_view.show()
-        self._cache_dirty = True
-        self._url_cache_dirty = True
+        self.btn_column_settings.show()
         if self.current_vault == 'accounts':
+            self._accounts_cache_dirty = True
             self.load_accounts()
         else:
+            self._urls_cache_dirty = True
             self.load_urls()
     
     def _rename_parent_category(self, old_name: str, new_name: str):
@@ -3555,8 +3610,8 @@ class MainWindow(QMainWindow):
                         return
                     self._rename_parent_category(category, new_name)
                     self._reload_categories()
-                    self._cache_dirty = True
-                    self._url_cache_dirty = True
+                    self._accounts_cache_dirty = True
+                    self._urls_cache_dirty = True
                     if self.current_category == category:
                         self.current_category = new_name
                     self.load_accounts() if self.current_vault == 'accounts' else self.load_urls()
@@ -3579,8 +3634,8 @@ class MainWindow(QMainWindow):
                     else:
                         self._url_service.rename_category(category, new_name)
                     self._reload_categories()
-                    self._cache_dirty = True
-                    self._url_cache_dirty = True
+                    self._accounts_cache_dirty = True
+                    self._urls_cache_dirty = True
                     if self.current_category == category:
                         self.current_category = new_name
                     self.load_accounts() if self.current_vault == 'accounts' else self.load_urls()
@@ -3608,8 +3663,8 @@ class MainWindow(QMainWindow):
                 else:
                     self._url_service.delete_category(category)
                 self._reload_categories()
-                self._cache_dirty = True
-                self._url_cache_dirty = True
+                self._accounts_cache_dirty = True
+                self._urls_cache_dirty = True
                 self.current_category = '全部'
                 self.load_accounts() if self.current_vault == 'accounts' else self.load_urls()
         
@@ -3637,8 +3692,8 @@ class MainWindow(QMainWindow):
             success = service.promote_category(category)
             if success:
                 self._reload_categories()
-                self._cache_dirty = True
-                self._url_cache_dirty = True
+                self._accounts_cache_dirty = True
+                self._urls_cache_dirty = True
                 self.current_category = '全部'
                 self.load_accounts() if self.current_vault == 'accounts' else self.load_urls()
                 QMessageBox.information(self, "成功", f'「{category}」已升级为一级分类「{child_name}」')
@@ -3676,8 +3731,8 @@ class MainWindow(QMainWindow):
             else:
                 data.is_favorite = new_status
             # Refresh the list to show updated state
-            self._cache_dirty = True
-            self._url_cache_dirty = True
+            self._accounts_cache_dirty = True
+            self._urls_cache_dirty = True
             if self.current_vault == 'accounts':
                 self.load_accounts()
             else:
@@ -3749,6 +3804,47 @@ class MainWindow(QMainWindow):
 
         menu.exec(self.lbl_list_title.mapToGlobal(pos))
 
+    def _on_column_settings_clicked(self):
+        """点击列设置按钮弹出菜单"""
+        btn = self.btn_column_settings
+        pos = btn.rect().bottomLeft()
+        # 复用 _show_column_menu，但使用按钮位置
+        menu = QMenu(self)
+        if self.current_vault == 'accounts':
+            columns = [
+                ('icon', '首字母图标'),
+                ('app_name', '应用名'),
+                ('username', '账号（脱敏）'),
+                ('strength', '密码强度'),
+                ('category', '分类标签'),
+                ('arrow', '右箭头'),
+            ]
+        else:
+            columns = [
+                ('icon', '首字母图标'),
+                ('app_name', '网址标题'),
+                ('url', '网址地址'),
+                ('category', '分类标签'),
+                ('arrow', '右箭头'),
+            ]
+
+        col_config = self._load_column_config()
+
+        for key, label in columns:
+            action = menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(col_config.get(key, True))
+            action.setData(key)
+            action.toggled.connect(lambda checked, k=key: self._toggle_column(k, checked))
+
+        for action in menu.actions():
+            if action.data() == 'app_name':
+                action.setEnabled(False)
+                action.setChecked(True)
+                break
+
+        menu.exec(btn.mapToGlobal(pos))
+
     def _toggle_column(self, key, visible):
         config = self._load_column_config()
         config[key] = visible
@@ -3803,7 +3899,7 @@ class MainWindow(QMainWindow):
         self.btn_sel_delete.setText(f"删除({count})")
         self.lbl_list_title.setText(f"已选择 {count} 项")
         # 全选按钮文字切换
-        total = len(self._cached_accounts) if self.current_vault == 'accounts' else len(self._cached_urls)
+        total = len(self._all_accounts_cache) if self.current_vault == 'accounts' else len(self._all_urls_cache)
         self.btn_sel_all.setText("取消全选" if count == total and total > 0 else "全选")
         self.bottom_bar.hide()
         self.selection_bottom_bar.show()
@@ -3816,13 +3912,13 @@ class MainWindow(QMainWindow):
     def _toggle_select_all(self):
         """全选/取消全选"""
         if self.current_vault == 'accounts':
-            accounts = self._cached_accounts
+            accounts = self._all_accounts_cache
             if len(self._selected_ids) == len(accounts):
                 self._selected_ids.clear()
             else:
                 self._selected_ids = {acc.id for acc in accounts if acc.id}
         else:
-            urls = self._cached_urls
+            urls = self._all_urls_cache
             if len(self._selected_ids) == len(urls):
                 self._selected_ids.clear()
             else:
@@ -3933,6 +4029,7 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.StandardButton.Yes:
             return
         
+        affected_ids = []
         count = 0
         db = self.db if self.current_vault == 'accounts' else self._url_db
         with db.transaction():
@@ -3943,12 +4040,14 @@ class MainWindow(QMainWindow):
                         if acc:
                             acc.category = category
                             self.account_service.update_account(acc)
+                            affected_ids.append(item_id)
                             count += 1
                     else:
                         url = self._url_service.get_url(item_id)
                         if url:
                             url.category = category
                             self._url_service.update_url(url)
+                            affected_ids.append(item_id)
                             count += 1
                 except Exception as e:
                     logger.warning(f"Batch categorize failed for {item_id}: {e}")
@@ -3956,6 +4055,8 @@ class MainWindow(QMainWindow):
         self._exit_selection_mode()
         self._smart_refresh()
         self._reload_categories()
+        if affected_ids:
+            self.highlight_matched_accounts(affected_ids, query_text=f"批量分类 → {category}")
         QMessageBox.information(self, "完成", f"已成功移动 {count} 个条目到「{category}」")
     
     def _execute_batch_tag(self):
@@ -3986,6 +4087,7 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.StandardButton.Yes:
             return
         
+        affected_ids = []
         count = 0
         db = self.db if self.current_vault == 'accounts' else self._url_db
         with db.transaction():
@@ -3999,6 +4101,7 @@ class MainWindow(QMainWindow):
                             else:
                                 acc.remove_tag(tag)
                             self.account_service.update_account(acc)
+                            affected_ids.append(item_id)
                             count += 1
                     else:
                         url = self._url_service.get_url(item_id)
@@ -4008,12 +4111,15 @@ class MainWindow(QMainWindow):
                             else:
                                 url.remove_tag(tag)
                             self._url_service.update_url(url)
+                            affected_ids.append(item_id)
                             count += 1
                 except Exception as e:
                     logger.warning(f"Batch tag failed for {item_id}: {e}")
         
         self._exit_selection_mode()
         self._smart_refresh()
+        if affected_ids:
+            self.highlight_matched_accounts(affected_ids, query_text=f"批量标签 → {action}「{tag}」")
         QMessageBox.information(self, "完成", f"已成功{action} {count} 个条目的标签")
     
     def show_undo_banner(self, count, deleted_items):
@@ -4069,8 +4175,8 @@ class MainWindow(QMainWindow):
                     logger.warning(f"Failed to restore url: {e}")
         
         self._dismiss_undo_banner()
-        self._cache_dirty = True
-        self._url_cache_dirty = True
+        self._accounts_cache_dirty = True
+        self._urls_cache_dirty = True
         self._smart_refresh()
         self._reload_categories()
         logger.info(f"Undo: restored {restored} items")
@@ -4086,6 +4192,10 @@ class MainWindow(QMainWindow):
     
     def on_account_clicked(self, item):
         """账号/网址点击事件"""
+        # 拖动选择过程中屏蔽 itemClicked，避免与 _on_drag_select_move 冲突
+        if self._drag_in_progress:
+            return
+        
         if self._selection_mode:
             # 选择模式下：点击条目任意位置都切换勾选状态
             data = item.data(Qt.ItemDataRole.UserRole)
@@ -4106,6 +4216,7 @@ class MainWindow(QMainWindow):
                             self._selected_ids.add(item_id)
                         else:
                             self._selected_ids.discard(item_id)
+                        self._last_selected_index = self.account_list.row(item)
                         self._update_bottom_bar_for_selection()
             return
         
@@ -4172,7 +4283,7 @@ class MainWindow(QMainWindow):
             logger.debug(f" AccountDialog exec: {(t2-t1)*1000:.1f} ms")
             if result == AccountDialog.DialogCode.Accepted:
                 new_id = dialog.account.id if dialog.account else None
-                self._cache_dirty = True
+                self._accounts_cache_dirty = True
                 self.current_category = '全部'
                 self._view_mode = 'default'
                 self._highlight_matched_ids = None
@@ -4191,7 +4302,7 @@ class MainWindow(QMainWindow):
             dialog = URLEditDialog(self._url_service, URLItem(), parent=self)
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 new_id = dialog.url_item.id if dialog.url_item else None
-                self._url_cache_dirty = True
+                self._urls_cache_dirty = True
                 self.current_category = '全部'
                 self._view_mode = 'default'
                 self._highlight_matched_ids = None
@@ -4593,7 +4704,7 @@ class MainWindow(QMainWindow):
         
         if result == ImportDialog.DialogCode.Accepted:
             # 刷新账号列表
-            self._cache_dirty = True
+            self._accounts_cache_dirty = True
             self.load_accounts()
             self._restore_scroll_state()
             self._reload_categories()
@@ -4658,7 +4769,7 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 logger.warning("Manager import failed for %s: %s", item.get('app_name', '?'), e)
 
-        self._cache_dirty = True
+        self._accounts_cache_dirty = True
         self.load_accounts()
         self._reload_categories()
         QMessageBox.information(self, "导入完成", f"成功导入 {imported} 个条目")
@@ -5037,6 +5148,20 @@ class MainWindow(QMainWindow):
             }}
         """)
         self.btn_compact_view.setIcon(IconManager.compact_icon(size=16, color=colors.text_secondary))
+        self.btn_column_settings.setStyleSheet(f"""
+            QPushButton {{
+                border: 1px solid {colors.border_default};
+                background-color: {colors.bg_tertiary};
+                border-radius: 4px;
+                font-size: 14px;
+                color: {colors.text_secondary};
+            }}
+            QPushButton:hover {{
+                background-color: {colors.bg_hover};
+                border-color: {colors.border_medium};
+            }}
+        """)
+        self.btn_column_settings.setIcon(IconManager.settings_icon(size=16, color=colors.text_secondary))
         self.btn_help.setIcon(IconManager.help_icon(size=20, color=colors.accent_orange))
 
         # === 筛选面板 ===
@@ -5242,7 +5367,7 @@ class MainWindow(QMainWindow):
         
         # 执行操作
         if action in ('search', 'filter', 'list'):
-            action_result = self.ai_assistant.execute_action(action, params, self._cached_accounts)
+            action_result = self.ai_assistant.execute_action(action, params, self._all_accounts_cache)
             matched = action_result.get('matched_accounts', [])
             if matched:
                 self._ai_display_results_in_list(matched, query)
@@ -5466,7 +5591,7 @@ class MainWindow(QMainWindow):
         try:
             logger.info(f" Building action_preview for action={action}")
             # 1. 生成结构化操作预览（根据当前 vault 传正确缓存）
-            context_items = self._cached_accounts if self.current_vault == 'accounts' else self._cached_urls
+            context_items = self._all_accounts_cache if self.current_vault == 'accounts' else self._all_urls_cache
             action_preview = self.ai_assistant.build_action_preview(
                 action, params, context_items, self.current_vault
             )
@@ -5512,12 +5637,12 @@ class MainWindow(QMainWindow):
                     # 从缓存中查找显示名
                     display_name = f"ID:{target_id}"
                     if self.current_vault == 'accounts':
-                        for acc in self._cached_accounts or []:
+                        for acc in self._all_accounts_cache or []:
                             if getattr(acc, 'id', None) == target_id:
                                 display_name = getattr(acc, 'app_name', display_name)
                                 break
                     else:
-                        for url in self._cached_urls or []:
+                        for url in self._all_urls_cache or []:
                             if getattr(url, 'id', None) == target_id:
                                 display_name = getattr(url, 'title', display_name)
                                 break
@@ -5737,8 +5862,8 @@ class MainWindow(QMainWindow):
             
             # 刷新列表和缓存
             self.clear_account_highlight()
-            self._cache_dirty = True
-            self._url_cache_dirty = True
+            self._accounts_cache_dirty = True
+            self._urls_cache_dirty = True
             self._reload_categories()
             if self.current_vault == 'accounts':
                 self.load_accounts()
@@ -5814,16 +5939,16 @@ class MainWindow(QMainWindow):
         
         # 获取当前上下文
         if self.current_vault == 'accounts':
-            if self._cache_dirty or not self._cached_accounts:
-                self._cached_accounts = self.account_service.get_all_accounts()
-                self._cache_dirty = False
-            context = self._cached_accounts
+            if self._accounts_cache_dirty or not self._all_accounts_cache:
+                self._all_accounts_cache = self.account_service.get_all_accounts()
+                self._accounts_cache_dirty = False
+            context = self._all_accounts_cache
             vault_type = 'accounts'
         else:
-            if self._url_cache_dirty or not self._cached_urls:
-                self._cached_urls = self._url_service.get_all_urls()
-                self._url_cache_dirty = False
-            context = self._cached_urls
+            if self._urls_cache_dirty or not self._all_urls_cache:
+                self._all_urls_cache = self._url_service.get_all_urls()
+                self._urls_cache_dirty = False
+            context = self._all_urls_cache
             vault_type = 'urls'
         
         # 构造更丰富的上下文查询，让 AI 能精准继续
@@ -5908,8 +6033,8 @@ class MainWindow(QMainWindow):
                 else:
                     result_msg = f"❌ 导入失败：{result.get('error', '未知错误')}"
                 
-                self._cache_dirty = True
-                self._url_cache_dirty = True
+                self._accounts_cache_dirty = True
+                self._urls_cache_dirty = True
                 if vault_type == 'accounts':
                     self.load_accounts()
                 else:
@@ -5965,11 +6090,11 @@ class MainWindow(QMainWindow):
         if not self.ai_assistant.conversation_context._db_summary_loaded:
             try:
                 if self.current_vault == 'accounts':
-                    accounts = (self._cached_accounts if self._cached_accounts and not self._cache_dirty
+                    accounts = (self._all_accounts_cache if self._all_accounts_cache and not self._accounts_cache_dirty
                                 else self.account_service.get_all_accounts())
                     summary = self.ai_assistant.build_db_summary(accounts, vault_type='accounts')
                 else:
-                    urls = (self._cached_urls if self._cached_urls and not self._url_cache_dirty
+                    urls = (self._all_urls_cache if self._all_urls_cache and not self._urls_cache_dirty
                             else self._url_service.get_all_urls())
                     summary = self.ai_assistant.build_db_summary(urls=urls, vault_type='urls')
                 self.ai_assistant.conversation_context.set_db_summary(summary, self.current_vault)
@@ -6115,7 +6240,7 @@ class MainWindow(QMainWindow):
         params = result.get('params', {})
         
         # 根据当前 vault 确定上下文数据
-        context_items = self._cached_accounts if self.current_vault == 'accounts' else self._cached_urls
+        context_items = self._all_accounts_cache if self.current_vault == 'accounts' else self._all_urls_cache
         vault_type = self.current_vault
         item_name = "账号" if self.current_vault == 'accounts' else "网址"
         
@@ -6232,7 +6357,7 @@ class MainWindow(QMainWindow):
                 if action in BATCH_ADD_ACTIONS:
                     # 批量导入预览
                     vault_type = 'accounts' if action == 'batch_add_account' else 'urls'
-                    context = self._cached_accounts if vault_type == 'accounts' else self._cached_urls
+                    context = self._all_accounts_cache if vault_type == 'accounts' else self._all_urls_cache
                     preview = self.ai_assistant.build_action_preview(action, params, context, vault_type)
                     batch_items = []
                     for item in preview.get('preview_items', []):
@@ -6384,8 +6509,8 @@ class MainWindow(QMainWindow):
             return
         self._save_scroll_state()
         try:
-            self._cache_dirty = True
-            self._url_cache_dirty = True
+            self._accounts_cache_dirty = True
+            self._urls_cache_dirty = True
             
             if self._view_mode == 'search':
                 text = self.search_box.text().strip()
@@ -6416,21 +6541,21 @@ class MainWindow(QMainWindow):
     
     def _reapply_ai_highlight(self):
         """重新应用当前的 AI 高亮筛选（数据变更后刷新）"""
-        self._cache_dirty = True
-        self._url_cache_dirty = True
+        self._accounts_cache_dirty = True
+        self._urls_cache_dirty = True
         if self.current_vault == 'accounts':
-            self._cached_accounts = self.account_service.get_all_accounts()
-            self._cache_dirty = False
+            self._all_accounts_cache = self.account_service.get_all_accounts()
+            self._accounts_cache_dirty = False
         else:
-            self._cached_urls = self._url_service.get_all_urls()
-            self._url_cache_dirty = False
+            self._all_urls_cache = self._url_service.get_all_urls()
+            self._urls_cache_dirty = False
         
         matched_ids = list(self._highlight_matched_ids)
         self.highlight_matched_accounts(matched_ids, query_text=self._highlight_reasoning or "AI筛选")
 
     def _refresh_account_list(self):
         """刷新账号列表"""
-        self._cache_dirty = True
+        self._accounts_cache_dirty = True
         self.load_accounts()
     
     def _append_ai_system_msg(self, content: str):
@@ -6710,6 +6835,7 @@ class MainWindow(QMainWindow):
         # 隐藏列表标题和紧凑视图按钮（筛选信息已在横幅中显示）
         self.lbl_list_title.hide()
         self.btn_compact_view.hide()
+        self.btn_column_settings.hide()
         
         # 显示匹配项（置顶，蓝色边框）
         if matched_items:
@@ -6819,6 +6945,7 @@ class MainWindow(QMainWindow):
         # 恢复列表标题和紧凑视图按钮显示
         self.lbl_list_title.show()
         self.btn_compact_view.show()
+        self.btn_column_settings.show()
         if self.current_vault == 'accounts':
             self.load_accounts()
         else:
@@ -6913,7 +7040,7 @@ class MainWindow(QMainWindow):
         """确认对话框关闭后的回调（非模态，避免 exec() 崩溃）"""
         if result_code == int(QMessageBox.StandardButton.Yes):
             # 执行操作
-            action_result = self.ai_assistant.execute_action(action, params, self._cached_accounts)
+            action_result = self.ai_assistant.execute_action(action, params, self._all_accounts_cache)
             result_msg = action_result.get('message', '✅ 已执行操作。')
             
             # 刷新列表（如果操作影响了数据）
@@ -6978,7 +7105,32 @@ class MainWindow(QMainWindow):
                 event.Type.Wheel,
             ):
                 self._idle_timer.reset()
+        
         return super().eventFilter(watched, event)
+    
+    def _on_drag_select_move(self, pos):
+        """拖动选择：根据鼠标位置切换条目选中状态"""
+        item = self.account_list.itemAt(pos)
+        if not item:
+            return
+        data = item.data(Qt.ItemDataRole.UserRole)
+        if not data:
+            return
+        item_id = getattr(data, 'id', None) or (data.get('id') if isinstance(data, dict) else None)
+        if item_id is None or item_id in self._drag_checked_ids:
+            return
+        self._drag_checked_ids.add(item_id)
+        
+        widget = self.account_list.itemWidget(item)
+        if widget and hasattr(widget, 'set_checked') and hasattr(widget, 'is_checked'):
+            # 切换选中状态
+            if widget.is_checked():
+                widget.set_checked(False)
+                self._selected_ids.discard(item_id)
+            else:
+                widget.set_checked(True)
+                self._selected_ids.add(item_id)
+            self._update_bottom_bar_for_selection()
     
     def show_lock_screen(self):
         """显示锁定屏幕"""
@@ -7131,12 +7283,12 @@ class MainWindow(QMainWindow):
             self.list_stack.setCurrentIndex(0)
             self.alpha_nav.show()
             self.current_category = '全部'
-            self._cache_dirty = True
+            self._accounts_cache_dirty = True
             self.load_accounts()
             if data in ('弱', '中', '强', '极强'):
                 from core.password_strength import evaluate_password_strength
                 matched = []
-                for acc in self._cached_accounts:
+                for acc in self._all_accounts_cache:
                     try:
                         r = evaluate_password_strength(acc.password or '')
                         if r['label'] == data:
@@ -7156,7 +7308,7 @@ class MainWindow(QMainWindow):
             items = data.get('items', [])
             if items:
                 self.current_category = '全部'
-                self._cache_dirty = True
+                self._accounts_cache_dirty = True
                 self.load_accounts()
                 ids = [acc.id for acc in items if hasattr(acc, 'id')]
                 if ids:
@@ -7196,8 +7348,8 @@ class MainWindow(QMainWindow):
             dialog = RecycleBinDialog(self._url_db, vault_type='urls', parent=self)
         dialog.exec()
         # 恢复后刷新
-        self._cache_dirty = True
-        self._url_cache_dirty = True
+        self._accounts_cache_dirty = True
+        self._urls_cache_dirty = True
         self._reload_categories()
         if self.current_vault == 'accounts':
             self.load_accounts()

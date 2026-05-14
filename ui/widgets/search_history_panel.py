@@ -130,3 +130,7 @@ class SearchHistoryPanel(QWidget):
         QTimer.singleShot(0, lambda: self.btn_done.setVisible(False))
         for pill in self._pills:
             pill.set_edit_mode(False)
+
+    def on_theme_changed(self):
+        """主题切换时更新样式（当前无需特殊处理）"""
+        pass

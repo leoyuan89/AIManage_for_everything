@@ -19,7 +19,8 @@ from PyQt6.QtWidgets import (
     QLabel, QFrame, QSplitter, QMessageBox, QApplication,
     QMenu, QCheckBox, QDialog, QInputDialog, QTextBrowser, QTextEdit,
     QTableWidget, QTableWidgetItem, QHeaderView,
-    QDateEdit, QComboBox, QStackedWidget, QCalendarWidget, QSizePolicy
+    QDateEdit, QComboBox, QStackedWidget, QCalendarWidget, QSizePolicy,
+    QToolButton
 )
 from PyQt6.QtCore import Qt, QSize, QTimer, QThread, pyqtSignal, QPoint, QStringListModel, QDate
 from PyQt6.QtGui import QIcon, QFont, QColor, QTextCursor, QPainter, QPixmap, QBrush, QPen
@@ -1791,6 +1792,15 @@ class MainWindow(QMainWindow):
         self.filter_category.addItem("全部", None)
         filter_wrap_layout.addWidget(self.filter_category)
         
+        self.lbl_filter_tags = QLabel("标签:")
+        self.lbl_filter_tags.setStyleSheet(label_style)
+        filter_wrap_layout.addWidget(self.lbl_filter_tags)
+        self.filter_tags = QComboBox()
+        self.filter_tags.setStyleSheet(combo_style)
+        self.filter_tags.setMinimumWidth(120)
+        self.filter_tags.addItem("全部标签", None)
+        filter_wrap_layout.addWidget(self.filter_tags)
+        
         self.lbl_filter_created = QLabel("创建:")
         self.lbl_filter_created.setStyleSheet(label_style)
         filter_wrap_layout.addWidget(self.lbl_filter_created)
@@ -1813,12 +1823,12 @@ class MainWindow(QMainWindow):
         self.filter_date_to.setDisplayFormat("yyyy-MM-dd")
         filter_wrap_layout.addWidget(self.filter_date_to)
         
-        self.lbl_filter_strength = QLabel("强度:")
+        self.lbl_filter_strength = QLabel("密码强度:")
         self.lbl_filter_strength.setStyleSheet(label_style)
         filter_wrap_layout.addWidget(self.lbl_filter_strength)
         self.filter_strength = QComboBox()
         self.filter_strength.setStyleSheet(combo_style)
-        self.filter_strength.setMinimumWidth(70)
+        self.filter_strength.setMinimumWidth(100)
         self.filter_strength.addItems(["全部", "弱", "中", "强", "极强"])
         filter_wrap_layout.addWidget(self.filter_strength)
         
@@ -2860,11 +2870,15 @@ class MainWindow(QMainWindow):
             self.lbl_list_title.setText("全部账号")
             self.search_box.setPlaceholderText("搜索账号（应用名/网址/备注），按回车搜索...")
             self.btn_add.setText("+ 添加账号")
+            self.lbl_filter_strength.setVisible(True)
+            self.filter_strength.setVisible(True)
         else:
             self.current_vault = 'urls'
             self.lbl_list_title.setText("全部网址")
             self.search_box.setPlaceholderText("搜索网址（标题/网址/备注）...")
             self.btn_add.setText("+ 添加网址")
+            self.lbl_filter_strength.setVisible(False)
+            self.filter_strength.setVisible(False)
         
         if self.dashboard is not None:
             self.dashboard.set_vault(self.current_vault)
@@ -3069,6 +3083,7 @@ class MainWindow(QMainWindow):
         
         if self.filter_panel.isVisible():
             self._populate_filter_categories()
+            self._populate_filter_tags()
         
         # 重建完成后重新连接 itemChanged
         self.category_tree.itemChanged.connect(self._on_category_check_changed)
@@ -4459,6 +4474,41 @@ class MainWindow(QMainWindow):
             self.filter_panel.setVisible(checked)
             if checked:
                 self._populate_filter_categories()
+                self._populate_filter_tags()
+                colors = ThemeManager.instance().colors
+                label_style = f"color: {colors.text_primary}; font-size: 12px;"
+                combo_style = f"""
+                    QComboBox {{
+                        background-color: {colors.bg_primary};
+                        color: {colors.text_primary};
+                        border: 1px solid {colors.border_default};
+                        border-radius: 4px;
+                        padding: 2px 8px;
+                    }}
+                    QComboBox QAbstractItemView {{
+                        background-color: {colors.bg_primary};
+                        color: {colors.text_primary};
+                        border: 1px solid {colors.border_default};
+                    }}
+                """
+                self.lbl_filter_tags.setStyleSheet(label_style)
+                self.filter_tags.setStyleSheet(combo_style)
+                self.btn_apply_filter.setStyleSheet(style_button_primary(colors))
+                self.btn_clear_filter.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {colors.bg_tertiary};
+                        color: {colors.text_primary};
+                        border: 1px solid {colors.border_default};
+                        border-radius: 4px;
+                        padding: 4px 12px;
+                    }}
+                    QPushButton:hover {{
+                        background-color: {colors.bg_hover};
+                    }}
+                """)
+                is_accounts = self.current_vault == 'accounts'
+                self.lbl_filter_strength.setVisible(is_accounts)
+                self.filter_strength.setVisible(is_accounts)
                 self._fix_calendar_style()
                 self._set_filter_earliest_date()
             else:
@@ -4477,35 +4527,95 @@ class MainWindow(QMainWindow):
         try:
             cal_from = self.filter_date_from.calendarWidget()
             cal_to = self.filter_date_to.calendarWidget()
-            calendar_style = """
-                QCalendarWidget {
+            colors = ThemeManager.instance().colors
+            calendar_style = f"""
+                QCalendarWidget {{
                     font-size: 13px;
                     min-width: 360px;
-                }
-                QCalendarWidget QToolButton {
+                    background-color: {colors.bg_primary};
+                }}
+                QCalendarWidget QToolButton {{
                     font-size: 14px;
                     padding: 4px 8px;
-                }
-                QCalendarWidget QWidget#qt_calendar_navigationbar {
+                    color: {colors.text_primary};
+                    background-color: {colors.bg_tertiary};
+                    border: 1px solid {colors.border_default};
+                    border-radius: 4px;
+                }}
+                QCalendarWidget QToolButton:hover {{
+                    background-color: {colors.bg_hover};
+                }}
+                QCalendarWidget QWidget#qt_calendar_navigationbar {{
                     min-height: 36px;
-                }
-                QCalendarWidget QAbstractItemView {
+                    background-color: {colors.bg_secondary};
+                }}
+                QCalendarWidget QAbstractItemView {{
                     font-size: 13px;
                     min-width: 340px;
-                    selection-background-color: #1976D2;
-                }
+                    selection-background-color: {colors.accent_blue};
+                    color: {colors.text_primary};
+                    background-color: {colors.bg_primary};
+                }}
+                QCalendarWidget QMenu {{
+                    background-color: {colors.bg_primary};
+                    color: {colors.text_primary};
+                    border: 1px solid {colors.border_default};
+                }}
+                QCalendarWidget QMenu::item:selected {{
+                    background-color: {colors.accent_blue};
+                    color: {colors.text_on_accent};
+                }}
             """
             for cal in [cal_from, cal_to]:
                 if cal:
                     cal.setStyleSheet(calendar_style)
                     cal.setGridVisible(True)
                     cal.setVerticalHeaderFormat(
-                        QCalendarWidget.VerticalHeaderFormat.ISOWeekNumbers
-                        if hasattr(QCalendarWidget, 'VerticalHeaderFormat') else 1
+                        QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader
                     )
+                    # 为翻页按钮添加文字标识，避免无图标时显示为空白块
+                    prev_btn = cal.findChild(QToolButton, "qt_calendar_prevmonth")
+                    next_btn = cal.findChild(QToolButton, "qt_calendar_nextmonth")
+                    month_btn = cal.findChild(QToolButton, "qt_calendar_monthbutton")
+                    year_btn = cal.findChild(QToolButton, "qt_calendar_yearbutton")
+                    if prev_btn:
+                        prev_btn.setText("<")
+                        prev_btn.setFixedWidth(32)
+                    if next_btn:
+                        next_btn.setText(">")
+                        next_btn.setFixedWidth(32)
+                    if month_btn:
+                        month_btn.setMinimumWidth(70)
+                        month_btn.setMaximumWidth(90)
+                    if year_btn:
+                        year_btn.setMinimumWidth(55)
+                        year_btn.setMaximumWidth(70)
+                        # 断开默认年份菜单，改为弹出输入框直接输入年份
+                        try:
+                            year_btn.clicked.disconnect()
+                        except Exception:
+                            pass
+                        year_btn.clicked.connect(lambda checked, c=cal: self._pick_year_for_calendar(c))
             self._calendar_style_applied = True
         except Exception as e:
-            logger.debug("设置日历样式失败: %s", e)
+            logger.debug("日历样式修复失败: %s", e)
+    
+    def _pick_year_for_calendar(self, cal: QCalendarWidget):
+        """弹出输入框直接选择年份，替代默认的长列表菜单"""
+        try:
+            current_date = cal.selectedDate()
+            current_year = current_date.year()
+            year, ok = QInputDialog.getInt(
+                self, "选择年份", "请输入年份：", current_year, 1900, 2100, 1
+            )
+            if ok and year != current_year:
+                # 保持月份，日期限制为该月最大天数
+                max_day = QDate(year, current_date.month(), 1).daysInMonth()
+                new_day = min(current_date.day(), max_day)
+                new_date = QDate(year, current_date.month(), new_day)
+                cal.setSelectedDate(new_date)
+        except Exception as e:
+            logger.debug("年份选择失败: %s", e)
     
     def _set_filter_earliest_date(self):
         try:
@@ -4550,6 +4660,26 @@ class MainWindow(QMainWindow):
                 self.filter_category.addItem(cat, cat)
         self.filter_category.blockSignals(False)
     
+    def _populate_filter_tags(self):
+        self.filter_tags.blockSignals(True)
+        self.filter_tags.clear()
+        self.filter_tags.addItem("全部标签", None)
+        tags = set()
+        try:
+            if self.current_vault == 'accounts':
+                items = self.account_service.get_all_accounts()
+            else:
+                items = self._url_service.get_all_urls()
+            for item in items:
+                tag_list = item.get_tags_list() if hasattr(item, 'get_tags_list') else []
+                tags.update(tag_list)
+        except Exception:
+            pass
+        for tag in sorted(tags):
+            if tag:
+                self.filter_tags.addItem(tag, tag)
+        self.filter_tags.blockSignals(False)
+    
     def _has_active_filters(self):
         if not self.filter_panel.isVisible():
             return False
@@ -4560,6 +4690,8 @@ class MainWindow(QMainWindow):
         if self.filter_date_from.date() != self._filter_earliest_date:
             return True
         if self.filter_date_to.date() != QDate.currentDate():
+            return True
+        if self.filter_tags.currentData() is not None:
             return True
         return False
     
@@ -4576,6 +4708,7 @@ class MainWindow(QMainWindow):
             logger.error("筛选执行失败: %s", e, exc_info=True)
     
     def _on_clear_filter(self):
+        self.filter_tags.setCurrentIndex(0)
         self.filter_category.setCurrentIndex(0)
         self.filter_date_from.setDate(self._filter_earliest_date)
         self.filter_date_to.setDate(QDate.currentDate())
@@ -4599,6 +4732,8 @@ class MainWindow(QMainWindow):
         flt_category = self.filter_category.currentData()
         flt_strength = self.filter_strength.currentText() if self.filter_strength.currentText() != '全部' else None
 
+        flt_tags = self.filter_tags.currentData()
+
         from_date = self.filter_date_from.date()
         to_date = self.filter_date_to.date()
         flt_date_from = None
@@ -4619,6 +4754,8 @@ class MainWindow(QMainWindow):
                 flt.date_from = flt_date_from
             if flt_date_to:
                 flt.date_to = flt_date_to
+            if flt_tags:
+                flt.tags = flt_tags
             results = self.search_service.search_advanced(text, all_items, flt)
             self._display_search_results(results, all_accounts=all_items)
             return
@@ -4628,6 +4765,10 @@ class MainWindow(QMainWindow):
             match = True
             if flt_category and (item.category if hasattr(item, 'category') else item.get('category', '')) != flt_category:
                 match = False
+            if match and flt_tags:
+                item_tags = item.get_tags_list() if hasattr(item, 'get_tags_list') else []
+                if flt_tags not in item_tags:
+                    match = False
             if match and flt_strength and is_accounts:
                 from core.password_strength import evaluate_password_strength
                 s = evaluate_password_strength(item.password or '')
@@ -4983,8 +5124,10 @@ class MainWindow(QMainWindow):
             self.update()
 
     def _on_theme_changed(self, theme_name: str):
-        """主题切换后重建 UI 样式（由 ThemeManager 信号触发）"""
+        """主题切换后重建 UI 样式（由ThemeManager信号触发）"""
         self._reapply_styles(ThemeManager.instance().colors)
+        # 重置日历样式标志，确保下次打开日历时应用新主题色
+        self._calendar_style_applied = False
         # 批量更新列表项，冻结列表避免中间重绘
         self.account_list.setUpdatesEnabled(False)
         try:
@@ -4996,7 +5139,7 @@ class MainWindow(QMainWindow):
         finally:
             self.account_list.setUpdatesEnabled(True)
         # 更新搜索历史面板主题
-        if hasattr(self, 'search_history_panel'):
+        if hasattr(self, 'search_history_panel') and hasattr(self.search_history_panel, 'on_theme_changed'):
             self.search_history_panel.on_theme_changed()
         # AI 聊天区域需要全量重建以应用新主题色
         self._ai_update_chat_display()
@@ -5387,10 +5530,25 @@ class MainWindow(QMainWindow):
         self.lbl_filter_created.setStyleSheet(label_style)
         self.lbl_filter_to.setStyleSheet(label_style)
         self.lbl_filter_strength.setStyleSheet(label_style)
+        self.lbl_filter_tags.setStyleSheet(label_style)
         self.filter_category.setStyleSheet(combo_style)
         self.filter_date_from.setStyleSheet(date_style)
         self.filter_date_to.setStyleSheet(date_style)
         self.filter_strength.setStyleSheet(combo_style)
+        self.filter_tags.setStyleSheet(combo_style)
+        self.btn_apply_filter.setStyleSheet(style_button_primary(colors))
+        self.btn_clear_filter.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors.bg_tertiary};
+                color: {colors.text_primary};
+                border: 1px solid {colors.border_default};
+                border-radius: 4px;
+                padding: 4px 12px;
+            }}
+            QPushButton:hover {{
+                background-color: {colors.bg_hover};
+            }}
+        """)
 
         # === AI 筛选横幅清除按钮 ===
         self.btn_clear_ai_filter.setStyleSheet(f"""
@@ -7089,9 +7247,7 @@ class MainWindow(QMainWindow):
                 container_layout = QVBoxLayout(container)
                 container_layout.setContentsMargins(0, 0, 0, 0)
                 container_layout.addWidget(widget)
-                # 让原 widget 背景透明（追加而非覆盖，保留所有子控件样式）
-                old_ss = widget.styleSheet()
-                widget.setStyleSheet(old_ss + f"\n#accountListItem {{ background-color: transparent; border: none; }}")
+                # 让原 widget 背景透明（样式表由 widget 自身维护，避免覆盖 checkbox 样式）
                 widget.setAutoFillBackground(False)
                 # 分类标签背景也透明
                 if hasattr(widget, 'lbl_category'):
@@ -7130,9 +7286,8 @@ class MainWindow(QMainWindow):
                 if self._selection_mode and str(getattr(item_obj, 'id', None)) in {str(s) for s in self._selected_ids}:
                     if hasattr(widget, 'set_checked'):
                         widget.set_checked(True)
-                # 降低可见度
-                if hasattr(widget, 'styleSheet'):
-                    widget.setStyleSheet(widget.styleSheet() + f"QLabel {{ color: {colors.text_disabled}; }}")
+                # 降低可见度（自绘 widget 不受 QLabel 样式影响，且 setStyleSheet 会覆盖 checkbox 样式）
+                # 视觉降级由 QListWidgetItem::setForeground 和 paintEvent 逻辑共同处理
                 col_config = self._load_column_config()
                 for key, visible in col_config.items():
                     if not visible:

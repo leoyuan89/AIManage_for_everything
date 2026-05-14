@@ -9,6 +9,16 @@ import os
 import faulthandler
 faulthandler.enable()
 
+
+def _global_excepthook(exc_type, exc_value, exc_traceback):
+    """全局未捕获异常处理：记录日志并打印到 stderr"""
+    import traceback
+    logger = logging.getLogger(__name__)
+    logger.error("未捕获的异常: %s", exc_value, exc_info=(exc_type, exc_value, exc_traceback))
+    traceback.print_exception(exc_type, exc_value, exc_traceback)
+
+sys.excepthook = _global_excepthook
+
 # 设置 UTF-8 编码（Windows 兼容）
 if sys.platform == 'win32':
     import locale

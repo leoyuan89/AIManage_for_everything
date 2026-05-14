@@ -6,7 +6,7 @@ import logging
 from PyQt6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLineEdit, QLabel, QTextEdit,
-    QMessageBox, QFrame, QComboBox
+    QMessageBox, QFrame
 )
 from PyQt6.QtCore import Qt
 
@@ -118,9 +118,9 @@ class URLEditDialog(QDialog):
         lbl_category.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         category_layout.addWidget(lbl_category)
         
-        self.cmb_parent = QComboBox()
-        self.cmb_parent.setEditable(True)
-        self.cmb_parent.setPlaceholderText("请选择")
+        from ui.widgets.clickable_combo_box import ClickableComboBox
+        self.cmb_parent = ClickableComboBox()
+        self.cmb_parent.setPlaceholderText("自定义")
         self.cmb_parent.setFixedHeight(36)
         self.cmb_parent.currentTextChanged.connect(self._on_parent_changed)
         self.cmb_parent.currentTextChanged.connect(self._mark_dirty)
@@ -131,8 +131,7 @@ class URLEditDialog(QDialog):
         lbl_sep.setAlignment(Qt.AlignmentFlag.AlignCenter)
         category_layout.addWidget(lbl_sep)
         
-        self.cmb_child = QComboBox()
-        self.cmb_child.setEditable(True)
+        self.cmb_child = ClickableComboBox()
         self.cmb_child.setPlaceholderText("子类（可选）")
         self.cmb_child.setFixedHeight(36)
         self.cmb_child.currentTextChanged.connect(self._mark_dirty)
@@ -274,13 +273,13 @@ class URLEditDialog(QDialog):
         """加载主类下拉框"""
         tree = self.url_service.get_category_tree()
         self.cmb_parent.clear()
-        self.cmb_parent.addItem("请选择")
+        self.cmb_parent.addItem("自定义")
         self.cmb_parent.addItems(sorted(tree.keys()))
     
     def _on_parent_changed(self, parent_name):
         """主类改变时更新子类下拉框"""
         self.cmb_child.clear()
-        self.cmb_child.addItem("")  # 空表示无子类（一级分类）
+        self.cmb_child.addItem("自定义")  # 自定义表示无子类（一级分类）
         
         tree = self.url_service.get_category_tree()
         if parent_name in tree:
@@ -352,7 +351,7 @@ class URLEditDialog(QDialog):
             return
         
         current_parent = self.cmb_parent.currentText().strip()
-        if not current_parent or current_parent == "请选择":
+        if not current_parent or current_parent == "自定义":
             QMessageBox.warning(self, "提示", "请先选择一级分类，或点击左侧「AI」按钮自动分析一级分类")
             return
         
@@ -397,7 +396,7 @@ class URLEditDialog(QDialog):
         parent = self.cmb_parent.currentText().strip()
         child = self.cmb_child.currentText().strip()
         from core.category_utils import format_category_path
-        category = format_category_path(parent if parent != "请选择" else "", child if child else None)
+        category = format_category_path(parent if parent != "自定义" else "", child if child else None)
         remark = self.txt_remark.toPlainText().strip()
         
         self.btn_ai_remark.setEnabled(False)
@@ -475,8 +474,6 @@ class URLEditDialog(QDialog):
                 self.cmb_parent.addItem(parent)
                 idx = self.cmb_parent.count() - 1
             self.cmb_parent.setCurrentIndex(idx)
-            self.cmb_child.clear()  # 一级改变时清空二级
-            self.cmb_child.addItem("")
             QMessageBox.information(self, "分类成功", f"AI 识别一级分类：{parent}")
         else:
             QMessageBox.warning(self, "分类失败", f"AI 返回的分类无法解析：{result}")
@@ -536,7 +533,7 @@ class URLEditDialog(QDialog):
         parent = self.cmb_parent.currentText().strip()
         child = self.cmb_child.currentText().strip()
         
-        if not parent or parent == "请选择":
+        if not parent or parent == "自定义":
             QMessageBox.warning(self, "验证失败", "请选择主分类")
             return
         

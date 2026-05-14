@@ -665,7 +665,7 @@ class SettingsDialog(QDialog):
         _perf_log("SettingsDialog setup_ui total", t0)
         
         # 监听主题变化，实时更新自身样式
-        ThemeManager.instance().theme_changed.connect(self._on_settings_theme_changed)
+        self._theme_conn = ThemeManager.instance().theme_changed.connect(self._on_settings_theme_changed)
     
     def _on_settings_theme_changed(self, theme_name: str):
         """主题变化时更新设置弹窗自身样式"""
@@ -707,5 +707,13 @@ class SettingsDialog(QDialog):
         dialog = AIAssistantSettingsDialog(self.config_path, parent=self)
         dialog.settings_applied.connect(self.ai_settings_changed.emit)
         dialog.exec()
+
+    def closeEvent(self, event):
+        """关闭时断开主题信号，避免内存泄漏"""
+        try:
+            ThemeManager.instance().theme_changed.disconnect(self._theme_conn)
+        except Exception:
+            pass
+        super().closeEvent(event)
     
 

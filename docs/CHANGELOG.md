@@ -10,9 +10,24 @@
 
 ### 新增
 - **列表项呼吸灯闪烁提示**：编辑/新增账号或网址保存成功后，对应列表项以淡蓝色柔和呼吸闪烁 2 秒（正弦波 alpha 0→40，2 秒内 2 次循环），直观提示用户刚刚操作的是哪一条目
+- **日历年份快捷输入**：点击日历年份按钮不再弹出需要滚动很久的长列表菜单，改为弹出整数输入框直接输入年份（1900–2100），保持原月份并自动限制日期为该月最大天数
+
+### 优化
+- **筛选面板主题适配**：补全 `_reapply_styles` 和 `_on_filter_toggle` 中遗漏的 `lbl_filter_tags`、`filter_tags`、`btn_apply_filter`、`btn_clear_filter` 样式更新，确保 dark/light 主题切换后筛选面板所有控件颜色一致
+- **日历导航栏布局稳定化**：为 prev/next/month/year 四个导航按钮设置固定/限制宽度（翻页按钮固定 32px，月份 70–90px，年份 55–70px），消除点击翻页或年份选择后的导航栏抖动偏移
+- **日历样式完整主题化**：补充 `QCalendarWidget` 整体背景、`QToolButton` 背景边框 hover、`QAbstractItemView` 背景、`QMenu` 及选中项样式，消除主题切换后日历按钮显示为白色块的问题；隐藏左侧 ISO 周数列（`NoVerticalHeader`）
+- **日历翻页按钮标识**：为 prev/next 按钮添加 `<` `>` 文字标识，避免无默认箭头图标时显示为空白块
 
 ### 修复
 - **Service 层缓存未清除导致编辑保存后字段显示为空**：`MainWindow` 中 15+ 处数据变更路径（编辑保存、新增、分类调整、批量导入、收藏切换、回收站恢复等）仅设置 `_accounts_cache_dirty=True` 但未调用 `account_service.get_all_accounts.cache_clear()`，导致 `lru_cache` 返回旧数据。统一改为调用 `_invalidate_all_caches()` 同时清除 Service 层和 UI 层缓存。特别修复了 Dashboard 模式下 `_smart_refresh()` 直接 `return` 跳过缓存清除的问题
+- **主题切换闪退（0xC0000409）**：
+  - `SearchHistoryPanel` 缺少 `on_theme_changed()` 导致 `AttributeError`
+  - `AccountListItem` / `UrlListItem` 的 `paintEvent` 中直接调用子控件 `move()/show()/hide()`，引发递归重绘栈溢出
+  - `core/theme_manager.py` 中后台预加载线程与主线程对 `qt_material.set_icons_theme` 的 monkey patch 存在竞态条件，已加 `threading.Lock` 保护
+  - `main.py` 缺少 `sys.excepthook` 全局异常钩子，信号槽中的未捕获异常直接闪退
+  - `SettingsDialog` 重复连接 `theme_changed` 信号从未断开，造成内存泄漏
+  - `MainWindow` 中 AI 筛选高亮时的样式表无限追加问题（改为直接设置而非追加）
+- **日历主题切换不刷新**：`_fix_calendar_style` 有 `_calendar_style_applied` 缓存标志导致样式只应用一次，主题切换后重置该标志，确保下次打开日历应用新主题色
 
 ## [未发布] — 2026-05-13
 

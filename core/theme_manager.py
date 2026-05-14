@@ -219,6 +219,7 @@ class ThemeManager(QObject):
         self._app = None
         self._icon_cache = {}
         self._qt_material_cache = {}
+        self._theme_lock = threading.Lock()
 
     @property
     def colors(self) -> ThemeColors:
@@ -256,17 +257,18 @@ class ThemeManager(QObject):
                 return
             import qt_material
             from qt_material import build_stylesheet
-            # 跳过耗时的 SVG 图标生成
-            original_set_icons_theme = qt_material.set_icons_theme
-            qt_material.set_icons_theme = lambda theme, parent="theme": None
-            try:
-                self._qt_material_cache[cache_key] = build_stylesheet(
-                    theme='dark_blue.xml' if theme == 'dark' else 'light_blue.xml',
-                    extra={}
-                )
-                logger.info("Preloaded theme stylesheet: %s", theme)
-            finally:
-                qt_material.set_icons_theme = original_set_icons_theme
+            with self._theme_lock:
+                # 跳过耗时的 SVG 图标生成
+                original_set_icons_theme = qt_material.set_icons_theme
+                qt_material.set_icons_theme = lambda theme, parent="theme": None
+                try:
+                    self._qt_material_cache[cache_key] = build_stylesheet(
+                        theme='dark_blue.xml' if theme == 'dark' else 'light_blue.xml',
+                        extra={}
+                    )
+                    logger.info("Preloaded theme stylesheet: %s", theme)
+                finally:
+                    qt_material.set_icons_theme = original_set_icons_theme
         except Exception as e:
             logger.warning("Failed to preload theme: %s", e)
 
@@ -287,17 +289,18 @@ class ThemeManager(QObject):
             from qt_material import build_stylesheet
             cache_key = theme
             if cache_key not in self._qt_material_cache:
-                # 项目不使用 qt-material 图标系统，跳过耗时的 SVG 生成
-                original_set_icons_theme = qt_material.set_icons_theme
-                qt_material.set_icons_theme = lambda theme, parent="theme": None
-                try:
-                    self._qt_material_cache[cache_key] = build_stylesheet(
-                        theme='dark_blue.xml' if theme == 'dark' else 'light_blue.xml',
-                        extra={}
-                    )
-                finally:
-                    qt_material.set_icons_theme = original_set_icons_theme
-                # 确保 Fusion style（apply_stylesheet 原来会设置）
+                with self._theme_lock:
+                    # 项目不使用 qt-material 图标系统，跳过耗时的 SVG 生成
+                    original_set_icons_theme = qt_material.set_icons_theme
+                    qt_material.set_icons_theme = lambda theme, parent="theme": None
+                    try:
+                        self._qt_material_cache[cache_key] = build_stylesheet(
+                            theme='dark_blue.xml' if theme == 'dark' else 'light_blue.xml',
+                            extra={}
+                        )
+                    finally:
+                        qt_material.set_icons_theme = original_set_icons_theme
+            if self._app:
                 try:
                     app.setStyle('Fusion')
                 except Exception:

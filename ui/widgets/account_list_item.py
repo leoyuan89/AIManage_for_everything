@@ -41,6 +41,7 @@ class AccountListItem(QWidget):
         self._flash_timer = None
         self._flash_start_time = 0
         self._flash_duration = 2.0
+        self._layout_margin = 10
 
         self.checkbox = QCheckBox(self)
         self.checkbox.setFixedSize(24, 24)
@@ -68,6 +69,10 @@ class AccountListItem(QWidget):
     def _update_checkbox_style(self):
         colors = ThemeManager.instance().colors
         self.setStyleSheet(f"""
+            #accountListItem {{
+                background-color: transparent;
+                border: none;
+            }}
             #accountListItem QCheckBox::indicator {{
                 width: 18px;
                 height: 18px;
@@ -136,6 +141,21 @@ class AccountListItem(QWidget):
         self.setFixedHeight(35 if enabled else 56)
         self.update()
 
+    def _update_checkbox_geometry(self):
+        """更新复选框位置和可见性（禁止在 paintEvent 中调用）"""
+        if not hasattr(self, 'checkbox'):
+            return
+        if self._selection_mode:
+            self.checkbox.show()
+            h = self.height()
+            self.checkbox.move(self._layout_margin, (h - 24) // 2)
+        else:
+            self.checkbox.hide()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_checkbox_geometry()
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -149,13 +169,9 @@ class AccountListItem(QWidget):
         painter.setPen(QPen(QColor(colors.border_light), 1))
         painter.drawLine(0, h - 1, w, h - 1)
 
-        x = 10
+        x = self._layout_margin
         if self._selection_mode:
-            self.checkbox.move(x, (h - 24) // 2)
-            self.checkbox.show()
             x += 34
-        else:
-            self.checkbox.hide()
 
         # 收藏星标
         if self.account.is_favorite:
@@ -500,7 +516,6 @@ class AccountListItem(QWidget):
                 flash_color.setAlpha(alpha)
                 painter.fillRect(self.rect(), flash_color)
 
-        painter.end()
 
     def mouseMoveEvent(self, event):
         if self._selection_mode:
@@ -566,7 +581,7 @@ class AccountListItem(QWidget):
 
     def set_selection_mode(self, enabled: bool):
         self._selection_mode = enabled
-        self.checkbox.setVisible(enabled)
+        self._update_checkbox_geometry()
         self.update()
 
     def is_checked(self) -> bool:

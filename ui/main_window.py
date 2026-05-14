@@ -763,6 +763,13 @@ class DropZoneWidget(QLabel):
         else:
             event.ignore()
     
+    def dragMoveEvent(self, event):
+        source = event.source()
+        if isinstance(source, CategoryTreeWidget) and source._dragging_item:
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+    
     def dragLeaveEvent(self, event):
         colors = ThemeManager.instance().colors
         self.setStyleSheet(f"""
@@ -951,10 +958,12 @@ class CategoryTreeWidget(QTreeWidget):
     def dragMoveEvent(self, event):
         if not self._dragging_item:
             event.ignore()
+            super().dragMoveEvent(event)
             return
         
         if not self._edit_mode and not self._reorganize_mode:
             event.ignore()
+            super().dragMoveEvent(event)
             return
 
         # 自动滚动检测
@@ -983,30 +992,51 @@ class CategoryTreeWidget(QTreeWidget):
         if self._reorganize_mode:
             # 重组模式规则
             # 1. 源是"全部"或"成为一级"特殊条目 → 拒绝
-            if source_data in ('全部', '__DROP_TO_ROOT__', '__favorites__', '__recent__'):
+            if source_data in ('全部', '__DROP_TO_ROOT__', '__favorites__', '__recent__', '__dashboard__'):
                 event.ignore()
+                super().dragMoveEvent(event)
                 return
             
-            # 2. Above/Below → 接受（同级排序）
+            # 2. Above/Below → 接受（同级排序），但重组模式下目标是一级时允许跨层级重组
             if drop_indicator in (QTreeWidget.DropIndicatorPosition.AboveItem,
                                   QTreeWidget.DropIndicatorPosition.BelowItem):
+                # 重组模式下，若目标是一级节点，允许二级（或一级无子类）拖入成为其子类
+                if target_item and target_item.parent() is None:
+                    target_data = target_item.data(0, Qt.ItemDataRole.UserRole)
+                    if target_data in ('全部', '__dashboard__', '__favorites__', '__recent__', '__DROP_TO_ROOT__'):
+                        event.ignore()
+                        super().dragMoveEvent(event)
+                        return
+                    if source_parent is None and source_item.childCount() > 0:
+                        event.ignore()
+                        super().dragMoveEvent(event)
+                        return
+                    # 源是二级或一级无子类，目标是一级 → 接受跨层级重组
+                    event.acceptProposedAction()
+                    super().dragMoveEvent(event)
+                    return
+                
                 # 一级只能在顶层之间排序
                 if source_parent is None:
                     if target_item and target_item.parent() is not None:
                         event.ignore()
+                        super().dragMoveEvent(event)
                         return
                 else:
                     # 源是二级，目标必须在同一父节点下
                     if target_item and target_item.parent() != source_parent:
                         event.ignore()
+                        super().dragMoveEvent(event)
                         return
                 event.acceptProposedAction()
+                super().dragMoveEvent(event)
                 return
             
             # 3. OnItem 情况
             if drop_indicator == QTreeWidget.DropIndicatorPosition.OnItem:
                 if target_item is None:
                     event.ignore()
+                    super().dragMoveEvent(event)
                     return
                 
                 target_data = target_item.data(0, Qt.ItemDataRole.UserRole)
@@ -1014,19 +1044,28 @@ class CategoryTreeWidget(QTreeWidget):
                 # 目标是二级节点 → 拒绝（避免三级）
                 if target_item.parent() is not None:
                     event.ignore()
+                    super().dragMoveEvent(event)
                     return
                 
-                # 目标是一级节点
+                # 目标是一级节点且为特殊节点 → 拒绝
+                if target_data in ('全部', '__dashboard__', '__favorites__', '__recent__', '__DROP_TO_ROOT__'):
+                    event.ignore()
+                    super().dragMoveEvent(event)
+                    return
+                
                 # 源是一级（有子类）→ 拒绝（避免产生三级）
                 if source_parent is None and source_item.childCount() > 0:
                     event.ignore()
+                    super().dragMoveEvent(event)
                     return
                 
                 # 其他情况：源是一级（无子类）或二级，目标是一级 → 接受
                 event.acceptProposedAction()
+                super().dragMoveEvent(event)
                 return
             
             event.ignore()
+            super().dragMoveEvent(event)
             return
 
         # 原有排序逻辑
@@ -1056,13 +1095,16 @@ class CategoryTreeWidget(QTreeWidget):
         if source_parent is None:
             if target_parent != self.invisibleRootItem():
                 event.ignore()
+                super().dragMoveEvent(event)
                 return
         else:
             if target_parent != source_parent:
                 event.ignore()
+                super().dragMoveEvent(event)
                 return
 
         event.acceptProposedAction()
+        super().dragMoveEvent(event)
 
     def dragLeaveEvent(self, event):
         colors = ThemeManager.instance().colors
@@ -1092,21 +1134,26 @@ class CategoryTreeWidget(QTreeWidget):
         drop_indicator = self.dropIndicatorPosition()
 
         if self._reorganize_mode:
-            # 先处理 OnItem 跨层级重组
-            if drop_indicator == QTreeWidget.DropIndicatorPosition.OnItem and target_item:
-                target_data = target_item.data(0, Qt.ItemDataRole.UserRole)
-                
-                # 目标是一级节点（二级节点已在 dragMoveEvent 中拒绝）
-                if target_item.parent() is None:
-                    if source_parent is None and source_item.childCount() > 0:
-                        event.ignore()
-                        self._dragging_item = None
-                        return
-                    
+            # 重组模式：判断是否是跨层级重组
+            # 只要目标是一级节点（且源不是一级有子类），就触发跨层级重组，
+            # 不需要用户精确命中 OnItem 区域（Above/Below 也可触发）
+            if target_item and target_item.parent() is None:
+                if source_parent is None and source_item.childCount() > 0:
+                    # 源是一级且有子类 → 拒绝（避免产生三级）
                     event.ignore()
-                    self.reorganize_requested.emit(source_data, target_data)
                     self._dragging_item = None
                     return
+                
+                # 源是二级 或 一级无子类，目标是一级 → 跨层级重组
+                target_data = target_item.data(0, Qt.ItemDataRole.UserRole)
+                if target_data in ('全部', '__dashboard__', '__favorites__', '__recent__', '__DROP_TO_ROOT__'):
+                    event.ignore()
+                    self._dragging_item = None
+                    return
+                event.ignore()
+                self.reorganize_requested.emit(source_data, target_data)
+                self._dragging_item = None
+                return
             
             # 以下是 Above/Below 同级排序逻辑，和排序模式相同
             if target_item:
@@ -2697,6 +2744,15 @@ class MainWindow(QMainWindow):
                 self.account_list.scrollToItem(item, self.account_list.ScrollHint.PositionAtTop)
                 return
     
+    def _invalidate_all_caches(self):
+        """强制清除所有 Service 层和 UI 层缓存"""
+        self.account_service.get_all_accounts.cache_clear()
+        self._url_service.get_all_urls.cache_clear()
+        self._accounts_cache_dirty = True
+        self._urls_cache_dirty = True
+        self._all_accounts_cache = None
+        self._all_urls_cache = None
+
     def load_accounts(self):
         """加载账号列表（搜索框为空时调用）"""
         self._view_mode = 'default'
@@ -2742,7 +2798,7 @@ class MainWindow(QMainWindow):
             accounts.sort(key=_account_sort_key)
         
         is_compact = self._load_compact_preference()
-        item_height = 32 if is_compact else 56
+        item_height = 35 if is_compact else 56
         col_config = self._load_column_config()
         item_width = max(self.account_list.width() - 20, 50)
         
@@ -2988,16 +3044,25 @@ class MainWindow(QMainWindow):
             parent_item.setExpanded(True)
         
         # 恢复之前的选中分类（或默认选择"全部"）
+        def _find_item_recursive(parent_item, target_cat):
+            """递归查找匹配 target_cat 的节点"""
+            for i in range(parent_item.childCount()):
+                item = parent_item.child(i)
+                cat = item.data(0, Qt.ItemDataRole.UserRole)
+                if cat == target_cat:
+                    return item
+                found = _find_item_recursive(item, target_cat)
+                if found:
+                    return found
+            return None
+        
         restored = False
-        root = self.category_tree.invisibleRootItem()
-        for i in range(root.childCount()):
-            item = root.child(i)
-            cat = item.data(0, Qt.ItemDataRole.UserRole)
-            if cat == saved_category:
-                self.category_tree.setCurrentItem(item)
-                self.current_category = saved_category
-                restored = True
-                break
+        target_item = _find_item_recursive(self.category_tree.invisibleRootItem(), saved_category)
+        if target_item:
+            self.category_tree.setCurrentItem(target_item)
+            self.current_category = saved_category
+            restored = True
+        
         if not restored:
             self.category_tree.setCurrentItem(root_all)
             self.current_category = '全部'
@@ -3140,10 +3205,9 @@ class MainWindow(QMainWindow):
         if reply == QMessageBox.StandardButton.Yes:
             if self.current_vault == 'accounts':
                 success = self.account_service.reparent_category(source_path, target_parent)
-                self._accounts_cache_dirty = True
             else:
                 success = self._url_service.reparent_category(source_path, target_parent)
-                self._urls_cache_dirty = True
+            self._invalidate_all_caches()
             
             if success:
                 # 如果当前正查看被移动的旧分类，重置为"全部"避免显示空列表
@@ -3232,8 +3296,7 @@ class MainWindow(QMainWindow):
         
         self._selected_categories.clear()
         self._on_category_batch_delete_toggle()  # 退出选择模式
-        self._accounts_cache_dirty = True
-        self._urls_cache_dirty = True
+        self._invalidate_all_caches()
         self.current_category = '全部'
         self._reload_categories()
         if self.current_vault == 'accounts':
@@ -3288,7 +3351,7 @@ class MainWindow(QMainWindow):
             urls.sort(key=_url_sort_key)
         
         is_compact = self._load_compact_preference()
-        item_height = 32 if is_compact else 56
+        item_height = 35 if is_compact else 56
         col_config = self._load_column_config()
         item_width = max(self.account_list.width() - 20, 50)
         
@@ -3343,7 +3406,7 @@ class MainWindow(QMainWindow):
     
     def _apply_compact_mode_to_current_list(self, enabled: bool):
         """直接修改现有列表项的紧凑模式，不重建控件"""
-        item_height = 32 if enabled else 56
+        item_height = 35 if enabled else 56
         width = max(self.account_list.width() - 20, 50)
         
         self.account_list.setUpdatesEnabled(False)
@@ -3533,7 +3596,14 @@ class MainWindow(QMainWindow):
                 f"UPDATE {table} SET category = ? || SUBSTR(category, ?) WHERE category LIKE ?",
                 (new_name, len(old_name) + 1, f"{old_name}>%")
             )
+            # 3. 同步更新 category_order 表
+            cursor.execute("UPDATE category_order SET category = ? WHERE category = ?", (new_name, old_name))
+            cursor.execute(
+                "UPDATE category_order SET category = ? || SUBSTR(category, ?) WHERE category LIKE ?",
+                (new_name, len(old_name) + 1, f"{old_name}>%")
+            )
             db.conn.commit()
+            self._invalidate_all_caches()
     
     def _on_category_context_menu(self, pos: QPoint):
         """分类右键菜单：点击条目显示重命名/删除；点击空白处显示新建类别"""
@@ -3647,8 +3717,7 @@ class MainWindow(QMainWindow):
                     else:
                         self._url_service.rename_category(category, new_name)
                     self._reload_categories()
-                    self._accounts_cache_dirty = True
-                    self._urls_cache_dirty = True
+                    self._invalidate_all_caches()
                     if self.current_category == category:
                         self.current_category = new_name
                     self.load_accounts() if self.current_vault == 'accounts' else self.load_urls()
@@ -3676,8 +3745,7 @@ class MainWindow(QMainWindow):
                 else:
                     self._url_service.delete_category(category)
                 self._reload_categories()
-                self._accounts_cache_dirty = True
-                self._urls_cache_dirty = True
+                self._invalidate_all_caches()
                 self.current_category = '全部'
                 self.load_accounts() if self.current_vault == 'accounts' else self.load_urls()
         
@@ -3705,8 +3773,7 @@ class MainWindow(QMainWindow):
             success = service.promote_category(category)
             if success:
                 self._reload_categories()
-                self._accounts_cache_dirty = True
-                self._urls_cache_dirty = True
+                self._invalidate_all_caches()
                 self.current_category = '全部'
                 self.load_accounts() if self.current_vault == 'accounts' else self.load_urls()
                 QMessageBox.information(self, "成功", f'「{category}」已升级为一级分类「{child_name}」')
@@ -3744,8 +3811,7 @@ class MainWindow(QMainWindow):
             else:
                 data.is_favorite = new_status
             # Refresh the list to show updated state
-            self._accounts_cache_dirty = True
-            self._urls_cache_dirty = True
+            self._invalidate_all_caches()
             if self.current_vault == 'accounts':
                 self.load_accounts()
             else:
@@ -3761,9 +3827,9 @@ class MainWindow(QMainWindow):
     def _load_column_config(self):
         path = self._get_column_config_path()
         if self.current_vault == 'accounts':
-            defaults = {'icon': True, 'app_name': True, 'username': True, 'strength': True, 'category': True, 'arrow': True}
+            defaults = {'icon': True, 'app_name': True, 'strength': True, 'category': True, 'arrow': True, 'time': True, 'tags': True, 'remark': True, 'ai_remark': True}
         else:
-            defaults = {'icon': True, 'app_name': True, 'url': True, 'category': True, 'arrow': True}
+            defaults = {'icon': True, 'app_name': True, 'url': True, 'category': True, 'arrow': True, 'time': True, 'tags': True, 'remark': True, 'ai_remark': True}
         try:
             if path.exists():
                 with open(path, 'r', encoding='utf-8') as f:
@@ -3778,85 +3844,133 @@ class MainWindow(QMainWindow):
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(config, f, ensure_ascii=False)
 
+    def _show_column_settings(self, global_pos):
+        """显示列设置弹窗（QDialog Popup，完全避开 QMenu/QWidgetAction 的稳定性问题）"""
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QCheckBox, QLabel, QFrame
+        from PyQt6.QtCore import Qt
+        
+        popup = QDialog(self, Qt.WindowType.Popup)
+        popup.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        
+        colors = ThemeManager.instance().colors
+        popup.setStyleSheet(f"""
+            QDialog {{
+                background-color: {colors.bg_primary};
+                border: 1px solid {colors.border_medium};
+                border-radius: 8px;
+            }}
+            QCheckBox {{
+                color: {colors.text_primary};
+                font-family: "Microsoft YaHei";
+                font-size: 13px;
+                padding: 5px 4px;
+            }}
+            QCheckBox::indicator {{
+                width: 16px;
+                height: 16px;
+                border-radius: 3px;
+                border: 2px solid {colors.text_secondary};
+            }}
+            QCheckBox::indicator:checked {{
+                background-color: {colors.accent_blue};
+                border: 2px solid {colors.accent_blue};
+            }}
+            QCheckBox::indicator:disabled {{
+                border: 2px solid {colors.border_light};
+            }}
+            QCheckBox:disabled {{
+                color: {colors.text_disabled};
+            }}
+        """)
+        
+        layout = QVBoxLayout(popup)
+        layout.setSpacing(2)
+        layout.setContentsMargins(14, 14, 14, 14)
+        
+        # 标题
+        title = QLabel("列表显示设置")
+        title.setStyleSheet(f"color: {colors.text_primary}; font-size: 14px; font-weight: bold; padding-bottom: 4px;")
+        layout.addWidget(title)
+        
+        # 分隔线
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setStyleSheet(f"color: {colors.border_light};")
+        line.setFixedHeight(1)
+        layout.addWidget(line)
+        layout.addSpacing(4)
+        
+        if self.current_vault == 'accounts':
+            columns = [
+                ('icon', '首字母图标', False),
+                ('app_name', '应用名', True),
+                ('username', '账号（脱敏）', True),
+                ('strength', '密码强度', False),
+                ('category', '分类标签', False),
+                ('time', '创建/修改时间', False),
+                ('tags', '标签', False),
+                ('remark', '用户备注', False),
+                ('ai_remark', 'AI备注', False),
+                ('arrow', '右箭头', False),
+            ]
+        else:
+            columns = [
+                ('icon', '首字母图标', False),
+                ('app_name', '网址标题', True),
+                ('url', '网址地址', False),
+                ('category', '分类标签', False),
+                ('time', '创建/修改时间', False),
+                ('tags', '标签', False),
+                ('remark', '用户备注', False),
+                ('ai_remark', 'AI备注', False),
+                ('arrow', '右箭头', False),
+            ]
+        
+        col_config = self._load_column_config()
+        
+        for key, label, forced in columns:
+            cb = QCheckBox(label)
+            cb.setChecked(True if forced else col_config.get(key, True))
+            if forced:
+                cb.setEnabled(False)
+            cb.stateChanged.connect(
+                lambda state, k=key: self._toggle_column(k, bool(state))
+            )
+            layout.addWidget(cb)
+        
+        popup.adjustSize()
+        
+        # 获取屏幕可用区域，确保弹窗不超出屏幕边界
+        from PyQt6.QtWidgets import QApplication
+        screen = QApplication.primaryScreen().availableGeometry()
+        popup_w = popup.width()
+        popup_h = popup.height()
+        x = global_pos.x()
+        y = global_pos.y()
+        
+        # 右边超出则左移
+        if x + popup_w > screen.right():
+            x = screen.right() - popup_w - 8
+        # 左边超出则右移
+        if x < screen.left():
+            x = screen.left() + 8
+        # 底部超出则上移
+        if y + popup_h > screen.bottom():
+            y = screen.bottom() - popup_h - 8
+        # 顶部超出则下移
+        if y < screen.top():
+            y = screen.top() + 8
+        
+        popup.move(x, y)
+        popup.exec()
+    
     def _show_column_menu(self, pos):
-        menu = QMenu(self)
-        if self.current_vault == 'accounts':
-            columns = [
-                ('icon', '首字母图标'),
-                ('app_name', '应用名'),
-                ('username', '账号（脱敏）'),
-                ('strength', '密码强度'),
-                ('category', '分类标签'),
-                ('arrow', '右箭头'),
-            ]
-        else:
-            columns = [
-                ('icon', '首字母图标'),
-                ('app_name', '网址标题'),
-                ('url', '网址地址'),
-                ('category', '分类标签'),
-                ('arrow', '右箭头'),
-            ]
-
-        col_config = self._load_column_config()
-
-        for key, label in columns:
-            action = menu.addAction(label)
-            action.setCheckable(True)
-            action.setChecked(col_config.get(key, True))
-            action.setData(key)
-            action.toggled.connect(lambda checked, k=key: self._toggle_column(k, checked))
-
-        app_name_action = None
-        for action in menu.actions():
-            if action.data() == 'app_name':
-                app_name_action = action
-                app_name_action.setEnabled(False)
-                app_name_action.setChecked(True)
-                break
-
-        menu.exec(self.lbl_list_title.mapToGlobal(pos))
-
+        self._show_column_settings(self.lbl_list_title.mapToGlobal(pos))
+    
     def _on_column_settings_clicked(self):
-        """点击列设置按钮弹出菜单"""
+        """点击列设置按钮弹出设置弹窗"""
         btn = self.btn_column_settings
-        pos = btn.rect().bottomLeft()
-        # 复用 _show_column_menu，但使用按钮位置
-        menu = QMenu(self)
-        if self.current_vault == 'accounts':
-            columns = [
-                ('icon', '首字母图标'),
-                ('app_name', '应用名'),
-                ('username', '账号（脱敏）'),
-                ('strength', '密码强度'),
-                ('category', '分类标签'),
-                ('arrow', '右箭头'),
-            ]
-        else:
-            columns = [
-                ('icon', '首字母图标'),
-                ('app_name', '网址标题'),
-                ('url', '网址地址'),
-                ('category', '分类标签'),
-                ('arrow', '右箭头'),
-            ]
-
-        col_config = self._load_column_config()
-
-        for key, label in columns:
-            action = menu.addAction(label)
-            action.setCheckable(True)
-            action.setChecked(col_config.get(key, True))
-            action.setData(key)
-            action.toggled.connect(lambda checked, k=key: self._toggle_column(k, checked))
-
-        for action in menu.actions():
-            if action.data() == 'app_name':
-                action.setEnabled(False)
-                action.setChecked(True)
-                break
-
-        menu.exec(btn.mapToGlobal(pos))
+        self._show_column_settings(btn.mapToGlobal(btn.rect().bottomLeft()))
 
     def _toggle_column(self, key, visible):
         config = self._load_column_config()
@@ -4013,6 +4127,7 @@ class MainWindow(QMainWindow):
         
         if deleted > 0:
             self.show_undo_banner(deleted, deleted_items_data)
+        self._invalidate_all_caches()
     
     def _execute_batch_categorize(self):
         """执行批量分类"""
@@ -4193,6 +4308,7 @@ class MainWindow(QMainWindow):
         self._smart_refresh()
         self._reload_categories()
         logger.info(f"Undo: restored {restored} items")
+        self._invalidate_all_caches()
     
     def _dismiss_undo_banner(self):
         """关闭撤销横幅"""
@@ -4257,8 +4373,10 @@ class MainWindow(QMainWindow):
         t2 = time.perf_counter()
         logger.debug(f" AccountDialog exec: {(t2-t1)*1000:.1f} ms")
         if result == AccountDialog.DialogCode.Accepted:
+            edited_id = account.id
             self._smart_refresh()
             self.show_copy_toast("保存成功")
+            QTimer.singleShot(150, lambda: self._flash_item_by_id(edited_id))
             # 仅在分类变化时重建分类树
             if dialog.account and dialog.account.category != old_category:
                 self._reload_categories()
@@ -4276,8 +4394,10 @@ class MainWindow(QMainWindow):
         
         dialog = URLEditDialog(self._url_service, url_item, parent=self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
+            edited_id = getattr(url_item, 'id', None) or (url_item.get('id') if isinstance(url_item, dict) else None)
             self._smart_refresh()
             self.show_copy_toast("保存成功")
+            QTimer.singleShot(150, lambda: self._flash_item_by_id(edited_id))
             # 仅在分类变化时重建分类树
             new_cat = dialog.url_item.category if hasattr(dialog.url_item, 'category') else dialog.url_item.get('category', '')
             if new_cat != old_category:
@@ -4296,7 +4416,7 @@ class MainWindow(QMainWindow):
             logger.debug(f" AccountDialog exec: {(t2-t1)*1000:.1f} ms")
             if result == AccountDialog.DialogCode.Accepted:
                 new_id = dialog.account.id if dialog.account else None
-                self._accounts_cache_dirty = True
+                self._invalidate_all_caches()
                 self.current_category = '全部'
                 self._view_mode = 'default'
                 self._highlight_matched_ids = None
@@ -4308,6 +4428,7 @@ class MainWindow(QMainWindow):
                 self.load_accounts()
                 if new_id:
                     self.highlight_matched_accounts([new_id], query_text="AI本次修改")
+                    QTimer.singleShot(150, lambda: self._flash_item_by_id(new_id))
                 self._restore_scroll_state()
                 self._reload_categories()
         else:
@@ -4315,7 +4436,7 @@ class MainWindow(QMainWindow):
             dialog = URLEditDialog(self._url_service, URLItem(), parent=self)
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 new_id = dialog.url_item.id if dialog.url_item else None
-                self._urls_cache_dirty = True
+                self._invalidate_all_caches()
                 self.current_category = '全部'
                 self._view_mode = 'default'
                 self._highlight_matched_ids = None
@@ -4327,6 +4448,7 @@ class MainWindow(QMainWindow):
                 self.load_urls()
                 if new_id:
                     self.highlight_matched_accounts([new_id], query_text="AI本次修改")
+                    QTimer.singleShot(150, lambda: self._flash_item_by_id(new_id))
                 self._restore_scroll_state()
                 self._reload_categories()
     
@@ -4769,7 +4891,7 @@ class MainWindow(QMainWindow):
         
         if result == ImportDialog.DialogCode.Accepted:
             # 刷新账号列表
-            self._accounts_cache_dirty = True
+            self._invalidate_all_caches()
             self.load_accounts()
             self._restore_scroll_state()
             self._reload_categories()
@@ -4834,7 +4956,7 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 logger.warning("Manager import failed for %s: %s", item.get('app_name', '?'), e)
 
-        self._accounts_cache_dirty = True
+        self._invalidate_all_caches()
         self.load_accounts()
         self._reload_categories()
         QMessageBox.information(self, "导入完成", f"成功导入 {imported} 个条目")
@@ -5728,6 +5850,11 @@ class MainWindow(QMainWindow):
                         change_str = str(raw)
                     
                     result_msg += f"\n{idx}. {display_name} → {change_str}"
+                self._invalidate_all_caches()
+                if self.current_vault == 'accounts':
+                    self.load_accounts()
+                else:
+                    self.load_urls()
             else:
                 error = result.get('error', '未知错误')
                 if error == '用户取消执行':
@@ -5930,8 +6057,7 @@ class MainWindow(QMainWindow):
             
             # 刷新列表和缓存
             self.clear_account_highlight()
-            self._accounts_cache_dirty = True
-            self._urls_cache_dirty = True
+            self._invalidate_all_caches()
             self._reload_categories()
             if self.current_vault == 'accounts':
                 self.load_accounts()
@@ -6101,8 +6227,7 @@ class MainWindow(QMainWindow):
                 else:
                     result_msg = f"❌ 导入失败：{result.get('error', '未知错误')}"
                 
-                self._accounts_cache_dirty = True
-                self._urls_cache_dirty = True
+                self._invalidate_all_caches()
                 if vault_type == 'accounts':
                     self.load_accounts()
                 else:
@@ -6572,11 +6697,14 @@ class MainWindow(QMainWindow):
     def _smart_refresh(self):
         """智能刷新：保持当前视图模式，不自动回退到默认视图"""
         if self.current_category == '__dashboard__':
+            self._invalidate_all_caches()
             if hasattr(self, 'dashboard') and self.dashboard is not None:
                 self.dashboard.refresh()
             return
         self._save_scroll_state()
         try:
+            self.account_service.get_all_accounts.cache_clear()
+            self._url_service.get_all_urls.cache_clear()
             self._accounts_cache_dirty = True
             self._urls_cache_dirty = True
             
@@ -6609,8 +6737,7 @@ class MainWindow(QMainWindow):
     
     def _reapply_ai_highlight(self):
         """重新应用当前的 AI 高亮筛选（数据变更后刷新）"""
-        self._accounts_cache_dirty = True
-        self._urls_cache_dirty = True
+        self._invalidate_all_caches()
         if self.current_vault == 'accounts':
             self._all_accounts_cache = self.account_service.get_all_accounts()
             self._accounts_cache_dirty = False
@@ -6623,7 +6750,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_account_list(self):
         """刷新账号列表"""
-        self._accounts_cache_dirty = True
+        self._invalidate_all_caches()
         self.load_accounts()
     
     def _append_ai_system_msg(self, content: str):
@@ -6869,6 +6996,27 @@ class MainWindow(QMainWindow):
         
         self.lbl_list_title.setText(f"炽阳 搜索结果 ({len(accounts)})")
     
+    def _flash_item_by_id(self, item_id):
+        """让指定 id 的列表项呼吸闪烁提示"""
+        if not item_id:
+            return
+        for i in range(self.account_list.count()):
+            item = self.account_list.item(i)
+            data = item.data(Qt.ItemDataRole.UserRole)
+            if data is None:
+                continue
+            wid = getattr(data, 'id', None) or (data.get('id') if isinstance(data, dict) else None)
+            if wid == item_id:
+                widget = self.account_list.itemWidget(item)
+                # highlight_matched_accounts 会用 container 包裹 widget
+                if widget and widget.layout() and widget.layout().count() > 0:
+                    inner = widget.layout().itemAt(0).widget()
+                    if inner and hasattr(inner, 'start_flash'):
+                        inner.start_flash()
+                elif widget and hasattr(widget, 'start_flash'):
+                    widget.start_flash()
+                break
+
     def highlight_matched_accounts(self, matched_ids: list, query_text: str = ""):
         """Plan 模式：高亮左侧列表中的匹配条目（支持密码库和网址库）"""
         colors = ThemeManager.instance().colors
@@ -7429,8 +7577,7 @@ class MainWindow(QMainWindow):
             dialog = RecycleBinDialog(self._url_db, vault_type='urls', parent=self)
         dialog.exec()
         # 恢复后刷新
-        self._accounts_cache_dirty = True
-        self._urls_cache_dirty = True
+        self._invalidate_all_caches()
         self._reload_categories()
         if self.current_vault == 'accounts':
             self.load_accounts()

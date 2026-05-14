@@ -6,6 +6,14 @@
 
 ---
 
+## [未发布] — 2026-05-14
+
+### 新增
+- **列表项呼吸灯闪烁提示**：编辑/新增账号或网址保存成功后，对应列表项以淡蓝色柔和呼吸闪烁 2 秒（正弦波 alpha 0→40，2 秒内 2 次循环），直观提示用户刚刚操作的是哪一条目
+
+### 修复
+- **Service 层缓存未清除导致编辑保存后字段显示为空**：`MainWindow` 中 15+ 处数据变更路径（编辑保存、新增、分类调整、批量导入、收藏切换、回收站恢复等）仅设置 `_accounts_cache_dirty=True` 但未调用 `account_service.get_all_accounts.cache_clear()`，导致 `lru_cache` 返回旧数据。统一改为调用 `_invalidate_all_caches()` 同时清除 Service 层和 UI 层缓存。特别修复了 Dashboard 模式下 `_smart_refresh()` 直接 `return` 跳过缓存清除的问题
+
 ## [未发布] — 2026-05-13
 
 ### 新增

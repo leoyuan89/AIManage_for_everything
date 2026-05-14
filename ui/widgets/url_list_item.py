@@ -1,11 +1,14 @@
 from PyQt6.QtWidgets import QWidget, QCheckBox
-from PyQt6.QtCore import Qt, QRect
+from PyQt6.QtCore import Qt, QRect, QTimer
 from PyQt6.QtGui import QPainter, QColor, QFont, QFontMetrics, QPen, QBrush
 
 from core.theme_manager import ThemeManager
 from core.clipboard import ClipboardManager
 
+import json
 import logging
+import time
+import math
 
 logger = logging.getLogger(__name__)
 
@@ -27,10 +30,15 @@ class URLListItem(QWidget):
         self._selection_mode = selection_mode
         self._column_visible = {
             'icon': True, 'app_name': True, 'url': True,
-            'category': True, 'arrow': True,
+            'category': True, 'arrow': True, 'time': True,
+            'tags': True, 'remark': True, 'ai_remark': True,
         }
         self._hovered_btn = False
         self._copy_btn_rect = None
+        self._flash_active = False
+        self._flash_timer = None
+        self._flash_start_time = 0
+        self._flash_duration = 2.0
 
         self.checkbox = QCheckBox(self)
         self.checkbox.setFixedSize(24, 24)
@@ -74,11 +82,49 @@ class URLListItem(QWidget):
             time_parts.append(f"修改:{self._format_db_time(updated)}")
         return "  ".join(time_parts)
 
+    def _get_time_lines(self):
+        """返回创建时间和修改时间作为独立的行，用于垂直排列"""
+        create_line = ""
+        update_line = ""
+        created = self.url_item.get('created_at') if isinstance(self.url_item, dict) else getattr(self.url_item, 'created_at', None)
+        updated = self.url_item.get('updated_at') if isinstance(self.url_item, dict) else getattr(self.url_item, 'updated_at', None)
+        if created:
+            create_line = f"创建:{self._format_db_time(created)}"
+        if updated:
+            update_line = f"修改:{self._format_db_time(updated)}"
+        return create_line, update_line
+
+    def start_flash(self, duration_sec: float = 2.0, interval_ms: int = 60):
+        """启动呼吸灯闪烁效果"""
+        self._flash_active = True
+        self._flash_start_time = time.time()
+        self._flash_duration = duration_sec
+        if self._flash_timer is None:
+            self._flash_timer = QTimer(self)
+            self._flash_timer.timeout.connect(self._on_flash_tick)
+        self._flash_timer.start(interval_ms)
+        self.update()
+
+    def stop_flash(self):
+        """停止呼吸灯闪烁"""
+        self._flash_active = False
+        if self._flash_timer:
+            self._flash_timer.stop()
+        self.update()
+
+    def _on_flash_tick(self):
+        """闪烁定时器回调"""
+        self.update()
+        if time.time() - self._flash_start_time > self._flash_duration:
+            self._flash_active = False
+            self._flash_timer.stop()
+            self.update()
+
     def set_compact_mode(self, enabled: bool):
         if enabled == self._compact_mode:
             return
         self._compact_mode = enabled
-        self.setFixedHeight(32 if enabled else 56)
+        self.setFixedHeight(35 if enabled else 56)
         self.update()
 
     def paintEvent(self, event):
@@ -123,13 +169,24 @@ class URLListItem(QWidget):
 
         text_x = x
 
-        # 计算右侧固定占用宽度（顺序：分类 → 箭头 → 复制按钮）
+        # 计算右侧固定占用宽度（顺序：分类 → 时间(垂直) → 箭头 → 复制按钮）
         right_fixed = 10
         if not is_compact and not self._selection_mode:
             right_fixed += 28 + 10
         if not is_compact and self._column_visible.get('arrow', True):
             right_fixed += 16 + 6
-        if not is_compact and self._column_visible.get('category', True):
+        if not is_compact and self._column_visible.get('time', True):
+            create_line, update_line = self._get_time_lines()
+            if create_line or update_line:
+                time_fm = QFontMetrics(QFont("Microsoft YaHei", 9))
+                time_w = 0
+                if create_line:
+                    time_w = max(time_w, time_fm.horizontalAdvance(create_line))
+                if update_line:
+                    time_w = max(time_w, time_fm.horizontalAdvance(update_line))
+                if time_w > 0:
+                    right_fixed += time_w + 8
+        if self._column_visible.get('category', True):
             cat_text = (self.url_item.get('category', '') if isinstance(self.url_item, dict) else getattr(self.url_item, 'category', '')) or '其他'
             cat_fm = QFontMetrics(QFont("Microsoft YaHei", 10))
             right_fixed += cat_fm.horizontalAdvance(cat_text) + 12 + 6
@@ -166,42 +223,197 @@ class URLListItem(QWidget):
                 painter.drawText(badge_x, badge_y, bw, bh, Qt.AlignmentFlag.AlignCenter, badge_text)
                 badge_x += bw + 3
 
-            # === 第二行：网址 + 时间 ===
+            # tags pills
+            if self._column_visible.get('tags', True):
+                tags = []
+                try:
+                    tags = json.loads(getattr(self.url_item, 'tags', '[]') or '[]')
+                except Exception:
+                    pass
+                if tags:
+                    tag_font = QFont("Microsoft YaHei", 9, QFont.Weight.Bold)
+                    tag_fm = QFontMetrics(tag_font)
+                    tag_y = title_y + (title_h - 14) // 2
+                    for tag in tags[:3]:
+                        if badge_x > text_x + text_w - 30:
+                            break
+                        tw = tag_fm.horizontalAdvance(str(tag)) + 12
+                        painter.setBrush(QBrush(QColor(colors.bg_secondary)))
+                        painter.setPen(Qt.PenStyle.NoPen)
+                        painter.drawRoundedRect(badge_x, tag_y, tw, 14, 7, 7)
+                        painter.setPen(QColor(colors.text_secondary))
+                        painter.setFont(tag_font)
+                        painter.drawText(badge_x, tag_y, tw, 14, Qt.AlignmentFlag.AlignCenter, str(tag))
+                        badge_x += tw + 3
+
+            # === 第二行：网址 + remark/ai_remark ===
             sub_y = 30
             sub_h = 18
-            painter.setPen(QColor(colors.text_tertiary))
             sub_font = QFont("Microsoft YaHei", 10)
             painter.setFont(sub_font)
-            url_fm = painter.fontMetrics()
-            url_max_w = text_w // 2
-            elided_url = url_fm.elidedText(self._display_url, Qt.TextElideMode.ElideRight, url_max_w)
-            url_w = url_fm.horizontalAdvance(elided_url)
-            painter.drawText(text_x, sub_y, min(url_w + 2, url_max_w), sub_h, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, elided_url)
+            fm = painter.fontMetrics()
 
-            if self._time_text:
-                time_x = text_x + url_w + 10
-                time_w = text_w - url_w - 10
-                if time_w > 20:
-                    painter.setPen(QColor(colors.text_disabled))
-                    painter.setFont(QFont("Microsoft YaHei", 9))
-                    painter.drawText(time_x, sub_y, time_w, sub_h, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self._time_text)
+            current_x = text_x
+            remaining_w = text_w
+
+            # URL
+            if self._column_visible.get('url', True):
+                elided_url = fm.elidedText(self._display_url, Qt.TextElideMode.ElideRight, remaining_w // 2)
+                url_w = fm.horizontalAdvance(elided_url)
+                painter.setPen(QColor(colors.text_tertiary))
+                painter.drawText(current_x, sub_y, min(url_w + 2, remaining_w // 2), sub_h, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, elided_url)
+                current_x += url_w + 10
+                remaining_w -= url_w + 10
+
+            # remark / ai_remark
+            show_remark = self._column_visible.get('remark', True)
+            show_ai_remark = self._column_visible.get('ai_remark', True)
+            remark = ((self.url_item.get('remark', '') if isinstance(self.url_item, dict) else getattr(self.url_item, 'remark', '')) or '').replace('\n', ' ')
+            ai_remark = ((self.url_item.get('ai_remark', '') if isinstance(self.url_item, dict) else getattr(self.url_item, 'ai_remark', '')) or '').replace('\n', ' ')
+
+            def _limit_chars(text, max_len=15):
+                if len(text) <= max_len:
+                    return text
+                return text[:max_len] + '...'
+
+            remark_segments = []
+            if show_remark and remark:
+                remark_segments.append((f"💬 {_limit_chars(remark)}", colors.text_secondary))
+            if show_ai_remark and ai_remark:
+                remark_segments.append((f"🤖 {_limit_chars(ai_remark)}", colors.accent_blue))
+
+            if remark_segments:
+                max_remark_w = remaining_w
+
+                if len(remark_segments) == 1:
+                    text, color = remark_segments[0]
+                    tw = min(fm.horizontalAdvance(text), max_remark_w)
+                    painter.setPen(QColor(color))
+                    painter.drawText(current_x, sub_y, tw, sub_h, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
+                    current_x += tw + 6
+                else:
+                    r_text, r_color = remark_segments[0]
+                    a_text, a_color = remark_segments[1]
+                    sep = " | "
+                    sep_w = fm.horizontalAdvance(sep)
+                    r_w = fm.horizontalAdvance(r_text)
+                    a_w = fm.horizontalAdvance(a_text)
+                    total_w = r_w + sep_w + a_w
+
+                    if total_w <= max_remark_w:
+                        painter.setPen(QColor(r_color))
+                        painter.drawText(current_x, sub_y, r_w + 2, sub_h, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, r_text)
+                        current_x += r_w
+                        painter.setPen(QColor(colors.text_secondary))
+                        painter.drawText(current_x, sub_y, sep_w + 2, sub_h, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, sep)
+                        current_x += sep_w
+                        painter.setPen(QColor(a_color))
+                        painter.drawText(current_x, sub_y, a_w + 2, sub_h, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, a_text)
+                        current_x += a_w + 6
+                    else:
+                        half = max_remark_w // 2
+                        r_w_actual = min(r_w, max(half, max_remark_w - sep_w - 20))
+                        painter.setPen(QColor(r_color))
+                        painter.drawText(current_x, sub_y, r_w_actual + 2, sub_h, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, r_text)
+                        current_x += r_w_actual
+
+                        remaining_for_ai = max_remark_w - r_w_actual - sep_w
+                        if remaining_for_ai > 20:
+                            painter.setPen(QColor(colors.text_secondary))
+                            painter.drawText(current_x, sub_y, sep_w + 2, sub_h, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, sep)
+                            current_x += sep_w
+                            a_w_actual = min(a_w, remaining_for_ai)
+                            painter.setPen(QColor(a_color))
+                            painter.drawText(current_x, sub_y, a_w_actual, sub_h, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, a_text)
+                            current_x += a_w_actual + 6
+                        else:
+                            current_x += 6
         else:
             # === 紧凑模式 ===
             painter.setPen(QColor(colors.text_primary))
-            title_font = QFont("Microsoft YaHei", 12)
-            title_font.setWeight(QFont.Weight.DemiBold)
+            title_font = QFont("Microsoft YaHei", 11)
+            title_font.setWeight(QFont.Weight.Medium)
             painter.setFont(title_font)
-            fm_title = QFontMetrics(title_font)
+            fm_title = painter.fontMetrics()
             elided_title = fm_title.elidedText(self._title, Qt.TextElideMode.ElideRight, text_w)
-            painter.drawText(text_x, 4, text_w, 14, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, elided_title)
+            painter.drawText(text_x, 2, text_w, 15, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, elided_title)
 
-            painter.setPen(QColor(colors.text_tertiary))
-            painter.setFont(QFont("Microsoft YaHei", 10))
-            url_fm = QFontMetrics(QFont("Microsoft YaHei", 10))
-            elided_url = url_fm.elidedText(self._display_url, Qt.TextElideMode.ElideRight, text_w)
-            painter.drawText(text_x, 17, text_w, 14, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, elided_url)
+            # 紧凑模式第二行：URL + remark/ai_remark
+            draw_x = text_x
+            remaining = text_w
 
-        # === 右侧元素（正常模式，顺序：分类 → 箭头 → 复制按钮）===
+            if self._column_visible.get('url', True):
+                painter.setPen(QColor(colors.text_tertiary))
+                painter.setFont(QFont("Microsoft YaHei", 9))
+                fm_sub = painter.fontMetrics()
+                elided_url = fm_sub.elidedText(self._display_url, Qt.TextElideMode.ElideRight, remaining // 2)
+                url_w = fm_sub.horizontalAdvance(elided_url)
+                painter.drawText(draw_x, 17, url_w + 2, 13, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, elided_url)
+                draw_x += url_w + 10
+                remaining -= url_w + 10
+
+            show_remark = self._column_visible.get('remark', True)
+            show_ai_remark = self._column_visible.get('ai_remark', True)
+            remark = ((self.url_item.get('remark', '') if isinstance(self.url_item, dict) else getattr(self.url_item, 'remark', '')) or '').replace('\n', ' ')
+            ai_remark = ((self.url_item.get('ai_remark', '') if isinstance(self.url_item, dict) else getattr(self.url_item, 'ai_remark', '')) or '').replace('\n', ' ')
+
+            def _limit_chars(text, max_len=12):
+                if len(text) <= max_len:
+                    return text
+                return text[:max_len] + '...'
+
+            remark_segments = []
+            if show_remark and remark:
+                remark_segments.append((f"💬 {_limit_chars(remark)}", colors.text_secondary))
+            if show_ai_remark and ai_remark:
+                remark_segments.append((f"🤖 {_limit_chars(ai_remark)}", colors.accent_blue))
+
+            if remark_segments:
+                painter.setFont(QFont("Microsoft YaHei", 9))
+                fm_sub = painter.fontMetrics()
+
+                if len(remark_segments) == 1:
+                    text, color = remark_segments[0]
+                    tw = min(fm_sub.horizontalAdvance(text), remaining)
+                    painter.setPen(QColor(color))
+                    painter.drawText(draw_x, 17, tw, 13, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
+                else:
+                    r_text, r_color = remark_segments[0]
+                    a_text, a_color = remark_segments[1]
+                    sep = " | "
+                    sep_w = fm_sub.horizontalAdvance(sep)
+                    r_w = fm_sub.horizontalAdvance(r_text)
+                    a_w = fm_sub.horizontalAdvance(a_text)
+                    total_w = r_w + sep_w + a_w
+
+                    if total_w <= remaining:
+                        painter.setPen(QColor(r_color))
+                        painter.drawText(draw_x, 17, r_w + 2, 13, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, r_text)
+                        draw_x += r_w
+                        painter.setPen(QColor(colors.text_disabled))
+                        painter.drawText(draw_x, 17, sep_w + 2, 13, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, sep)
+                        draw_x += sep_w
+                        painter.setPen(QColor(a_color))
+                        painter.drawText(draw_x, 17, a_w + 2, 13, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, a_text)
+                    else:
+                        half = remaining // 2
+                        r_w_actual = min(r_w, max(half, remaining - sep_w - 20))
+                        painter.setPen(QColor(r_color))
+                        painter.drawText(draw_x, 17, r_w_actual + 2, 13, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, r_text)
+                        draw_x += r_w_actual
+
+                        remaining_for_ai = remaining - r_w_actual - sep_w
+                        if remaining_for_ai > 20:
+                            painter.setPen(QColor(colors.text_disabled))
+                            painter.drawText(draw_x, 17, sep_w + 2, 13, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, sep)
+                            draw_x += sep_w
+                            a_w_actual = min(a_w, remaining_for_ai)
+                            painter.setPen(QColor(a_color))
+                            painter.drawText(draw_x, 17, a_w_actual, 13, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, a_text)
+                        else:
+                            draw_x += 6
+
+        # === 右侧元素（正常模式，顺序：分类 → 时间(垂直) → 箭头 → 复制按钮）===
         if not is_compact:
             rx = w - 10
 
@@ -236,6 +448,30 @@ class URLListItem(QWidget):
                 painter.drawText(rx, (h - 20) // 2, 16, 20, Qt.AlignmentFlag.AlignCenter, "›")
                 rx -= 6
 
+            # 时间（垂直排列：创建在上，修改在下）
+            if self._column_visible.get('time', True):
+                create_line, update_line = self._get_time_lines()
+                if create_line or update_line:
+                    time_fm = QFontMetrics(QFont("Microsoft YaHei", 9))
+                    time_w = 0
+                    if create_line:
+                        time_w = max(time_w, time_fm.horizontalAdvance(create_line))
+                    if update_line:
+                        time_w = max(time_w, time_fm.horizontalAdvance(update_line))
+                    if time_w > 0:
+                        rx -= time_w + 6
+                        painter.setPen(QColor(colors.text_disabled))
+                        painter.setFont(QFont("Microsoft YaHei", 9))
+                        line_h = 11
+                        gap = 2
+                        total_h = line_h * 2 + gap
+                        time_y = (h - total_h) // 2
+                        if create_line:
+                            painter.drawText(rx, time_y, time_w, line_h, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, create_line)
+                            time_y += line_h + gap
+                        if update_line:
+                            painter.drawText(rx, time_y, time_w, line_h, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, update_line)
+
             # 分类 pill（缩小）
             if self._column_visible.get('category', True):
                 cat_text = (self.url_item.get('category', '') if isinstance(self.url_item, dict) else getattr(self.url_item, 'category', '')) or '其他'
@@ -249,6 +485,32 @@ class URLListItem(QWidget):
                 painter.setPen(QColor(colors.text_secondary))
                 painter.setFont(QFont("Microsoft YaHei", 10))
                 painter.drawText(rx, (h - ch) // 2, cw, ch, Qt.AlignmentFlag.AlignCenter, cat_text)
+
+        # 紧凑模式也显示分类
+        if is_compact and self._column_visible.get('category', True):
+            cat_text = (self.url_item.get('category', '') if isinstance(self.url_item, dict) else getattr(self.url_item, 'category', '')) or '其他'
+            cat_fm = QFontMetrics(QFont("Microsoft YaHei", 10))
+            cw = cat_fm.horizontalAdvance(cat_text) + 12
+            ch = 14
+            rx = w - 10 - cw
+            painter.setBrush(QBrush(QColor(colors.bg_secondary)))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRoundedRect(rx, (h - ch) // 2, cw, ch, 8, 8)
+            painter.setPen(QColor(colors.text_secondary))
+            painter.setFont(QFont("Microsoft YaHei", 10))
+            painter.drawText(rx, (h - ch) // 2, cw, ch, Qt.AlignmentFlag.AlignCenter, cat_text)
+
+        # === 呼吸灯闪烁效果 ===
+        if self._flash_active:
+            elapsed = time.time() - self._flash_start_time
+            if elapsed > self._flash_duration:
+                self._flash_active = False
+            else:
+                # 正弦波呼吸：2秒内柔和闪烁2次，alpha 0-40
+                alpha = int(abs(math.sin(elapsed * 2 * math.pi)) * 40)
+                flash_color = QColor(colors.accent_blue)
+                flash_color.setAlpha(alpha)
+                painter.fillRect(self.rect(), flash_color)
 
         painter.end()
 

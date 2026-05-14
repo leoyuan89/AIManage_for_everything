@@ -1,11 +1,14 @@
 from PyQt6.QtWidgets import QWidget, QCheckBox
-from PyQt6.QtCore import Qt, QRect
+from PyQt6.QtCore import Qt, QRect, QTimer
 from PyQt6.QtGui import QPainter, QColor, QFont, QFontMetrics, QPen, QBrush
 
 from core.theme_manager import ThemeManager
 from core.clipboard import ClipboardManager
 
+import json
 import logging
+import time
+import math
 
 logger = logging.getLogger(__name__)
 
@@ -28,11 +31,16 @@ class AccountListItem(QWidget):
         self.on_check_changed = None
         self._selection_mode = selection_mode
         self._column_visible = {
-            'icon': True, 'app_name': True, 'username': True,
-            'strength': True, 'category': True, 'arrow': True, 'time': True,
+            'icon': True, 'app_name': True, 'strength': True,
+            'category': True, 'arrow': True, 'time': True,
+            'tags': True, 'remark': True, 'ai_remark': True,
         }
         self._hovered_btn = -1
         self._copy_btn_rects = []
+        self._flash_active = False
+        self._flash_timer = None
+        self._flash_start_time = 0
+        self._flash_duration = 2.0
 
         self.checkbox = QCheckBox(self)
         self.checkbox.setFixedSize(24, 24)
@@ -85,11 +93,47 @@ class AccountListItem(QWidget):
             time_parts.append(f"修改:{self._format_db_time(updated)}")
         return "  ".join(time_parts)
 
+    def _get_time_lines(self):
+        """返回创建时间和修改时间作为独立的行，用于垂直排列"""
+        create_line = ""
+        update_line = ""
+        if self.account.created_at:
+            create_line = f"创建:{self._format_db_time(self.account.created_at)}"
+        if self.account.updated_at:
+            update_line = f"修改:{self._format_db_time(self.account.updated_at)}"
+        return create_line, update_line
+
+    def start_flash(self, duration_sec: float = 2.0, interval_ms: int = 60):
+        """启动呼吸灯闪烁效果"""
+        self._flash_active = True
+        self._flash_start_time = time.time()
+        self._flash_duration = duration_sec
+        if self._flash_timer is None:
+            self._flash_timer = QTimer(self)
+            self._flash_timer.timeout.connect(self._on_flash_tick)
+        self._flash_timer.start(interval_ms)
+        self.update()
+
+    def stop_flash(self):
+        """停止呼吸灯闪烁"""
+        self._flash_active = False
+        if self._flash_timer:
+            self._flash_timer.stop()
+        self.update()
+
+    def _on_flash_tick(self):
+        """闪烁定时器回调"""
+        self.update()
+        if time.time() - self._flash_start_time > self._flash_duration:
+            self._flash_active = False
+            self._flash_timer.stop()
+            self.update()
+
     def set_compact_mode(self, enabled: bool):
         if enabled == self._compact_mode:
             return
         self._compact_mode = enabled
-        self.setFixedHeight(32 if enabled else 56)
+        self.setFixedHeight(35 if enabled else 56)
         self.update()
 
     def paintEvent(self, event):
@@ -133,13 +177,24 @@ class AccountListItem(QWidget):
 
         text_x = x
 
-        # 计算右侧固定占用宽度（顺序：分类 → 箭头 → 复制按钮）
+        # 计算右侧固定占用宽度（顺序：分类 → 时间(垂直) → 箭头 → 复制按钮）
         right_fixed = 10  # 右边距
         if not is_compact and not self._selection_mode:
             right_fixed += 3 * 28 + 10  # 3个按钮(26+2间距) + 间距
         if not is_compact and self._column_visible.get('arrow', True):
             right_fixed += 16 + 6
-        if not is_compact and self._column_visible.get('category', True):
+        if not is_compact and self._column_visible.get('time', True):
+            create_line, update_line = self._get_time_lines()
+            if create_line or update_line:
+                time_fm = QFontMetrics(QFont("Microsoft YaHei", 9))
+                time_w = 0
+                if create_line:
+                    time_w = max(time_w, time_fm.horizontalAdvance(create_line))
+                if update_line:
+                    time_w = max(time_w, time_fm.horizontalAdvance(update_line))
+                if time_w > 0:
+                    right_fixed += time_w + 8
+        if self._column_visible.get('category', True):
             cat_text = self.account.category or '其他'
             cat_fm = QFontMetrics(QFont("Microsoft YaHei", 10))
             right_fixed += cat_fm.horizontalAdvance(cat_text) + 12 + 6
@@ -178,7 +233,42 @@ class AccountListItem(QWidget):
                 painter.drawText(badge_x, badge_y, bw, bh, Qt.AlignmentFlag.AlignCenter, badge_text)
                 badge_x += bw + 3
 
-            # === 第二行：密码强度 + 账号 + 时间 ===
+            # 标签 pills
+            if self._column_visible.get('tags', True):
+                tags = []
+                try:
+                    tags = json.loads(self.account.tags or '[]')
+                except Exception:
+                    pass
+                if tags:
+                    tag_font = QFont("Microsoft YaHei", 9, QFont.Weight.Bold)
+                    tag_fm = QFontMetrics(tag_font)
+                    th = 14
+                    max_tag_x = text_x + text_w
+                    for idx, tag in enumerate(tags[:3]):
+                        tag_text = str(tag)
+                        tw = tag_fm.horizontalAdvance(tag_text) + 12
+                        if badge_x + tw > max_tag_x:
+                            break
+                        painter.setBrush(QBrush(QColor(colors.bg_secondary)))
+                        painter.setPen(Qt.PenStyle.NoPen)
+                        painter.drawRoundedRect(badge_x, badge_y, tw, th, 7, 7)
+                        painter.setPen(QColor(colors.text_secondary))
+                        painter.setFont(tag_font)
+                        painter.drawText(badge_x, badge_y, tw, th, Qt.AlignmentFlag.AlignCenter, tag_text)
+                        badge_x += tw + 3
+                    if len(tags) > 3:
+                        extra_text = f"+{len(tags) - 3}"
+                        tw = tag_fm.horizontalAdvance(extra_text) + 12
+                        if badge_x + tw <= max_tag_x:
+                            painter.setBrush(QBrush(QColor(colors.bg_secondary)))
+                            painter.setPen(Qt.PenStyle.NoPen)
+                            painter.drawRoundedRect(badge_x, badge_y, tw, th, 7, 7)
+                            painter.setPen(QColor(colors.text_secondary))
+                            painter.setFont(tag_font)
+                            painter.drawText(badge_x, badge_y, tw, th, Qt.AlignmentFlag.AlignCenter, extra_text)
+
+            # === 第二行：密码强度 + remark/ai_remark + 时间 ===
             sub_y = 30
             sub_h = 18
             sub_x = text_x
@@ -200,38 +290,116 @@ class AccountListItem(QWidget):
                 sub_x += sw + 6
                 sub_w -= sw + 6
 
+            # 脱敏账号（始终显示）
             painter.setPen(QColor(colors.text_tertiary))
             sub_font = QFont("Microsoft YaHei", 10)
             painter.setFont(sub_font)
             username = self.account.mask_username() or ''
             fm_sub = painter.fontMetrics()
-            uname_max_w = min(fm_sub.horizontalAdvance(username) + 2, sub_w // 2)
+            uname_max_w = min(fm_sub.horizontalAdvance(username) + 2, sub_w // 3)
             elided_username = fm_sub.elidedText(username, Qt.TextElideMode.ElideRight, uname_max_w)
             painter.drawText(sub_x, sub_y, uname_max_w, sub_h, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, elided_username)
+            sub_x += fm_sub.horizontalAdvance(elided_username) + 10
+            sub_w -= fm_sub.horizontalAdvance(elided_username) + 10
 
-            if self._time_text and self._column_visible.get('time', True):
-                uname_display_w = fm_sub.horizontalAdvance(elided_username)
-                time_x = sub_x + uname_display_w + 10
-                time_w = sub_w - uname_display_w - 10
-                if time_w > 20:
-                    painter.setPen(QColor(colors.text_disabled))
-                    painter.setFont(QFont("Microsoft YaHei", 9))
-                    painter.drawText(time_x, sub_y, time_w, sub_h, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self._time_text)
+            show_remark = self._column_visible.get('remark', True) and (self.account.remark or '').strip()
+            show_ai = self._column_visible.get('ai_remark', True) and (self.account.ai_remark or '').strip()
+
+            # remark / ai_remark 可用宽度（时间已移到右侧固定区域，不再占用第二行空间）
+            remark_max_w = sub_w
+
+            if show_remark or show_ai:
+                painter.setFont(QFont("Microsoft YaHei", 10))
+                fm_sub = painter.fontMetrics()
+                draw_x = sub_x
+
+                def _limit_chars(text, max_len=15):
+                    if len(text) <= max_len:
+                        return text
+                    return text[:max_len] + '...'
+
+                if show_remark:
+                    raw_remark = (self.account.remark or '').strip().replace('\n', ' ')
+                    remark_text = f"💬 {_limit_chars(raw_remark)}"
+                    painter.setPen(QColor(colors.text_secondary))
+                    rw = min(fm_sub.horizontalAdvance(remark_text), remark_max_w)
+                    painter.drawText(draw_x, sub_y, rw, sub_h, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, remark_text)
+                    draw_x += fm_sub.horizontalAdvance(remark_text)
+
+                if show_remark and show_ai:
+                    sep = " | "
+                    sep_w = fm_sub.horizontalAdvance(sep)
+                    if draw_x + sep_w <= sub_x + remark_max_w:
+                        painter.setPen(QColor(colors.text_disabled))
+                        painter.drawText(draw_x, sub_y, sep_w, sub_h, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, sep)
+                        draw_x += sep_w
+
+                if show_ai:
+                    raw_ai = (self.account.ai_remark or '').strip().replace('\n', ' ')
+                    ai_text = f"🤖 {_limit_chars(raw_ai)}"
+                    painter.setPen(QColor(colors.accent_blue))
+                    remaining = max(sub_x + remark_max_w - draw_x, 0)
+                    aw = min(fm_sub.horizontalAdvance(ai_text), remaining)
+                    painter.drawText(draw_x, sub_y, aw, sub_h, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, ai_text)
+                    draw_x += fm_sub.horizontalAdvance(ai_text)
+
         else:
             # === 紧凑模式 ===
             painter.setPen(QColor(colors.text_primary))
-            title_font = QFont("Microsoft YaHei", 12)
-            title_font.setWeight(QFont.Weight.DemiBold)
+            title_font = QFont("Microsoft YaHei", 11)
+            title_font.setWeight(QFont.Weight.Medium)
             painter.setFont(title_font)
-            fm_title = QFontMetrics(title_font)
+            fm_title = painter.fontMetrics()
             elided_name = fm_title.elidedText(self.account.app_name or '', Qt.TextElideMode.ElideRight, text_w)
-            painter.drawText(text_x, 4, text_w, 14, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, elided_name)
+            painter.drawText(text_x, 2, text_w, 15, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, elided_name)
 
+            # 紧凑模式第二行：脱敏账号 + remark/ai_remark
             painter.setPen(QColor(colors.text_tertiary))
-            painter.setFont(QFont("Microsoft YaHei", 10))
-            painter.drawText(text_x, 17, text_w, 14, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self.account.mask_username() or '')
+            painter.setFont(QFont("Microsoft YaHei", 9))
+            fm_sub = painter.fontMetrics()
+            username = self.account.mask_username() or ''
+            elided_username = fm_sub.elidedText(username, Qt.TextElideMode.ElideRight, text_w // 3)
+            uname_w = fm_sub.horizontalAdvance(elided_username)
+            painter.drawText(text_x, 17, uname_w + 2, 13, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, elided_username)
 
-        # === 右侧元素（正常模式，顺序：分类 → 箭头 → 复制按钮）===
+            draw_x = text_x + uname_w + 8
+            remaining = text_w - uname_w - 8
+
+            show_remark = self._column_visible.get('remark', True) and (self.account.remark or '').strip()
+            show_ai = self._column_visible.get('ai_remark', True) and (self.account.ai_remark or '').strip()
+
+            def _limit_chars(text, max_len=12):
+                if len(text) <= max_len:
+                    return text
+                return text[:max_len] + '...'
+
+            if show_remark or show_ai:
+                if show_remark:
+                    raw_remark = (self.account.remark or '').strip().replace('\n', ' ')
+                    remark_text = f"💬 {_limit_chars(raw_remark)}"
+                    painter.setPen(QColor(colors.text_secondary))
+                    rw = min(fm_sub.horizontalAdvance(remark_text), remaining)
+                    painter.drawText(draw_x, 17, rw, 13, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, remark_text)
+                    draw_x += fm_sub.horizontalAdvance(remark_text)
+                    remaining -= fm_sub.horizontalAdvance(remark_text)
+
+                if show_remark and show_ai:
+                    sep = " | "
+                    sep_w = fm_sub.horizontalAdvance(sep)
+                    if remaining > sep_w:
+                        painter.setPen(QColor(colors.text_disabled))
+                        painter.drawText(draw_x, 17, sep_w, 13, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, sep)
+                        draw_x += sep_w
+                        remaining -= sep_w
+
+                if show_ai:
+                    raw_ai = (self.account.ai_remark or '').strip().replace('\n', ' ')
+                    ai_text = f"🤖 {_limit_chars(raw_ai)}"
+                    painter.setPen(QColor(colors.accent_blue))
+                    aw = min(fm_sub.horizontalAdvance(ai_text), max(remaining, 0))
+                    painter.drawText(draw_x, 17, aw, 13, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, ai_text)
+
+        # === 右侧元素（正常模式，顺序：分类 → 时间(垂直) → 箭头 → 复制按钮）===
         if not is_compact:
             rx = w - 10
 
@@ -268,6 +436,30 @@ class AccountListItem(QWidget):
                 painter.drawText(rx, (h - 20) // 2, 16, 20, Qt.AlignmentFlag.AlignCenter, "›")
                 rx -= 6
 
+            # 时间（垂直排列：创建在上，修改在下）
+            if self._column_visible.get('time', True):
+                create_line, update_line = self._get_time_lines()
+                if create_line or update_line:
+                    time_fm = QFontMetrics(QFont("Microsoft YaHei", 9))
+                    time_w = 0
+                    if create_line:
+                        time_w = max(time_w, time_fm.horizontalAdvance(create_line))
+                    if update_line:
+                        time_w = max(time_w, time_fm.horizontalAdvance(update_line))
+                    if time_w > 0:
+                        rx -= time_w + 6
+                        painter.setPen(QColor(colors.text_disabled))
+                        painter.setFont(QFont("Microsoft YaHei", 9))
+                        line_h = 11
+                        gap = 2
+                        total_h = line_h * 2 + gap
+                        time_y = (h - total_h) // 2
+                        if create_line:
+                            painter.drawText(rx, time_y, time_w, line_h, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, create_line)
+                            time_y += line_h + gap
+                        if update_line:
+                            painter.drawText(rx, time_y, time_w, line_h, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, update_line)
+
             # 分类 pill（缩小）
             if self._column_visible.get('category', True):
                 cat_text = self.account.category or '其他'
@@ -281,6 +473,32 @@ class AccountListItem(QWidget):
                 painter.setPen(QColor(colors.text_secondary))
                 painter.setFont(QFont("Microsoft YaHei", 10))
                 painter.drawText(rx, (h - ch) // 2, cw, ch, Qt.AlignmentFlag.AlignCenter, cat_text)
+
+        # 紧凑模式也显示分类
+        if is_compact and self._column_visible.get('category', True):
+            cat_text = self.account.category or '其他'
+            cat_fm = QFontMetrics(QFont("Microsoft YaHei", 10))
+            cw = cat_fm.horizontalAdvance(cat_text) + 12
+            ch = 14
+            rx = w - 10 - cw
+            painter.setBrush(QBrush(QColor(colors.bg_secondary)))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRoundedRect(rx, (h - ch) // 2, cw, ch, 8, 8)
+            painter.setPen(QColor(colors.text_secondary))
+            painter.setFont(QFont("Microsoft YaHei", 10))
+            painter.drawText(rx, (h - ch) // 2, cw, ch, Qt.AlignmentFlag.AlignCenter, cat_text)
+
+        # === 呼吸灯闪烁效果 ===
+        if self._flash_active:
+            elapsed = time.time() - self._flash_start_time
+            if elapsed > self._flash_duration:
+                self._flash_active = False
+            else:
+                # 正弦波呼吸：2秒内柔和闪烁2次，alpha 0-40
+                alpha = int(abs(math.sin(elapsed * 2 * math.pi)) * 40)
+                flash_color = QColor(colors.accent_blue)
+                flash_color.setAlpha(alpha)
+                painter.fillRect(self.rect(), flash_color)
 
         painter.end()
 

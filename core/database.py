@@ -471,6 +471,10 @@ class DatabaseManager:
                 fields.append("tags = ?")
                 values.append(account_data['tags'])
         
+            if 'is_favorite' in account_data:
+                fields.append("is_favorite = ?")
+                values.append(account_data['is_favorite'])
+        
             if 'last_password_change' in account_data:
                 fields.append("last_password_change = ?")
                 values.append(account_data['last_password_change'])
@@ -882,6 +886,9 @@ class DatabaseManager:
                         (new_name, max_idx + 1)
                     )
 
+                # 清理 AI 分类缓存
+                self.cursor.execute("DELETE FROM category_cache")
+
                 self._commit()
                 return True
             except Exception as e:
@@ -890,15 +897,30 @@ class DatabaseManager:
                 return False
     
     def reparent_category(self, old_path: str, new_path: str) -> int:
-        """将 old_path 精确匹配的分类条目更新为 new_path，并同步更新 category_order"""
+        """将 old_path 精确匹配的分类条目更新为 new_path，并同步更新 category_order。
+        
+        同时支持级联更新：若 old_path 是一级分类（无'>'），则所有以 old_path> 为前缀的子分类
+        也会被同步迁移到 new_path 下。
+        """
         with self._lock:
             try:
+                # 1) 精确匹配更新 accounts 表
                 self.cursor.execute(
                     "UPDATE accounts SET category = ? WHERE category = ?",
                     (new_path, old_path)
                 )
                 updated_rows = self.cursor.rowcount
 
+                # 2) 若 old_path 是一级分类，级联更新所有子分类
+                if '>' not in old_path:
+                    self.cursor.execute(
+                        "UPDATE accounts SET category = ? || SUBSTR(category, ?) WHERE category LIKE ?",
+                        (new_path, len(old_path) + 1, f"{old_path}>%")
+                    )
+                    updated_rows += self.cursor.rowcount
+
+                # 3) 同步更新 category_order 表
+                # 3a) 读取旧路径的 sort_index
                 self.cursor.execute(
                     "SELECT sort_index FROM category_order WHERE category = ?",
                     (old_path,)
@@ -906,12 +928,20 @@ class DatabaseManager:
                 row = self.cursor.fetchone()
                 old_sort_index = row[0] if row else None
 
+                # 3b) 删除旧路径记录
                 self.cursor.execute(
                     "DELETE FROM category_order WHERE category = ?",
                     (old_path,)
                 )
 
-                # 如果 new_path 已存在于 category_order 中，保留其现有 sort_index，不覆盖
+                # 3c) 若 old_path 是一级分类，同步迁移子分类的 category_order 记录
+                if '>' not in old_path:
+                    self.cursor.execute(
+                        "UPDATE category_order SET category = ? || SUBSTR(category, ?) WHERE category LIKE ?",
+                        (new_path, len(old_path) + 1, f"{old_path}>%")
+                    )
+
+                # 3d) 插入新路径记录（若不存在则插入，保留现有 sort_index）
                 self.cursor.execute(
                     "SELECT 1 FROM category_order WHERE category = ?",
                     (new_path,)
@@ -931,7 +961,7 @@ class DatabaseManager:
                             (new_path, max_idx + 1)
                         )
 
-                # 清理 AI 分类缓存，避免缓存返回旧分类路径
+                # 4) 清理 AI 分类缓存，避免缓存返回旧分类路径
                 self.cursor.execute("DELETE FROM category_cache")
 
                 self._commit()

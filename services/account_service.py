@@ -310,7 +310,9 @@ class AccountService:
 
     def promote_category(self, category_path: str) -> bool:
         """将二级分类升级为一级分类"""
-        return self.db.promote_category(category_path)
+        result = self.db.promote_category(category_path)
+        self.get_all_accounts.cache_clear()
+        return result
     
     def reparent_category(self, old_path: str, new_parent: str = "") -> bool:
         """
@@ -328,7 +330,9 @@ class AccountService:
         else:
             new_path = child_name
         
-        return self.db.reparent_category(old_path, new_path) > 0
+        result = self.db.reparent_category(old_path, new_path) > 0
+        self.get_all_accounts.cache_clear()
+        return result
     
     def toggle_favorite(self, account_id: int) -> bool:
         """Toggle favorite status for an account, returns new status"""

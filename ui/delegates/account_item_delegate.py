@@ -41,7 +41,7 @@ class AccountItemDelegate(QStyledItemDelegate):
         self._selected_ids = set(ids)
 
     def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex) -> QSize:
-        height = 32 if self._compact_mode else 56
+        height = 35 if self._compact_mode else 56
         return QSize(option.rect.width(), height)
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex):
@@ -183,7 +183,7 @@ class AccountItemDelegate(QStyledItemDelegate):
         # 分类标签
         category_rect = None
         category = None
-        if self._is_column_visible("category") and not is_compact:
+        if self._is_column_visible("category"):
             category = (
                 getattr(obj, "category", "")
                 or (obj.get("category", "") if isinstance(obj, dict) else "")
@@ -201,7 +201,7 @@ class AccountItemDelegate(QStyledItemDelegate):
         title_font.setPixelSize(13 if is_compact else 15)
         title_font.setWeight(QFont.Weight.Medium if is_compact else QFont.Weight.DemiBold)
 
-        title_y = center_y - 2 if is_compact else rect.top() + 10
+        title_y = rect.top() + 4 if is_compact else rect.top() + 10
         available_width = right - left - 8
 
         # 徽章
@@ -337,6 +337,53 @@ class AccountItemDelegate(QStyledItemDelegate):
                 painter.setPen(QColor(colors.text_tertiary))
                 sub_text = "  |  ".join(sub_parts)
                 sub_rect = QRect(left, sub_y, available_width, 16)
+                painter.drawText(
+                    sub_rect,
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                    sub_text,
+                )
+        else:
+            # 紧凑模式副标题
+            sub_y = rect.top() + 19
+            sub_parts = []
+
+            if item_type == "account" and self._is_column_visible("username"):
+                username = getattr(obj, "username", "") or ""
+                if username:
+                    if hasattr(obj, "mask_username"):
+                        masked = obj.mask_username()
+                    else:
+                        masked = (
+                            username[:3] + "****" + username[-3:]
+                            if len(username) > 6
+                            else username
+                        )
+                    sub_parts.append(masked)
+            elif item_type == "url" and self._is_column_visible("url"):
+                url = getattr(obj, "url", "") or (
+                    obj.get("url", "") if isinstance(obj, dict) else ""
+                )
+                display_url = url[:40] if len(url) <= 40 else url[:40] + "..."
+                sub_parts.append(display_url)
+
+            remark = getattr(obj, "remark", "") or (
+                obj.get("remark", "") if isinstance(obj, dict) else ""
+            )
+            ai_remark = getattr(obj, "ai_remark", "") or (
+                obj.get("ai_remark", "") if isinstance(obj, dict) else ""
+            )
+            if remark and self._is_column_visible("remark"):
+                sub_parts.append(f"💬 {remark[:12]}{'...' if len(remark) > 12 else ''}")
+            if ai_remark and self._is_column_visible("ai_remark"):
+                sub_parts.append(f"🤖 {ai_remark[:12]}{'...' if len(ai_remark) > 12 else ''}")
+
+            if sub_parts:
+                sub_font = QFont()
+                sub_font.setPixelSize(11)
+                painter.setFont(sub_font)
+                painter.setPen(QColor(colors.text_tertiary))
+                sub_text = "  |  ".join(sub_parts)
+                sub_rect = QRect(left, sub_y, available_width, 14)
                 painter.drawText(
                     sub_rect,
                     Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,

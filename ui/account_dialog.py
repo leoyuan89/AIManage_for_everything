@@ -1569,7 +1569,9 @@ class AccountDialog(QDialog):
             tags=self.account.tags if self.is_edit_mode else '[]',
             remark=self.txt_remark.toPlainText().strip(),
             ai_remark=self.txt_ai_remark.text().strip(),
-            security_level=security_level
+            security_level=security_level,
+            is_favorite=self.account.is_favorite if self.is_edit_mode else False,
+            last_password_change=self.account.last_password_change if self.is_edit_mode else None
         )
         
         try:

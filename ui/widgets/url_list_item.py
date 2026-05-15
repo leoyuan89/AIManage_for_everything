@@ -35,6 +35,7 @@ class URLListItem(QWidget):
         }
         self._hovered_btn = False
         self._copy_btn_rect = None
+        self._press_handled = False  # True when mousePressEvent consumed the event (copy btn)
         self._flash_active = False
         self._flash_timer = None
         self._flash_start_time = 0
@@ -564,6 +565,9 @@ class URLListItem(QWidget):
                 window._drag_in_progress = False
                 window._drag_checked_ids.clear()
                 return
+        if self._press_handled:
+            self._press_handled = False
+            return  # consume release so QListWidget.itemClicked is NOT emitted
         super().mouseReleaseEvent(event)
 
     def mousePressEvent(self, event):
@@ -584,8 +588,10 @@ class URLListItem(QWidget):
                 return
             return super().mousePressEvent(event)
         if self._copy_btn_rect and self._copy_btn_rect.contains(event.pos()):
+            self._press_handled = True
             self._on_copy_url()
             return
+        self._press_handled = False
         super().mousePressEvent(event)
 
     def set_selection_mode(self, enabled: bool):

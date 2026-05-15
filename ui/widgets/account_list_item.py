@@ -37,6 +37,7 @@ class AccountListItem(QWidget):
         }
         self._hovered_btn = -1
         self._copy_btn_rects = []
+        self._press_handled = False  # True when mousePressEvent consumed the event (copy btn / checkbox)
         self._flash_active = False
         self._flash_timer = None
         self._flash_start_time = 0
@@ -554,6 +555,9 @@ class AccountListItem(QWidget):
                 window._drag_in_progress = False
                 window._drag_checked_ids.clear()
                 return
+        if self._press_handled:
+            self._press_handled = False
+            return  # consume release so QListWidget.itemClicked is NOT emitted
         super().mouseReleaseEvent(event)
 
     def mousePressEvent(self, event):
@@ -575,8 +579,10 @@ class AccountListItem(QWidget):
             return super().mousePressEvent(event)
         for i, (label, handler) in enumerate(self._COPY_BTNS):
             if i < len(self._copy_btn_rects) and self._copy_btn_rects[i].contains(event.pos()):
+                self._press_handled = True
                 getattr(self, handler)()
                 return
+        self._press_handled = False
         super().mousePressEvent(event)
 
     def set_selection_mode(self, enabled: bool):

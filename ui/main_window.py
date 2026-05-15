@@ -2882,6 +2882,10 @@ class MainWindow(QMainWindow):
         
         if self.dashboard is not None:
             self.dashboard.set_vault(self.current_vault)
+
+        # 切换库时同步更新搜索补全历史
+        if hasattr(self, '_search_model'):
+            self._search_model.setStringList(self.search_service.get_search_history(self.current_vault))
         
         # 重置对话上下文和欢迎语状态
         self.ai_assistant.conversation_context.reset()
@@ -4862,7 +4866,7 @@ class MainWindow(QMainWindow):
             query = text
             
             # 同步搜索：精确 + 拼音
-            sync_results = self.search_service.search(query, all_accounts)
+            sync_results = self.search_service.search(query, all_accounts, vault_type='accounts')
             exact_results = [r for r in sync_results if r.match_type in ('exact', 'pinyin')]
             
             # 渲染搜索结果
@@ -4870,6 +4874,7 @@ class MainWindow(QMainWindow):
         else:
             # 网址搜索
             results = self._url_service.search_urls(text)
+            self.search_service._add_to_history(text.strip().lower(), vault_type='urls')
             self._display_url_search_results(results)
     
     def _on_search_text_changed(self, text: str):
@@ -4877,13 +4882,13 @@ class MainWindow(QMainWindow):
         if text.strip():
             self.search_history_panel.hide()
         elif self.search_box.hasFocus():
-            history = self.search_service.get_search_history()
+            history = self.search_service.get_search_history(self.current_vault)
             if history:
                 self._show_search_history_panel()
 
     def _show_search_history_panel(self):
         """显示搜索历史面板（定位在搜索框下方）"""
-        history = self.search_service.get_search_history()
+        history = self.search_service.get_search_history(self.current_vault)
         if not history:
             self.search_history_panel.hide()
             return
@@ -4913,12 +4918,12 @@ class MainWindow(QMainWindow):
     
     def _on_history_delete(self, text: str):
         """删除单条搜索历史"""
-        self.search_service.remove_history_item(text)
-        self.search_history_panel.set_history(self.search_service.get_search_history())
-    
+        self.search_service.remove_history_item(text, self.current_vault)
+        self.search_history_panel.set_history(self.search_service.get_search_history(self.current_vault))
+
     def _on_history_clear_all(self):
         """清空全部搜索历史"""
-        self.search_service.clear_history()
+        self.search_service.clear_history(self.current_vault)
         self.search_history_panel.hide()
     
     def _display_search_results(self, exact_results, all_accounts):
@@ -7463,12 +7468,12 @@ class MainWindow(QMainWindow):
         # 搜索框焦点处理：更新补全历史；点击时显示历史面板
         if watched == self.search_box:
             if event_type == event.Type.FocusIn:
-                history = self.search_service.get_search_history()
+                history = self.search_service.get_search_history(self.current_vault)
                 self._search_model.setStringList(history)
             elif event_type == event.Type.MouseButtonPress:
                 # 点击搜索框时显示历史面板（避免启动时自动弹出）
                 if not self.search_box.text().strip():
-                    history = self.search_service.get_search_history()
+                    history = self.search_service.get_search_history(self.current_vault)
                     if history:
                         self._show_search_history_panel()
             elif event_type == event.Type.FocusOut:

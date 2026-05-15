@@ -40,28 +40,29 @@ class SearchService:
     def __init__(self, db_manager: DatabaseManager):
         """
         初始化搜索服务
-        
+
         Args:
             db_manager: 数据库管理器
         """
         self.db = db_manager
-        self._search_history: List[str] = []  # 搜索历史
-        self._max_history = 10  # 最大历史记录数
+        self._search_history: dict = {'accounts': [], 'urls': []}  # 按库类型分区的搜索历史
+        self._max_history = 10  # 每个库的最大历史记录数
         self._history_path = DATA_DIR / 'search_history.json'
         self._load_history()
     
-    def search(self, query: str, accounts: List[Account] = None) -> List[SearchResult]:
+    def search(self, query: str, accounts: List[Account] = None, vault_type: str = 'accounts') -> List[SearchResult]:
         """
         同步搜索：精确匹配 + 拼音匹配（不含语义搜索）
-        
+
         搜索优先级：
         1. 精确匹配（应用名、账号、网址、备注）
         2. 拼音匹配（如"wx"匹配"微信"）
-        
+
         Args:
             query: 搜索关键词
             accounts: 账号列表（可选，不传则从数据库读取）
-            
+            vault_type: 库类型（'accounts' 或 'urls'）
+
         Returns:
             搜索结果列表（按优先级排序，只含 exact/pinyin）
         """
@@ -71,11 +72,11 @@ class SearchService:
                 accounts_data = self.db.get_all_accounts()
                 accounts = [Account.from_dict(data) for data in accounts_data]
             return [SearchResult(acc, 'all', 1.0, '') for acc in accounts]
-        
+
         query = query.strip().lower()
-        
+
         # 记录搜索历史
-        self._add_to_history(query)
+        self._add_to_history(query, vault_type)
         
         # 获取账号列表
         if accounts is None:
@@ -115,8 +116,8 @@ class SearchService:
         
         return results
     
-    def search_advanced(self, query: str, accounts: List[Account], filter: SearchFilter) -> List[SearchResult]:
-        sync_results = self.search(query, accounts)
+    def search_advanced(self, query: str, accounts: List[Account], filter: SearchFilter, vault_type: str = 'accounts') -> List[SearchResult]:
+        sync_results = self.search(query, accounts, vault_type)
         results = [r for r in sync_results if r.match_type in ('exact', 'pinyin')]
         
         if filter.category:
@@ -239,50 +240,56 @@ class SearchService:
         
         return None
     
-    def _add_to_history(self, query: str):
-        """添加到搜索历史"""
+    def _add_to_history(self, query: str, vault_type: str = 'accounts'):
+        """添加到搜索历史（按库类型分区）"""
+        history = self._search_history.get(vault_type, [])
         # 去重
-        if query in self._search_history:
-            self._search_history.remove(query)
-        
-        self._search_history.insert(0, query)
-        
+        if query in history:
+            history.remove(query)
+        history.insert(0, query)
         # 限制历史记录数
-        if len(self._search_history) > self._max_history:
-            self._search_history = self._search_history[:self._max_history]
-        
+        self._search_history[vault_type] = history[:self._max_history]
         self._save_history()
     
-    def get_search_history(self) -> List[str]:
-        """获取搜索历史"""
-        return self._search_history.copy()
+    def get_search_history(self, vault_type: str = 'accounts') -> List[str]:
+        """获取搜索历史（按库类型分区）"""
+        return self._search_history.get(vault_type, []).copy()
     
-    def remove_history_item(self, query: str):
+    def remove_history_item(self, query: str, vault_type: str = 'accounts'):
         """删除单条搜索历史"""
-        if query in self._search_history:
-            self._search_history.remove(query)
+        history = self._search_history.get(vault_type, [])
+        if query in history:
+            history.remove(query)
+            self._search_history[vault_type] = history
             self._save_history()
-    
-    def clear_history(self):
-        """清空搜索历史"""
-        self._search_history.clear()
+
+    def clear_history(self, vault_type: str = 'accounts'):
+        """清空搜索历史（指定库类型）"""
+        self._search_history[vault_type] = []
         self._save_history()
     
     def clear_search_history(self):
-        """清空搜索历史 (别名)"""
-        self.clear_history()
+        """清空所有库的搜索历史"""
+        self._search_history = {'accounts': [], 'urls': []}
+        self._save_history()
     
     def _load_history(self):
-        """从本地 JSON 加载搜索历史"""
+        """从本地 JSON 加载搜索历史（兼容旧格式）"""
         try:
             if self._history_path.exists():
                 with open(self._history_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                if isinstance(data, list):
-                    self._search_history = data[:self._max_history]
+                if isinstance(data, dict):
+                    # 新格式：{"accounts": [...], "urls": [...]}
+                    for key in ('accounts', 'urls'):
+                        if key in data and isinstance(data[key], list):
+                            self._search_history[key] = data[key][:self._max_history]
+                elif isinstance(data, list):
+                    # 旧格式：直接是列表，迁移到 accounts 分区
+                    self._search_history['accounts'] = data[:self._max_history]
         except Exception:
-            self._search_history = []
-    
+            self._search_history = {'accounts': [], 'urls': []}
+
     def _save_history(self):
         """保存搜索历史到本地 JSON（同步，数据量极小）"""
         try:

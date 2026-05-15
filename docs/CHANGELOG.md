@@ -6,6 +6,14 @@
 
 ---
 
+## [未发布] — 2026-05-15
+
+### 修复
+- **列表项复制按钮点击后弹窗问题**：`AccountListItem` / `URLListItem` 的 `mousePressEvent` 正确消费了复制按钮点击，但 `mouseReleaseEvent` 仍调用 `super()` 导致 release 事件传播到 `QListWidget`，触发 `itemClicked` 信号弹出详情弹窗。添加 `_press_handled` 标志位，复制按钮点击后在 `mouseReleaseEvent` 中拦截事件传播，彻底解决弹窗打开后复制按钮失效的问题
+- **搜索历史未区分密码库/网址库**：搜索历史存储为单一扁平 JSON 列表，两个库共享同一份历史，且网址库搜索从未记录历史。将 `_search_history` 从 `List[str]` 重构为 `Dict[str, List[str]]`（按 `accounts` / `urls` 分区），所有历史方法添加 `vault_type` 参数；网址库搜索后显式记录历史；切换库时同步更新 QCompleter 补全列表；兼容旧格式自动迁移
+
+---
+
 ## [未发布] — 2026-05-14
 
 ### 新增
